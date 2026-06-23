@@ -1,0 +1,31 @@
+FluxTech UG (haftungsbeschränkt) - Proprietary Software License
+SPDX-License-Identifier: LicenseRef-Proprietary
+
+Copyright (c) 2026 FluxTech UG (haftungsbeschränkt). All rights reserved.
+
+This software and its associated files (the "Software"), including the cloud
+orchestration code and configuration contained herein, are the confidential and
+proprietary property of FluxTech UG (haftungsbeschränkt) ("FluxTech").
+
+NO LICENSE IS GRANTED to any party except as expressly authorized in writing by
+FluxTech. Without such written authorization you may NOT, in whole or in part:
+
+  - use, execute, or evaluate the Software;
+  - copy, reproduce, or redistribute the Software;
+  - modify, adapt, translate, or create derivative works of the Software;
+  - publish, sublicense, sell, lease, or otherwise transfer the Software; or
+  - publish the Software to any public package index or repository.
+
+The Software is distributed privately to FluxTech's own repositories and
+authorized collaborators only. It is NOT open source and must not be uploaded to
+the Python Package Index (PyPI) or any other public index.
+
+The FluxTech name, logo, and wordmark are trademarks of FluxTech and may not be
+used except as part of authorized FluxTech work product.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL FLUXTECH BE
+LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

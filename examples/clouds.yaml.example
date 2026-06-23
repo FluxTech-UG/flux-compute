@@ -1,0 +1,16 @@
+# Copy to ./clouds.yaml (gitignored) or ~/.config/openstack/clouds.yaml, then:
+#   flux-compute doctor --cloud flux-ovh
+#
+# Mint the credential in the OVH manager: Public Cloud project > Users & Roles.
+# Application credentials are preferred: scoped, revocable, no account password.
+
+clouds:
+  flux-ovh:
+    auth_type: v3applicationcredential
+    auth:
+      auth_url: https://auth.cloud.ovh.net/v3
+      application_credential_id: REPLACE_WITH_APP_CRED_ID
+      application_credential_secret: REPLACE_WITH_APP_CRED_SECRET
+    region_name: GRA11        # a GPU-enabled region (GRA9, GRA11, BHS5)
+    interface: public
+    identity_api_version: 3

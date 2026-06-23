@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+*.egg
+.venv/
+.DS_Store
+
+# OpenStack credentials: NEVER commit
+clouds.yaml
+secure.yaml
+*openrc*.sh
+.env
+
+# Run artifacts pulled back from instances
+.jax_cache/
+outputs/

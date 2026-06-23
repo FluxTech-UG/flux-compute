@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flux-compute"
+version = "0.0.1"
+description = "Run FluxTech simulations on OVH Public Cloud GPU instances"
+readme = "README.md"
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    { name = "John Patrick Therrien", email = "john@flux-tech.de" },
+]
+keywords = ["OVHcloud", "OpenStack", "GPU", "JAX", "simulation", "orchestration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+    "openstacksdk>=3.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+flux-compute = "flux_compute.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/FluxTech-UG/flux-compute"
+Repository = "https://github.com/FluxTech-UG/flux-compute"
+Issues = "https://github.com/FluxTech-UG/flux-compute/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["flux_compute*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
