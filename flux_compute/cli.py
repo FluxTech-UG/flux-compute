@@ -51,6 +51,30 @@ def main(argv=None) -> int:
     run.add_argument("--flavor", default=None,
                      help="Override the flavor (else the cheapest fp64-healthy GPU available).")
 
+    sweep = sub.add_parser(
+        "sweep",
+        help="Fan out a parameter sweep across GPU instances with a hard cost cap.",
+    )
+    _add_target_args(sweep)
+    sweep.add_argument("--upload", action="append", default=[], metavar="DIR",
+                       help="Local dir to rsync to ~/<name> on each instance (repeatable).")
+    sweep.add_argument("--script", default=None, metavar="FILE",
+                       help="Per-job bash script; reads $FLUX_LABEL and $FLUX_JOB.")
+    sweep.add_argument("--jobs", default=None, metavar="FILE",
+                       help="Jobs file: each line 'LABEL = PARAMS' (PARAMS -> $FLUX_JOB).")
+    sweep.add_argument("--fetch", default=None, metavar="REMOTE",
+                       help="Home-relative artifact dir pulled per job into <into>/<label>/.")
+    sweep.add_argument("--into", default="cloud-sweep", metavar="DIR",
+                       help="Local base dir for fetched artifacts (default: cloud-sweep).")
+    sweep.add_argument("--flavor", default=None,
+                       help="Override the flavor (else the cheapest fp64-healthy GPU available).")
+    sweep.add_argument("--max-parallel", type=int, default=4,
+                       help="Max instances alive at once (default 4).")
+    sweep.add_argument("--max-minutes", type=int, default=30,
+                       help="Per-job remote wall-clock cap; kills a hung job (default 30).")
+    sweep.add_argument("--budget", type=float, default=None, metavar="EUR",
+                       help="Refuse to start if worst-case cost (jobs x price x cap) exceeds this.")
+
     args = parser.parse_args(argv)
 
     try:
@@ -78,6 +102,13 @@ def main(argv=None) -> int:
                 "Specify a mode: `--plan` (free dry run), `--smoke` (GPU check + teardown), "
                 "or `--upload/--script/--fetch` (provision, run your job, fetch artifacts, teardown)."
             )
+
+        if args.command == "sweep":
+            from .sweep import run_sweep
+            return run_sweep(cloud=args.cloud, region=args.region, flavor=args.flavor,
+                             uploads=args.upload, script=args.script, jobs_file=args.jobs,
+                             fetch=args.fetch, into=args.into, max_parallel=args.max_parallel,
+                             max_minutes=args.max_minutes, budget_eur=args.budget)
     except RuntimeError as exc:
         print(f"flux-compute {args.command}: {exc}", file=sys.stderr)
         return 1
