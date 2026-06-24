@@ -22,17 +22,20 @@ Two independent gates decide whether an OVH flavor may run a sim:
 
 | Flavor                    | GPU              | Credits cover? | fp64 healthy?       | Use for sims?      |
 |---------------------------|------------------|----------------|---------------------|--------------------|
-| `t1-le-45/90/180`         | Tesla V100 16GB  | yes            | yes (~1/2 fp32)     | yes (default)      |
-| `t2-le-45/90/180`         | Tesla V100S 32GB | yes            | yes (~1/2 fp32)     | yes (more VRAM)    |
+| `t1-le-45/90/180`         | Tesla V100 16GB  | yes            | yes (~1/2 fp32)     | yes (BHS5 only)    |
+| `t2-le-45/90/180`         | Tesla V100S 32GB | yes            | yes (~1/2 fp32)     | yes (default)      |
 | `rtx5000-28/56/84`        | Quadro RTX5000   | yes            | no (~1/32 fp32)     | no                 |
 | `h100/a100/l40s/l4/a10-*` | various          | no             | varies              | no                 |
 
 The Startup Program covers only V100, V100S and RTX5000 GPUs. Of those, only the
 Volta cards (V100/V100S) run double precision fast enough for the EOS-heavy
 sims; RTX5000 is Turing and runs fp64 at ~1/32 of fp32, so it is covered but
-refused for sims by default. **Default sim flavor: `t1-le-45`** (cheapest
-fp64-healthy covered GPU). CPU flavors (`c3-*`, `b3-*`) are always covered and
-fp64-healthy, and are the right choice for small runs.
+refused for sims by default. **Default sim flavor: `t2-le-45`** (V100S 32GB,
+available across EU regions). Plain V100 (`t1-le-*`, 16GB, slightly cheaper)
+exists only in BHS5 (Canada); `recommended_for_sim` picks the cheapest
+fp64-healthy GPU actually present in the target region. CPU flavors (`c3-*`,
+`b3-*`) are always covered and fp64-healthy, and are the right choice for small
+runs.
 
 `flux_compute.flavors.classify(name)` and `recommended_for_sim(names)` encode
 this policy; it is enforced, not advisory.
@@ -53,7 +56,10 @@ Then either:
   `--cloud <name>`, or
 - `source` an OVH `openrc.sh`, or export the application-credential `OS_*` vars.
 
-GPU flavors are region-specific; use a GPU region (`GRA9`, `GRA11`, `BHS5`).
+GPU flavors are region-specific. Verified availability: V100S (`t2-le`) in
+`GRA11`, `DE1`, `UK1`, `WAW1`, `BHS5`; plain V100 (`t1-le`) only in `BHS5`. For a
+German entity, `DE1` (Frankfurt) or `GRA11` are the natural choices. Note the
+legacy short code `DE` has no compute endpoint; use `DE1`.
 
 ## Verify the API works
 

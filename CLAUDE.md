@@ -37,14 +37,15 @@ credit-eligibility (the Startup Program covers only V100, V100S, RTX5000) and
 fp64 health (the sims force x64; RTX5000 is Turing, fp64 ~1/32 fp32). A flavor
 must pass both to run a sim. RTX5000 is credit-eligible but fp64-crippled, so it
 is refused by default; do not add a path that launches an x64 sim on it silently.
-The default sim flavor is `t1-le-45` (cheapest fp64-healthy covered GPU). When in
-doubt, validate a card with 1DSim3's `scripts/gpu_check.py` before committing to
-it.
+The default sim flavor is `t2-le-45` (V100S 32GB, available across EU regions);
+plain V100 (`t1-le`) is BHS5-only, so `recommended_for_sim` picks the cheapest
+fp64-healthy GPU actually present in the region. When in doubt, validate a card
+with 1DSim3's `scripts/gpu_check.py` before committing to it.
 
 ### Fail fast on missing credentials or no healthy GPU.
 No silent defaults. Missing credentials raise with the remedy; a region exposing
 no credit-eligible, fp64-healthy GPU raises rather than falling back to RTX5000 or
-a blocked card. Switch region (GRA9, GRA11, BHS5) instead.
+a blocked card. Switch region (GRA11, DE1, BHS5) instead.
 
 ### Cost guardrails are mandatory once `run` exists (Phase 1+).
 Every provisioned instance must have a definite teardown path; an idle GPU

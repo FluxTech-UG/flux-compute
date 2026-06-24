@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 
 def main(argv=None) -> int:
@@ -30,7 +31,11 @@ def main(argv=None) -> int:
 
     if args.command == "doctor":
         from .doctor import run_doctor
-        return run_doctor(cloud=args.cloud, region=args.region)
+        try:
+            return run_doctor(cloud=args.cloud, region=args.region)
+        except RuntimeError as exc:
+            print(f"flux-compute doctor: {exc}", file=sys.stderr)
+            return 1
 
     if args.command == "run":
         raise SystemExit(

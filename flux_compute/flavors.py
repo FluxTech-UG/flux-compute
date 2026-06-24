@@ -20,7 +20,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-DEFAULT_SIM_FLAVOR = "t1-le-45"
+# V100S (t2-le) is available across EU regions (GRA11, DE1, UK1, WAW1) and BHS5;
+# plain V100 (t1-le, slightly cheaper, 16GB) exists only in BHS5 (Canada). The
+# EU-wide V100S is the right default; recommended_for_sim() still picks the
+# cheapest fp64-healthy GPU actually present in the target region.
+DEFAULT_SIM_FLAVOR = "t2-le-45"
 
 # Public list prices (EUR/hr, ex VAT) for the credit-eligible flavors, from the
 # OVHcloud Startup Program product-eligibility list (March 2026). Used for cost
