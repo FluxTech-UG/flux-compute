@@ -38,6 +38,8 @@ def main(argv=None) -> int:
     _add_target_args(run)
     run.add_argument("--plan", action="store_true",
                      help="Resolve and print the launch spec without launching (dry run).")
+    run.add_argument("--smoke", action="store_true",
+                     help="Provision, confirm the GPU is visible (nvidia-smi), and tear down. Billable.")
     run.add_argument("--flavor", default=None,
                      help="Override the flavor (else the cheapest fp64-healthy GPU available).")
 
@@ -56,10 +58,12 @@ def main(argv=None) -> int:
             if args.plan:
                 from .launch import plan
                 return plan(cloud=args.cloud, region=args.region, flavor=args.flavor)
+            if args.smoke:
+                from .provision import smoke_test
+                return smoke_test(cloud=args.cloud, region=args.region, flavor=args.flavor)
             raise SystemExit(
-                "Actual provisioning is not wired yet (it is billable). Use "
-                "`flux-compute run --plan` to see the spec, or `flux-compute preflight` "
-                "to check readiness."
+                "Specify a mode. `--plan` (dry run, free) or `--smoke` (provision + "
+                "GPU check + teardown, billable). A full consumer run is not wired yet."
             )
     except RuntimeError as exc:
         print(f"flux-compute {args.command}: {exc}", file=sys.stderr)
