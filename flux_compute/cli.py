@@ -40,6 +40,14 @@ def main(argv=None) -> int:
                      help="Resolve and print the launch spec without launching (dry run).")
     run.add_argument("--smoke", action="store_true",
                      help="Provision, confirm the GPU is visible (nvidia-smi), and tear down. Billable.")
+    run.add_argument("--upload", action="append", default=[], metavar="DIR",
+                     help="Local dir to rsync to ~/<name> on the instance (repeatable).")
+    run.add_argument("--script", default=None, metavar="FILE",
+                     help="Local bash script uploaded and run on the instance (your setup + job).")
+    run.add_argument("--fetch", action="append", default=[], metavar="REMOTE:LOCAL",
+                     help="Copy REMOTE (home-relative dir) back to LOCAL after the job (repeatable).")
+    run.add_argument("--keep", action="store_true",
+                     help="Leave the instance running after the job for debugging (you must tear it down).")
     run.add_argument("--flavor", default=None,
                      help="Override the flavor (else the cheapest fp64-healthy GPU available).")
 
@@ -61,9 +69,14 @@ def main(argv=None) -> int:
             if args.smoke:
                 from .provision import smoke_test
                 return smoke_test(cloud=args.cloud, region=args.region, flavor=args.flavor)
+            if args.script or args.upload:
+                from .provision import run_job
+                return run_job(cloud=args.cloud, region=args.region, flavor=args.flavor,
+                               uploads=args.upload, script=args.script, fetch=args.fetch,
+                               keep=args.keep)
             raise SystemExit(
-                "Specify a mode. `--plan` (dry run, free) or `--smoke` (provision + "
-                "GPU check + teardown, billable). A full consumer run is not wired yet."
+                "Specify a mode: `--plan` (free dry run), `--smoke` (GPU check + teardown), "
+                "or `--upload/--script/--fetch` (provision, run your job, fetch artifacts, teardown)."
             )
     except RuntimeError as exc:
         print(f"flux-compute {args.command}: {exc}", file=sys.stderr)
