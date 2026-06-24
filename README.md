@@ -71,13 +71,21 @@ Authenticates, lists visible flavors and images, and reports which GPUs are
 credit-eligible and fp64-healthy plus the recommended default. This is the
 end-to-end "is the API working?" check.
 
-## Roadmap
+## Commands (all verified live on OVH)
 
-- **Phase 0 (here):** flavor policy + `doctor` API health check.
-- **Phase 1:** `flux-compute run`: provision a V100, bootstrap (CUDA jaxlib plus
-  the consumer repo and `co2-eos`), run one config, pull artifacts, tear down.
-- **Phase 2:** sweep / fan-out across instances, artifacts to Object Storage
-  (S3), hard cost cap and auto-teardown guardrails.
+- **`doctor` / `preflight`** — API health and launch-readiness.
+- **`run --upload --script --fetch`** — provision a V100S, upload repos, run a job
+  script, fetch artifacts, tear down (`--smoke` for a GPU check; `--plan` for a dry run).
+- **`sweep --jobs FILE --max-parallel K --budget EUR`** — fan out one instance per
+  job, with a pre-flight worst-case cost guard and a per-job wall-clock cap.
+- **`push DIR CONTAINER`** — durable artifact copies to OVH Object Storage (Swift).
+
+### Tested and rejected on OVH: baked images
+
+`bake` / `run --image` work, but booting from an OVH custom snapshot takes ~12 min
+(image staging) — slower than the stock image + ~5 min install it replaces. The
+code is kept (correct and cloud-general) but is **not recommended on OVH**; prefer
+the stock image + per-job install.
 
 ## Tests
 

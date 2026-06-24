@@ -48,8 +48,13 @@ class LaunchSpec:
     est_cost_eur_hr: float | None
 
 
-def resolve_spec(conn, region: str, flavor: str | None = None, keypair: str | None = None) -> LaunchSpec:
-    """Resolve the concrete launch choices for `region`, or raise (fail-fast)."""
+def resolve_spec(conn, region: str, flavor: str | None = None, keypair: str | None = None,
+                 image: str | None = None) -> LaunchSpec:
+    """Resolve the concrete launch choices for `region`, or raise (fail-fast).
+
+    `image` overrides image selection (e.g. a baked image); otherwise the newest
+    NVIDIA-driver Ubuntu image is chosen.
+    """
     names = [f.name for f in conn.compute.flavors()]
     chosen = flavor or recommended_for_sim(names)
 
@@ -67,13 +72,18 @@ def resolve_spec(conn, region: str, flavor: str | None = None, keypair: str | No
     if PUBLIC_NETWORK not in nets:
         raise RuntimeError(f"Public network {PUBLIC_NETWORK!r} not found in {region}; available: {nets}.")
 
-    image = select_gpu_image([i.name for i in conn.image.images()])
+    if image:
+        if conn.compute.find_image(image) is None:
+            raise RuntimeError(f"Image {image!r} not found in region {region}.")
+        img_name = image
+    else:
+        img_name = select_gpu_image([i.name for i in conn.image.images()])
 
     return LaunchSpec(
         region=region,
         flavor=chosen,
         gpu_model=verdict.gpu_model,
-        image=image,
+        image=img_name,
         network=PUBLIC_NETWORK,
         keypair=keypair or "flux-compute-<generated-per-run>",
         est_cost_eur_hr=verdict.price_eur_hr,

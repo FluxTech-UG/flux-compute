@@ -57,7 +57,7 @@ def worst_case_eur(n_jobs, price_eur_hr, max_minutes):
 
 def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
               jobs_file=None, fetch=None, into="cloud-sweep",
-              max_parallel=4, max_minutes=30, budget_eur=None) -> int:
+              max_parallel=4, max_minutes=30, budget_eur=None, image=None) -> int:
     if not script:
         raise RuntimeError("sweep needs --script (the per-job job script)")
     if not jobs_file:
@@ -69,7 +69,7 @@ def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
         jobs = parse_jobs(fh.read())
 
     conn0 = connect(cloud=cloud, region=region)
-    spec = resolve_spec(conn0, _region(conn0, region), flavor=flavor)
+    spec = resolve_spec(conn0, _region(conn0, region), flavor=flavor, image=image)
     _print_plan(spec)
 
     wc = worst_case_eur(len(jobs), spec.est_cost_eur_hr, max_minutes)

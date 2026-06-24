@@ -50,6 +50,8 @@ def main(argv=None) -> int:
                      help="Leave the instance running after the job for debugging (you must tear it down).")
     run.add_argument("--flavor", default=None,
                      help="Override the flavor (else the cheapest fp64-healthy GPU available).")
+    run.add_argument("--image", default=None,
+                     help="Boot from this image name instead of the auto-selected NVIDIA image (e.g. a baked image).")
 
     sweep = sub.add_parser(
         "sweep",
@@ -74,6 +76,31 @@ def main(argv=None) -> int:
                        help="Per-job remote wall-clock cap; kills a hung job (default 30).")
     sweep.add_argument("--budget", type=float, default=None, metavar="EUR",
                        help="Refuse to start if worst-case cost (jobs x price x cap) exceeds this.")
+    sweep.add_argument("--image", default=None,
+                       help="Boot from this image name instead of the auto-selected NVIDIA image.")
+
+    bake = sub.add_parser(
+        "bake",
+        help="Build a reusable GPU image (preinstall the heavy stack) to skip per-job installs.",
+    )
+    _add_target_args(bake)
+    bake.add_argument("--name", required=True, help="Name of the image to create.")
+    bake.add_argument("--script", required=True,
+                      help="Setup script baked into the image (installs the common stack, e.g. into ~/venv).")
+    bake.add_argument("--upload", action="append", default=[], metavar="DIR",
+                      help="Local dir to rsync up before running setup (repeatable).")
+    bake.add_argument("--flavor", default=None, help="Override the flavor.")
+    bake.add_argument("--replace", action="store_true",
+                      help="Delete existing same-name images after the new one is built.")
+
+    push = sub.add_parser(
+        "push",
+        help="Upload a local artifact directory to an OVH Object Storage container.",
+    )
+    _add_target_args(push)
+    push.add_argument("dir", help="Local directory to upload.")
+    push.add_argument("container", help="Object Storage container name (created if missing).")
+    push.add_argument("--prefix", default="", help="Optional object-name prefix within the container.")
 
     args = parser.parse_args(argv)
 
@@ -97,7 +124,7 @@ def main(argv=None) -> int:
                 from .provision import run_job
                 return run_job(cloud=args.cloud, region=args.region, flavor=args.flavor,
                                uploads=args.upload, script=args.script, fetch=args.fetch,
-                               keep=args.keep)
+                               keep=args.keep, image=args.image)
             raise SystemExit(
                 "Specify a mode: `--plan` (free dry run), `--smoke` (GPU check + teardown), "
                 "or `--upload/--script/--fetch` (provision, run your job, fetch artifacts, teardown)."
@@ -108,7 +135,18 @@ def main(argv=None) -> int:
             return run_sweep(cloud=args.cloud, region=args.region, flavor=args.flavor,
                              uploads=args.upload, script=args.script, jobs_file=args.jobs,
                              fetch=args.fetch, into=args.into, max_parallel=args.max_parallel,
-                             max_minutes=args.max_minutes, budget_eur=args.budget)
+                             max_minutes=args.max_minutes, budget_eur=args.budget, image=args.image)
+
+        if args.command == "bake":
+            from .image import bake
+            return bake(cloud=args.cloud, region=args.region, name=args.name,
+                        script=args.script, flavor=args.flavor, uploads=args.upload,
+                        replace=args.replace)
+
+        if args.command == "push":
+            from .objstore import run_push
+            return run_push(cloud=args.cloud, region=args.region,
+                            local_dir=args.dir, container=args.container, prefix=args.prefix)
     except RuntimeError as exc:
         print(f"flux-compute {args.command}: {exc}", file=sys.stderr)
         return 1

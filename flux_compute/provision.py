@@ -148,14 +148,14 @@ def _gpu_instance(conn, spec, name, keep=False):
             name=name, image_id=image.id, flavor_id=flavor_obj.id,
             networks=[{"uuid": network.id}], key_name=name,
             security_groups=[{"name": name}])
-        server = conn.compute.wait_for_server(server, status="ACTIVE", wait=600)
+        server = conn.compute.wait_for_server(server, status="ACTIVE", wait=900)
         ip = _server_ipv4(server)
         print(f"ACTIVE: {server.id} @ {ip}")
 
         if not _wait_ssh(ip):
             raise RuntimeError(f"SSH to {ip} never opened within timeout")
         print("SSH up.")
-        yield ip, keyfile
+        yield server, ip, keyfile
     finally:
         if keep and server is not None:
             print("----- --keep set: instance LEFT RUNNING (tear down manually) -----")
@@ -163,18 +163,32 @@ def _gpu_instance(conn, spec, name, keep=False):
             print(f"  server={server.id}  keypair={name}  sg={name}")
             return
         print("----- teardown -----")
-        steps = (
-            ("server", lambda: server and conn.compute.delete_server(server.id, force=True)),
-            ("server-wait", lambda: server and conn.compute.wait_for_delete(server, wait=180)),
-            ("keypair", lambda: keypair and conn.compute.delete_keypair(name, ignore_missing=True)),
-            ("security-group", lambda: sg and conn.network.delete_security_group(sg.id, ignore_missing=True)),
-        )
-        for label, fn in steps:
+        if server is not None:
             try:
-                fn()
-                print(f"  deleted {label}")
+                conn.compute.delete_server(server.id, force=True)
+                conn.compute.wait_for_delete(server, wait=300)
+                print("  deleted server")
             except Exception as exc:
-                print(f"  {label}: {type(exc).__name__}: {str(exc)[:120]}")
+                print(f"  server: {type(exc).__name__}: {str(exc)[:120]}")
+        if keypair is not None:
+            try:
+                conn.compute.delete_keypair(name, ignore_missing=True)
+                print("  deleted keypair")
+            except Exception as exc:
+                print(f"  keypair: {type(exc).__name__}: {str(exc)[:120]}")
+        if sg is not None:
+            # The server's port can linger for a few seconds after delete, which
+            # 409s the security-group delete; retry until the port is released.
+            for attempt in range(6):
+                try:
+                    conn.network.delete_security_group(sg.id, ignore_missing=True)
+                    print("  deleted security-group")
+                    break
+                except Exception as exc:
+                    if attempt == 5:
+                        print(f"  security-group: {type(exc).__name__}: {str(exc)[:120]} (manual cleanup may be needed)")
+                    else:
+                        time.sleep(10)
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -182,7 +196,7 @@ def smoke_test(cloud=None, region=None, flavor=None) -> int:
     conn = connect(cloud=cloud, region=region)
     spec = resolve_spec(conn, _region(conn, region), flavor=flavor)
     _print_plan(spec)
-    with _gpu_instance(conn, spec, _name("smoke")) as (ip, keyfile):
+    with _gpu_instance(conn, spec, _name("smoke")) as (_server, ip, keyfile):
         print("running GPU check ...")
         out = _ssh(ip, keyfile, _DEFAULT_SMOKE, timeout=120)
         print("----- remote stdout -----")
@@ -197,11 +211,11 @@ def smoke_test(cloud=None, region=None, flavor=None) -> int:
 
 
 def run_job(cloud=None, region=None, flavor=None, uploads=(), script=None,
-            fetch=(), keep=False, exec_timeout=2400) -> int:
+            fetch=(), keep=False, exec_timeout=2400, image=None) -> int:
     conn = connect(cloud=cloud, region=region)
-    spec = resolve_spec(conn, _region(conn, region), flavor=flavor)
+    spec = resolve_spec(conn, _region(conn, region), flavor=flavor, image=image)
     _print_plan(spec)
-    with _gpu_instance(conn, spec, _name("run"), keep=keep) as (ip, keyfile):
+    with _gpu_instance(conn, spec, _name("run"), keep=keep) as (_server, ip, keyfile):
         for local in uploads:
             base = os.path.basename(os.path.abspath(local.rstrip("/")))
             _rsync_up(local, ip, keyfile, base)
