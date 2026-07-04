@@ -92,10 +92,10 @@ _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling.
 - worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L52 — Total worst-case cost: every job runs to its wall cap. Concurrency does
 - budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L60 — Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
 - clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L84 — Clamp requested parallelism to what compute-quota headroom allows.
-- _flavor_vcpus(conn, flavor_name)  ·L117 — Read the vCPU count for a flavor from the compute API, or raise.
-- _failure_status(exc)  ·L128 — Label a per-job failure for the job record. A create-time quota/capacity
-- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L140 — Run run_one(job) across up to max_workers threads (one instance per job);
-- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, plan_only=False) …  ·L156
+- _flavor_vcpus(conn, flavor_name)  ·L122 — Read the vCPU count for a flavor from the compute API, or raise.
+- _failure_status(exc)  ·L133 — Label a per-job failure for the job record. A create-time quota/capacity
+- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L145 — Run run_one(job) across up to max_workers threads (one instance per job);
+- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, plan_only=False) …  ·L161
 
 ### tests/test_flavors.py
 _Pure-logic tests for the flavor policy. No network, no credentials._

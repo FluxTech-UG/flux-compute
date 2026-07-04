@@ -94,20 +94,25 @@ def clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max,
     if vcpus_per_instance <= 0:
         raise RuntimeError(f"flavor vCPU count {vcpus_per_instance!r} is not positive")
     # OpenStack reports an unlimited quota as -1; treat it as no bound rather
-    # than letting the subtraction go negative and falsely refuse.
+    # than letting the subtraction go negative and falsely refuse. The
+    # arithmetic stays integral throughout: float("inf") // n is nan, and nan
+    # poisons min() into passing max_parallel through unclamped.
     if (cores_max or 0) < 0:
-        cores_free = float("inf")
+        fit_cores, cores_desc = max(max_parallel, 1), "unlimited cores"
     else:
         cores_free = (cores_max or 0) - (cores_used or 0)
+        fit_cores = cores_free // vcpus_per_instance
+        cores_desc = f"{cores_free} cores"
     if (instances_max or 0) < 0:
-        inst_free = float("inf")
+        fit_inst, inst_desc = max(max_parallel, 1), "unlimited instances"
     else:
-        inst_free = (instances_max or 0) - (instances_used or 0)
-    fit = min(cores_free // vcpus_per_instance, inst_free)
+        fit_inst = (instances_max or 0) - (instances_used or 0)
+        inst_desc = f"{fit_inst} instances"
+    fit = min(fit_cores, fit_inst)
     if fit < 1:
         raise RuntimeError(
-            f"compute quota cannot fit even one instance: headroom is {cores_free} "
-            f"cores / {inst_free} instances, but each instance needs "
+            f"compute quota cannot fit even one instance: headroom is "
+            f"{cores_desc} / {inst_desc}, but each instance needs "
             f"{vcpus_per_instance} vCPU. Free running instances, request a quota "
             f"increase, or switch region."
         )
