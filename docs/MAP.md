@@ -38,7 +38,7 @@ _OVH Public Cloud flavor policy for the FluxTech Startup Program._
 
 ### flux_compute/image.py
 _Bake a reusable GPU image: provision, run a setup script, snapshot, tear down._
-- bake(cloud=None, region=None, name=None, script=None, flavor=None, uploads=(), setup_timeout=2400, replace=False) -> int  ·L25
+- bake(cloud=None, region=None, name=None, script=None, flavor=None, uploads=(), setup_timeout=2400, replace=False) -> int  ·L28
 
 ### flux_compute/launch.py
 _Resolve a launch spec for a GPU run, and (for now) plan it without launching._
@@ -65,41 +65,65 @@ _`flux-compute preflight`: read-only check that a region can actually launch._
 
 ### flux_compute/provision.py
 _Provision a GPU instance, run work on it, and always tear it down._
-- const SSH_USER  ·L37
-- const _SSH_OPTS  ·L38
-- const _GPU_SMOKE  ·L44
-- const _CPU_SMOKE  ·L50
-- const _RSYNC_EXCLUDES  ·L54
-- class TeardownStrandError(RuntimeError)  ·L60 — Teardown could not verifiably delete a created server; it may still be
-- _region(conn, region)  ·L66
-- _cloud_name(conn)  ·L72
-- _delete_server_verified(conn, server, retries=3, wait=300, retry_delay=10)  ·L76 — Delete `server` and verify it is actually gone, retrying on failure.
-- _stranded_banner(cloud, name, server_id, reason)  ·L102 — Print an unmissable multi-line stranded-instance banner to stderr with
-- _name(kind)  ·L125
-- _print_plan(spec)  ·L129
-- _smoke_command(gpu_model)  ·L134 — Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
-- _public_ip_cidr()  ·L142
-- _wait_ssh(host, port=22, timeout=180)  ·L151
-- _server_ipv4(server)  ·L162
-- _ssh_cmd(keyfile)  ·L170
-- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L174
-- _scp_up(local, ip, keyfile, remote)  ·L181
-- _rsync_up(local, ip, keyfile, dest)  ·L185
-- _rsync_down(ip, keyfile, remote, local)  ·L195
-- @contextmanager _gpu_instance(conn, spec, name, keep=False)  ·L203
-- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L279
-- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L298
+- const FLUX_CREATED_BY_KEY  ·L42
+- const FLUX_CREATED_BY  ·L43
+- const FLUX_EXPIRES_KEY  ·L44
+- const FLUX_KEEP_KEY  ·L45
+- const FLUX_NAME_PREFIX  ·L46
+- const TTL_MARGIN_MIN  ·L49
+- ttl_minutes_for(cap_minutes)  ·L52 — TTL for a run with the given wall cap: cap + max(30 min, 25% of the cap).
+- ttl_metadata(ttl_minutes, keep=False, now=None)  ·L62 — The metadata stamped on every created server: provenance, expiry, and
+- const SSH_USER  ·L75
+- const _SSH_OPTS  ·L76
+- const _GPU_SMOKE  ·L82
+- const _CPU_SMOKE  ·L88
+- const _RSYNC_EXCLUDES  ·L92
+- class TeardownStrandError(RuntimeError)  ·L98 — Teardown could not verifiably delete a created server; it may still be
+- _region(conn, region)  ·L104
+- _cloud_name(conn)  ·L110
+- _delete_server_verified(conn, server, retries=3, wait=300, retry_delay=10)  ·L114 — Delete `server` and verify it is actually gone, retrying on failure.
+- _delete_sg_with_retry(conn, sg_id, attempts=6, delay=10)  ·L140 — Delete a security group, retrying 409s: the server's port can linger for
+- _stranded_banner(cloud, name, server_id, reason)  ·L157 — Print an unmissable multi-line stranded-instance banner to stderr with
+- _name(kind)  ·L180
+- _print_plan(spec)  ·L184
+- _smoke_command(gpu_model)  ·L189 — Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
+- _public_ip_cidr()  ·L197
+- _wait_ssh(host, port=22, timeout=180)  ·L206
+- _server_ipv4(server)  ·L217
+- _ssh_cmd(keyfile)  ·L225
+- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L229
+- _scp_up(local, ip, keyfile, remote)  ·L236
+- _rsync_up(local, ip, keyfile, dest)  ·L240
+- _rsync_down(ip, keyfile, remote, local)  ·L250
+- @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L258
+- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L326
+- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L346
+
+### flux_compute/reap.py
+_`flux-compute reap`: find flux-compute instances and delete the expired ones._
+- const AUTO_BUCKET  ·L43
+- parse_utc(s)  ·L46 — Parse an ISO-8601 UTC timestamp (Z or offset) to an aware datetime, or
+- @dataclass class Candidate  ·L61 — One flux-compute instance and the decision basis for its bucket.
+  - @property auto_reapable(self) -> bool  ·L74
+  - @property is_stray(self) -> bool  ·L78 — Strays drive the nonzero exit and the per-command warnings: a
+- assess(server_id, name, metadata, created_at, flavor_name, now) -> Candidate | None  ·L85 — Classify one server, or return None when it is not positively
+- _server_flavor_name(server)  ·L124
+- find_candidates(servers, now)  ·L133 — Assess every server; only positively identified flux-compute instances
+- describe(c: Candidate) -> str  ·L146
+- _confirm(prompt) -> bool  ·L154
+- _reap_one(conn, c: Candidate) -> bool  ·L162 — Delete one candidate's server (verified) plus its same-named keypair and
+- run_reap(cloud=None, region=None, yes=False, take_all=False) -> int  ·L183
 
 ### flux_compute/sweep.py
 _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling._
-- parse_jobs(text)  ·L26 — Parse a jobs file: each non-blank, non-# line is 'LABEL = PARAMS'.
-- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L52 — Total worst-case cost: every job runs to its wall cap. Concurrency does
-- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L60 — Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
-- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L84 — Clamp requested parallelism to what compute-quota headroom allows.
-- _flavor_vcpus(conn, flavor_name)  ·L122 — Read the vCPU count for a flavor from the compute API, or raise.
-- _failure_status(exc)  ·L133 — Label a per-job failure for the job record. A teardown strand reads as
-- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L148 — Run run_one(job) across up to max_workers threads (one instance per job);
-- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, plan_only=False) …  ·L164
+- parse_jobs(text)  ·L27 — Parse a jobs file: each non-blank, non-# line is 'LABEL = PARAMS'.
+- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L53 — Total worst-case cost: every job runs to its wall cap. Concurrency does
+- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L61 — Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
+- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L85 — Clamp requested parallelism to what compute-quota headroom allows.
+- _flavor_vcpus(conn, flavor_name)  ·L123 — Read the vCPU count for a flavor from the compute API, or raise.
+- _failure_status(exc)  ·L134 — Label a per-job failure for the job record. A teardown strand reads as
+- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L149 — Run run_one(job) across up to max_workers threads (one instance per job);
+- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, plan_only=False) …  ·L165
 
 ### tests/test_flavors.py
 _Pure-logic tests for the flavor policy. No network, no credentials._
@@ -152,6 +176,25 @@ _Pure-logic tests for provision helpers. No network, no credentials._
 - test_persistent_delete_failure_is_a_strand()  ·L75
 - test_strand_error_is_a_runtimeerror_so_cli_exits_nonzero()  ·L81
 - test_stranded_banner_is_unmissable_and_actionable(capsys)  ·L86
+
+### tests/test_reap.py
+_Pure-logic tests for reap selection: expiry math, positive identification,_
+- const NOW  ·L11
+- _iso(dt)  ·L14
+- _stamp(expires_delta_min, keep=False)  ·L18
+- test_ttl_minutes_margin_is_at_least_30()  ·L28
+- test_ttl_minutes_margin_widens_to_quarter_of_long_caps()  ·L33
+- test_ttl_metadata_round_trips_and_stamps_provenance()  ·L37
+- test_ttl_metadata_keep_flag()  ·L44
+- test_foreign_server_is_never_a_candidate()  ·L50
+- test_stamped_server_is_identified_even_without_the_name_prefix()  ·L56
+- test_name_prefix_without_stamp_is_report_only_legacy()  ·L62
+- test_stamped_past_expiry_is_auto_reapable()  ·L73
+- test_stamped_within_ttl_is_not_taken()  ·L80
+- test_stamped_with_malformed_expiry_is_never_a_false_kill()  ·L86
+- test_keep_flagged_is_never_auto_reaped_no_matter_how_old()  ·L95
+- test_cost_estimate_age_times_catalog_price()  ·L106
+- test_find_candidates_partitions_a_mixed_fleet()  ·L114
 
 ### tests/test_sweep.py
 _Pure-logic tests for the sweep helpers. No network, no credentials._

@@ -30,9 +30,47 @@ import time
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 
 from .auth import connect
 from .launch import resolve_spec
+
+# Provenance + TTL metadata stamped on every created server. `flux-compute
+# reap` auto-takes only instances that carry the flux_created_by stamp AND are
+# past their stamped expiry; a flux_keep stamp (from --keep) is never
+# auto-taken; name-prefix matches without the stamp are report-only.
+FLUX_CREATED_BY_KEY = "flux_created_by"
+FLUX_CREATED_BY = "flux-compute"
+FLUX_EXPIRES_KEY = "flux_expires_at"
+FLUX_KEEP_KEY = "flux_keep"
+FLUX_NAME_PREFIX = "flux-compute-"
+# Minimum TTL margin (minutes) beyond a run's wall cap, for boot + upload +
+# fetch + teardown overhead; ttl_minutes_for widens it to 25% of long caps.
+TTL_MARGIN_MIN = 30
+
+
+def ttl_minutes_for(cap_minutes):
+    """TTL for a run with the given wall cap: cap + max(30 min, 25% of the cap).
+
+    Deliberately generous, never tight: a reap that fires early once destroys
+    trust in the whole mechanism, while firing late costs cents. The margin
+    covers boot, rsync, install and fetch overhead beyond the remote-exec cap.
+    """
+    return int(cap_minutes) + max(TTL_MARGIN_MIN, -(-int(cap_minutes) // 4))
+
+
+def ttl_metadata(ttl_minutes, keep=False, now=None):
+    """The metadata stamped on every created server: provenance, expiry, and
+    (for --keep runs) the keep flag that exempts it from auto-reap."""
+    now = now or datetime.now(timezone.utc)
+    expires = now + timedelta(minutes=ttl_minutes)
+    md = {
+        FLUX_CREATED_BY_KEY: FLUX_CREATED_BY,
+        FLUX_EXPIRES_KEY: expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if keep:
+        md[FLUX_KEEP_KEY] = "true"
+    return md
 
 SSH_USER = "ubuntu"
 _SSH_OPTS = [
@@ -97,6 +135,23 @@ def _delete_server_verified(conn, server, retries=3, wait=300, retry_delay=10):
         f"stranded: server {server.id} could not be verifiably deleted after "
         f"{retries} attempts (last: {type(last).__name__}: {str(last)[:120]})"
     ) from last
+
+
+def _delete_sg_with_retry(conn, sg_id, attempts=6, delay=10):
+    """Delete a security group, retrying 409s: the server's port can linger for
+    a few seconds after the server delete. Returns True when deleted."""
+    for attempt in range(attempts):
+        try:
+            conn.network.delete_security_group(sg_id, ignore_missing=True)
+            print("  deleted security-group")
+            return True
+        except Exception as exc:
+            if attempt == attempts - 1:
+                print(f"  security-group: {type(exc).__name__}: {str(exc)[:120]} "
+                      "(manual cleanup may be needed)")
+            else:
+                time.sleep(delay)
+    return False
 
 
 def _stranded_banner(cloud, name, server_id, reason):
@@ -200,7 +255,7 @@ def _rsync_down(ip, keyfile, remote, local):
 
 
 @contextmanager
-def _gpu_instance(conn, spec, name, keep=False):
+def _gpu_instance(conn, spec, name, ttl_minutes, keep=False):
     image = conn.compute.find_image(spec.image)
     flavor_obj = conn.compute.find_flavor(spec.flavor)
     network = conn.network.find_network(spec.network)
@@ -225,7 +280,8 @@ def _gpu_instance(conn, spec, name, keep=False):
         server = conn.compute.create_server(
             name=name, image_id=image.id, flavor_id=flavor_obj.id,
             networks=[{"uuid": network.id}], key_name=name,
-            security_groups=[{"name": name}])
+            security_groups=[{"name": name}],
+            metadata=ttl_metadata(ttl_minutes, keep=keep))
         server = conn.compute.wait_for_server(server, status="ACTIVE", wait=900)
         ip = _server_ipv4(server)
         print(f"ACTIVE: {server.id} @ {ip}")
@@ -239,6 +295,8 @@ def _gpu_instance(conn, spec, name, keep=False):
             print("----- --keep set: instance LEFT RUNNING (tear down manually) -----")
             print(f"  ssh {' '.join(_SSH_OPTS)} -i {keyfile} {SSH_USER}@{_server_ipv4(server)}")
             print(f"  server={server.id}  keypair={name}  sg={name}")
+            print("  it is stamped flux_keep=true: `flux-compute reap` lists it with its")
+            print("  accrued cost but never auto-deletes it; tear it down when done.")
             return
         print("----- teardown -----")
         strand = None
@@ -256,18 +314,7 @@ def _gpu_instance(conn, spec, name, keep=False):
             except Exception as exc:
                 print(f"  keypair: {type(exc).__name__}: {str(exc)[:120]}")
         if sg is not None:
-            # The server's port can linger for a few seconds after delete, which
-            # 409s the security-group delete; retry until the port is released.
-            for attempt in range(6):
-                try:
-                    conn.network.delete_security_group(sg.id, ignore_missing=True)
-                    print("  deleted security-group")
-                    break
-                except Exception as exc:
-                    if attempt == 5:
-                        print(f"  security-group: {type(exc).__name__}: {str(exc)[:120]} (manual cleanup may be needed)")
-                    else:
-                        time.sleep(10)
+            _delete_sg_with_retry(conn, sg.id)
         shutil.rmtree(tmp, ignore_errors=True)
         if strand is not None:
             # Propagate after the rest of the cleanup ran: the banner above has
@@ -281,7 +328,8 @@ def smoke_test(cloud=None, region=None, flavor=None) -> int:
     spec = resolve_spec(conn, _region(conn, region), flavor=flavor)
     _print_plan(spec)
     label, check = _smoke_command(spec.gpu_model)
-    with _gpu_instance(conn, spec, _name("smoke")) as (_server, ip, keyfile):
+    with _gpu_instance(conn, spec, _name("smoke"),
+                       ttl_minutes=ttl_minutes_for(2)) as (_server, ip, keyfile):
         print(f"running {label} check ...")
         out = _ssh(ip, keyfile, check, timeout=120)
         print("----- remote stdout -----")
@@ -300,7 +348,8 @@ def run_job(cloud=None, region=None, flavor=None, uploads=(), script=None,
     conn = connect(cloud=cloud, region=region)
     spec = resolve_spec(conn, _region(conn, region), flavor=flavor, image=image)
     _print_plan(spec)
-    with _gpu_instance(conn, spec, _name("run"), keep=keep) as (_server, ip, keyfile):
+    ttl = ttl_minutes_for(-(-exec_timeout // 60))
+    with _gpu_instance(conn, spec, _name("run"), ttl_minutes=ttl, keep=keep) as (_server, ip, keyfile):
         for local in uploads:
             base = os.path.basename(os.path.abspath(local.rstrip("/")))
             _rsync_up(local, ip, keyfile, base)

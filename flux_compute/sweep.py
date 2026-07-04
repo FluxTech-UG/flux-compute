@@ -20,6 +20,7 @@ from .auth import connect
 from .launch import resolve_spec
 from .provision import (
     _gpu_instance, _print_plan, _region, _rsync_down, _rsync_up, _scp_up, _ssh,
+    ttl_minutes_for,
 )
 
 
@@ -212,7 +213,8 @@ def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
         label, params = job
         conn = connect(cloud=cloud, region=region)
         try:
-            with _gpu_instance(conn, spec, f"flux-compute-sweep-{uuid.uuid4().hex[:8]}") as (_server, ip, keyfile):
+            with _gpu_instance(conn, spec, f"flux-compute-sweep-{uuid.uuid4().hex[:8]}",
+                               ttl_minutes=ttl_minutes_for(max_minutes)) as (_server, ip, keyfile):
                 for local in uploads:
                     base = os.path.basename(os.path.abspath(local.rstrip("/")))
                     _rsync_up(local, ip, keyfile, base)

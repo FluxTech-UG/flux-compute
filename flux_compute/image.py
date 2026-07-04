@@ -19,7 +19,10 @@ import os
 
 from .auth import connect
 from .launch import resolve_spec
-from .provision import _gpu_instance, _name, _print_plan, _region, _rsync_up, _scp_up, _ssh
+from .provision import (
+    _gpu_instance, _name, _print_plan, _region, _rsync_up, _scp_up, _ssh,
+    ttl_minutes_for,
+)
 
 
 def bake(cloud=None, region=None, name=None, script=None, flavor=None,
@@ -40,7 +43,9 @@ def bake(cloud=None, region=None, name=None, script=None, flavor=None,
             f"image {name!r} already exists ({len(existing)} found). "
             "Use --replace to rebuild, or pick another --name.")
 
-    with _gpu_instance(conn, spec, _name("bake")) as (server, ip, keyfile):
+    # TTL cap: the setup script's wall cap plus the snapshot wait (20 min).
+    bake_ttl = ttl_minutes_for(-(-setup_timeout // 60) + 20)
+    with _gpu_instance(conn, spec, _name("bake"), ttl_minutes=bake_ttl) as (server, ip, keyfile):
         for local in uploads:
             base = os.path.basename(os.path.abspath(local.rstrip("/")))
             _rsync_up(local, ip, keyfile, base)

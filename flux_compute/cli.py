@@ -98,6 +98,18 @@ def main(argv=None) -> int:
     bake.add_argument("--replace", action="store_true",
                       help="Delete existing same-name images after the new one is built.")
 
+    reap = sub.add_parser(
+        "reap",
+        help="List flux-compute instances (age/cost/bucket) and delete the ones past "
+             "their stamped TTL, with their keypair and security group.",
+    )
+    _add_target_args(reap)
+    reap.add_argument("--yes", action="store_true",
+                      help="Skip confirmation for expired-stamped instances (non-interactive reap).")
+    reap.add_argument("--all", action="store_true", dest="take_all",
+                      help="Also take keep-flagged / within-TTL / unstamped-legacy instances; "
+                           "these always require the interactive confirmation.")
+
     push = sub.add_parser(
         "push",
         help="Upload a local artifact directory to an OVH Object Storage container.",
@@ -148,6 +160,11 @@ def main(argv=None) -> int:
             return bake(cloud=args.cloud, region=args.region, name=args.name,
                         script=args.script, flavor=args.flavor, uploads=args.upload,
                         replace=args.replace)
+
+        if args.command == "reap":
+            from .reap import run_reap
+            return run_reap(cloud=args.cloud, region=args.region,
+                            yes=args.yes, take_all=args.take_all)
 
         if args.command == "push":
             from .objstore import run_push
