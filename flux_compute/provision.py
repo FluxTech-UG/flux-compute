@@ -292,35 +292,41 @@ def _gpu_instance(conn, spec, name, ttl_minutes, keep=False):
         yield server, ip, keyfile
     finally:
         if keep and server is not None:
+            # No `return` here: a return inside finally swallows any with-body
+            # exception, letting a failed --keep run exit 0 with the instance
+            # left running. Print the banner and fall through so an in-flight
+            # exception propagates. The tmp keydir is deliberately kept: the
+            # ssh line below needs it.
             print("----- --keep set: instance LEFT RUNNING (tear down manually) -----")
             print(f"  ssh {' '.join(_SSH_OPTS)} -i {keyfile} {SSH_USER}@{_server_ipv4(server)}")
             print(f"  server={server.id}  keypair={name}  sg={name}")
             print("  it is stamped flux_keep=true: `flux-compute reap` lists it with its")
             print("  accrued cost but never auto-deletes it; tear it down when done.")
-            return
-        print("----- teardown -----")
-        strand = None
-        if server is not None:
-            try:
-                _delete_server_verified(conn, server)
-                print("  deleted server (verified gone)")
-            except TeardownStrandError as exc:
-                strand = exc
-                _stranded_banner(_cloud_name(conn), name, server.id, str(exc))
-        if keypair is not None:
-            try:
-                conn.compute.delete_keypair(name, ignore_missing=True)
-                print("  deleted keypair")
-            except Exception as exc:
-                print(f"  keypair: {type(exc).__name__}: {str(exc)[:120]}")
-        if sg is not None:
-            _delete_sg_with_retry(conn, sg.id)
-        shutil.rmtree(tmp, ignore_errors=True)
-        if strand is not None:
-            # Propagate after the rest of the cleanup ran: the banner above has
-            # the commands; this raise makes every CLI path exit nonzero. If the
-            # with-body also raised, that exception rides along as __context__.
-            raise strand
+        else:
+            print("----- teardown -----")
+            strand = None
+            if server is not None:
+                try:
+                    _delete_server_verified(conn, server)
+                    print("  deleted server (verified gone)")
+                except TeardownStrandError as exc:
+                    strand = exc
+                    _stranded_banner(_cloud_name(conn), name, server.id, str(exc))
+            if keypair is not None:
+                try:
+                    conn.compute.delete_keypair(name, ignore_missing=True)
+                    print("  deleted keypair")
+                except Exception as exc:
+                    print(f"  keypair: {type(exc).__name__}: {str(exc)[:120]}")
+            if sg is not None:
+                _delete_sg_with_retry(conn, sg.id)
+            shutil.rmtree(tmp, ignore_errors=True)
+            if strand is not None:
+                # Propagate after the rest of the cleanup ran: the banner above
+                # has the commands; this raise makes every CLI path exit
+                # nonzero. If the with-body also raised, that exception rides
+                # along as __context__.
+                raise strand
 
 
 def smoke_test(cloud=None, region=None, flavor=None) -> int:

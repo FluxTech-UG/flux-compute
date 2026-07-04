@@ -5,8 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from flux_compute import reap as reap_mod
 from flux_compute.provision import ttl_metadata, ttl_minutes_for
-from flux_compute.reap import assess, find_candidates, parse_utc, warn_strays
+from flux_compute.reap import assess, find_candidates, parse_utc, run_reap, warn_strays
 
 NOW = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -168,3 +169,110 @@ def test_warn_strays_never_breaks_the_calling_command(capsys):
     conn = SimpleNamespace(compute=SimpleNamespace(servers=boom))
     assert warn_strays(conn, now=NOW) == []          # advisory: no raise
     assert "stray-instance check skipped" in capsys.readouterr().err
+
+
+# --- run_reap orchestration: --yes / --all scoping ---------------------------
+#
+# These lock the safety contract of the flags themselves: --yes must never
+# extend beyond the expired-stamped bucket, --all always needs the interactive
+# confirmation, and a foreign server is never deleted under any flag combination.
+
+class _FakeReapConn:
+    """Fake connection driving run_reap end to end; records every delete."""
+
+    def __init__(self, servers):
+        self._by_id = {s.id: s for s in servers}
+        self.deleted = []
+        self.compute = SimpleNamespace(
+            servers=lambda details=True: list(self._by_id.values()),
+            get_server=lambda sid: self._by_id[sid],
+            delete_server=lambda sid, force=False: self.deleted.append(sid),
+            wait_for_delete=lambda server, wait=0: None,
+            delete_keypair=lambda name, ignore_missing=True: None,
+        )
+        self.network = SimpleNamespace(find_security_group=lambda name: None)
+        self.config = SimpleNamespace(name="fake-cloud")
+
+
+def _live_fleet(*, expired=True, within=True, keep=True, legacy=True, foreign=True):
+    """A fleet stamped relative to the real clock (run_reap reads now itself)."""
+    now = datetime.now(timezone.utc)
+
+    def stamp(mins, keep_flag=False):
+        md = {"flux_created_by": "flux-compute",
+              "flux_expires_at": _iso(now + timedelta(minutes=mins))}
+        if keep_flag:
+            md["flux_keep"] = "true"
+        return md
+
+    created = _iso(now - timedelta(hours=1))
+    mk = lambda sid, name, md: SimpleNamespace(
+        id=sid, name=name, metadata=md, created_at=created,
+        flavor={"original_name": "b3-8"})
+    fleet = []
+    if expired:
+        fleet.append(mk("e1", "flux-compute-sweep-e1", stamp(-10)))
+    if within:
+        fleet.append(mk("w1", "flux-compute-sweep-w1", stamp(+60)))
+    if keep:
+        fleet.append(mk("k1", "flux-compute-run-k1", stamp(-10, keep_flag=True)))
+    if legacy:
+        fleet.append(mk("l1", "flux-compute-run-l1", {}))
+    if foreign:
+        fleet.append(mk("f1", "web-1", {}))
+    return fleet
+
+
+def _wire(monkeypatch, conn, confirm=None):
+    monkeypatch.setattr(reap_mod, "connect", lambda cloud=None, region=None: conn)
+    if confirm is not None:
+        monkeypatch.setattr(reap_mod, "_confirm", confirm)
+
+
+def _no_prompt(prompt):
+    raise AssertionError(f"unexpected interactive prompt: {prompt!r}")
+
+
+def test_run_reap_yes_deletes_only_expired_stamped_without_prompt(monkeypatch):
+    conn = _FakeReapConn(_live_fleet())
+    _wire(monkeypatch, conn, confirm=_no_prompt)     # any prompt fails the test
+    rc = run_reap(yes=True)
+    assert conn.deleted == ["e1"]                    # not within-ttl/keep/legacy, never foreign
+    assert rc == 1                                   # the legacy stray remains
+
+
+def test_run_reap_yes_all_declined_still_deletes_only_expired(monkeypatch):
+    conn = _FakeReapConn(_live_fleet())
+    _wire(monkeypatch, conn, confirm=lambda prompt: False)   # "n" to the --all prompt
+    rc = run_reap(yes=True, take_all=True)
+    assert conn.deleted == ["e1"]                    # --yes must never extend to the extra buckets
+    assert rc == 1
+
+
+def test_run_reap_all_confirmed_takes_extra_buckets_but_never_foreign(monkeypatch):
+    conn = _FakeReapConn(_live_fleet())
+    _wire(monkeypatch, conn, confirm=lambda prompt: True)
+    rc = run_reap(take_all=True)
+    assert set(conn.deleted) == {"e1", "w1", "k1", "l1"}
+    assert "f1" not in conn.deleted                  # foreign untouched under every flag
+    assert rc == 0                                   # nothing stray remains
+
+
+def test_run_reap_non_interactive_without_yes_deletes_nothing(monkeypatch):
+    conn = _FakeReapConn(_live_fleet())
+    _wire(monkeypatch, conn)                         # real _confirm
+
+    def eof(prompt=""):
+        raise EOFError
+    monkeypatch.setattr("builtins.input", eof)       # no tty: confirm reads EOF
+    rc = run_reap(yes=False)
+    assert conn.deleted == []                        # nothing deleted without consent
+    assert rc == 1                                   # strays found and left
+
+
+def test_run_reap_exit_zero_when_only_keep_flagged_remains(monkeypatch):
+    conn = _FakeReapConn(_live_fleet(expired=False, within=False, legacy=False))
+    _wire(monkeypatch, conn, confirm=_no_prompt)
+    rc = run_reap(yes=True)
+    assert conn.deleted == []
+    assert rc == 0                                   # kept instance is deliberate, not a stray

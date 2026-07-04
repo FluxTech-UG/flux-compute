@@ -96,8 +96,8 @@ _Provision a GPU instance, run work on it, and always tear it down._
 - _rsync_up(local, ip, keyfile, dest)  ·L240
 - _rsync_down(ip, keyfile, remote, local)  ·L250
 - @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L258
-- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L326
-- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L349
+- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L332
+- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L355
 
 ### flux_compute/reap.py
 _`flux-compute reap`: find flux-compute instances and delete the expired ones._
@@ -164,41 +164,71 @@ _Guard: docs/MAP.md stays in sync with the source._
 
 ### tests/test_provision.py
 _Pure-logic tests for provision helpers. No network, no credentials._
-- test_gpu_smoke_uses_nvidia_smi()  ·L14
-- test_cpu_smoke_verifies_boot_and_exec_without_gpu()  ·L20
-- class _FakeCompute  ·L30 — Fake compute API: fail the first `fail_deletes` delete calls and the
-  - __init__(self, fail_deletes=0, fail_waits=0)  ·L34
-  - delete_server(self, server_id, force=False)  ·L40
-  - wait_for_delete(self, server, wait=0)  ·L45
-- _conn(compute)  ·L51
-- const _SERVER  ·L55
-- test_delete_retries_transient_failure_then_verifies()  ·L58
-- test_unverified_delete_is_a_strand()  ·L65
-- test_persistent_delete_failure_is_a_strand()  ·L75
-- test_strand_error_is_a_runtimeerror_so_cli_exits_nonzero()  ·L81
-- test_stranded_banner_is_unmissable_and_actionable(capsys)  ·L86
+- test_gpu_smoke_uses_nvidia_smi()  ·L16
+- test_cpu_smoke_verifies_boot_and_exec_without_gpu()  ·L22
+- class _FakeCompute  ·L32 — Fake compute API: fail the first `fail_deletes` delete calls and the
+  - __init__(self, fail_deletes=0, fail_waits=0)  ·L36
+  - delete_server(self, server_id, force=False)  ·L42
+  - wait_for_delete(self, server, wait=0)  ·L47
+- _conn(compute)  ·L53
+- const _SERVER  ·L57
+- test_delete_retries_transient_failure_then_verifies()  ·L60
+- test_unverified_delete_is_a_strand()  ·L67
+- test_persistent_delete_failure_is_a_strand()  ·L77
+- test_strand_error_is_a_runtimeerror_so_cli_exits_nonzero()  ·L83
+- test_stranded_banner_is_unmissable_and_actionable(capsys)  ·L88
+- class _FakeInstanceCompute  ·L100 — Fake compute API for driving _gpu_instance end to end.
+  - __init__(self)  ·L103
+  - find_image(self, name)  ·L106
+  - find_flavor(self, name)  ·L109
+  - create_keypair(self, name, public_key)  ·L112
+  - create_server(self, **kwargs)  ·L115
+  - wait_for_server(self, server, status=None, wait=None)  ·L121
+  - delete_server(self, server_id, force=False)  ·L124
+  - wait_for_delete(self, server, wait=0)  ·L127
+  - delete_keypair(self, name, ignore_missing=True)  ·L130
+- class _FakeInstanceNetwork  ·L134
+  - find_network(self, name)  ·L135
+  - create_security_group(self, name=None, description=None)  ·L138
+  - create_security_group_rule(self, **kwargs)  ·L141
+  - delete_security_group(self, sg_id, ignore_missing=True)  ·L144
+- _instance_conn()  ·L148
+- const _SPEC  ·L154
+- @pytest.fixture local_boot(monkeypatch)  ·L158 — Cut the two real-network steps out of _gpu_instance.
+- test_keep_does_not_swallow_a_body_exception(local_boot, capsys)  ·L164
+- test_body_exception_still_tears_down_without_keep(local_boot, capsys)  ·L176
 
 ### tests/test_reap.py
 _Pure-logic tests for reap selection: expiry math, positive identification,_
-- const NOW  ·L11
-- _iso(dt)  ·L14
-- _stamp(expires_delta_min, keep=False)  ·L18
-- test_ttl_minutes_margin_is_at_least_30()  ·L28
-- test_ttl_minutes_margin_widens_to_quarter_of_long_caps()  ·L33
-- test_ttl_metadata_round_trips_and_stamps_provenance()  ·L37
-- test_ttl_metadata_keep_flag()  ·L44
-- test_foreign_server_is_never_a_candidate()  ·L50
-- test_stamped_server_is_identified_even_without_the_name_prefix()  ·L56
-- test_name_prefix_without_stamp_is_report_only_legacy()  ·L62
-- test_stamped_past_expiry_is_auto_reapable()  ·L73
-- test_stamped_within_ttl_is_not_taken()  ·L80
-- test_stamped_with_malformed_expiry_is_never_a_false_kill()  ·L86
-- test_keep_flagged_is_never_auto_reaped_no_matter_how_old()  ·L95
-- test_cost_estimate_age_times_catalog_price()  ·L106
-- test_find_candidates_partitions_a_mixed_fleet()  ·L114
-- _conn_with(servers)  ·L139
-- test_warn_strays_surfaces_expired_legacy_and_keep_but_not_inflight(capsys)  ·L143
-- test_warn_strays_never_breaks_the_calling_command(capsys)  ·L165
+- const NOW  ·L12
+- _iso(dt)  ·L15
+- _stamp(expires_delta_min, keep=False)  ·L19
+- test_ttl_minutes_margin_is_at_least_30()  ·L29
+- test_ttl_minutes_margin_widens_to_quarter_of_long_caps()  ·L34
+- test_ttl_metadata_round_trips_and_stamps_provenance()  ·L38
+- test_ttl_metadata_keep_flag()  ·L45
+- test_foreign_server_is_never_a_candidate()  ·L51
+- test_stamped_server_is_identified_even_without_the_name_prefix()  ·L57
+- test_name_prefix_without_stamp_is_report_only_legacy()  ·L63
+- test_stamped_past_expiry_is_auto_reapable()  ·L74
+- test_stamped_within_ttl_is_not_taken()  ·L81
+- test_stamped_with_malformed_expiry_is_never_a_false_kill()  ·L87
+- test_keep_flagged_is_never_auto_reaped_no_matter_how_old()  ·L96
+- test_cost_estimate_age_times_catalog_price()  ·L107
+- test_find_candidates_partitions_a_mixed_fleet()  ·L115
+- _conn_with(servers)  ·L140
+- test_warn_strays_surfaces_expired_legacy_and_keep_but_not_inflight(capsys)  ·L144
+- test_warn_strays_never_breaks_the_calling_command(capsys)  ·L166
+- class _FakeReapConn  ·L180 — Fake connection driving run_reap end to end; records every delete.
+  - __init__(self, servers)  ·L183
+- _live_fleet(*, expired=True, within=True, keep=True, legacy=True, foreign=True)  ·L197 — A fleet stamped relative to the real clock (run_reap reads now itself).
+- _wire(monkeypatch, conn, confirm=None)  ·L226
+- _no_prompt(prompt)  ·L232
+- test_run_reap_yes_deletes_only_expired_stamped_without_prompt(monkeypatch)  ·L236
+- test_run_reap_yes_all_declined_still_deletes_only_expired(monkeypatch)  ·L244
+- test_run_reap_all_confirmed_takes_extra_buckets_but_never_foreign(monkeypatch)  ·L252
+- test_run_reap_non_interactive_without_yes_deletes_nothing(monkeypatch)  ·L261
+- test_run_reap_exit_zero_when_only_keep_flagged_remains(monkeypatch)  ·L273
 
 ### tests/test_sweep.py
 _Pure-logic tests for the sweep helpers. No network, no credentials._

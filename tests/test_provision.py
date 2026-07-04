@@ -3,9 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from flux_compute import provision
 from flux_compute.provision import (
     TeardownStrandError,
     _delete_server_verified,
+    _gpu_instance,
     _smoke_command,
     _stranded_banner,
 )
@@ -91,3 +93,89 @@ def test_stranded_banner_is_unmissable_and_actionable(capsys):
     assert "openstack --os-cloud flux-ovh server delete srv-123" in err
     assert "keypair delete flux-compute-run-abcd1234" in err
     assert "security group delete flux-compute-run-abcd1234" in err
+
+
+# --- _gpu_instance keep branch: exceptions must not be swallowed ---------------
+
+class _FakeInstanceCompute:
+    """Fake compute API for driving _gpu_instance end to end."""
+
+    def __init__(self):
+        self.deleted = []
+
+    def find_image(self, name):
+        return SimpleNamespace(id="img-1")
+
+    def find_flavor(self, name):
+        return SimpleNamespace(id="fl-1")
+
+    def create_keypair(self, name, public_key):
+        return SimpleNamespace(name=name)
+
+    def create_server(self, **kwargs):
+        return SimpleNamespace(
+            id="srv-1",
+            addresses={"Ext-Net": [{"version": 4, "addr": "10.0.0.1"}]},
+        )
+
+    def wait_for_server(self, server, status=None, wait=None):
+        return server
+
+    def delete_server(self, server_id, force=False):
+        self.deleted.append(server_id)
+
+    def wait_for_delete(self, server, wait=0):
+        pass
+
+    def delete_keypair(self, name, ignore_missing=True):
+        pass
+
+
+class _FakeInstanceNetwork:
+    def find_network(self, name):
+        return SimpleNamespace(id="net-1")
+
+    def create_security_group(self, name=None, description=None):
+        return SimpleNamespace(id="sg-1")
+
+    def create_security_group_rule(self, **kwargs):
+        pass
+
+    def delete_security_group(self, sg_id, ignore_missing=True):
+        pass
+
+
+def _instance_conn():
+    return SimpleNamespace(compute=_FakeInstanceCompute(),
+                           network=_FakeInstanceNetwork(),
+                           config=SimpleNamespace(name="fake-cloud"))
+
+
+_SPEC = SimpleNamespace(image="Ubuntu 24.04", flavor="b3-8", network="Ext-Net")
+
+
+@pytest.fixture
+def local_boot(monkeypatch):
+    """Cut the two real-network steps out of _gpu_instance."""
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
+    monkeypatch.setattr(provision, "_wait_ssh", lambda ip, **kw: True)
+
+
+def test_keep_does_not_swallow_a_body_exception(local_boot, capsys):
+    # Regression: a `return` inside finally used to swallow the with-body
+    # exception under --keep, so a failed upload/SSH exited 0 with the
+    # instance left running.
+    conn = _instance_conn()
+    with pytest.raises(RuntimeError, match="upload failed"):
+        with _gpu_instance(conn, _SPEC, "flux-compute-run-t1", ttl_minutes=30, keep=True):
+            raise RuntimeError("upload failed")
+    assert conn.compute.deleted == []                    # keep: no delete attempted
+    assert "LEFT RUNNING" in capsys.readouterr().out     # keep banner still printed
+
+
+def test_body_exception_still_tears_down_without_keep(local_boot, capsys):
+    conn = _instance_conn()
+    with pytest.raises(RuntimeError, match="job failed"):
+        with _gpu_instance(conn, _SPEC, "flux-compute-run-t2", ttl_minutes=30):
+            raise RuntimeError("job failed")
+    assert conn.compute.deleted == ["srv-1"]             # teardown ran, then the error propagated
