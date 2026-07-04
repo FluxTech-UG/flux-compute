@@ -30,11 +30,11 @@ _OVH Public Cloud flavor policy for the FluxTech Startup Program._
 - const DEFAULT_SIM_FLAVOR  ·L34
 - const _KNOWN_PRICE_EUR_HR  ·L45
 - const _GPU_RULES  ·L61
-- const _CPU_PREFIXES  ·L85
-- @dataclass class FlavorVerdict  ·L89 — The policy verdict for a single flavor name.
-  - @property usable_for_sim(self) -> bool  ·L101 — True only when both gates pass: covered by credits and fp64-healthy.
-- classify(name: str) -> FlavorVerdict  ·L106 — Classify a flavor name against the credit + fp64 policy.
-- recommended_for_sim(available_names) -> str  ·L134 — Return the cheapest credit-eligible, fp64-healthy GPU among those available.
+- const _CPU_PREFIXES  ·L84
+- @dataclass class FlavorVerdict  ·L88 — The policy verdict for a single flavor name.
+  - @property usable_for_sim(self) -> bool  ·L100 — True only when both gates pass: covered by credits and fp64-healthy.
+- classify(name: str) -> FlavorVerdict  ·L105 — Classify a flavor name against the credit + fp64 policy.
+- recommended_for_sim(available_names) -> str  ·L133 — Return the cheapest credit-eligible, fp64-healthy GPU among those available.
 
 ### flux_compute/image.py
 _Bake a reusable GPU image: provision, run a setup script, snapshot, tear down._
@@ -254,3 +254,7 @@ _Pure-logic tests for the sweep helpers. No network, no credentials._
 - test_failure_status_flags_quota_and_capacity()  ·L144
 - test_failure_status_generic_error_stays_generic()  ·L149
 - test_failure_status_flags_teardown_strand()  ·L153
+
+## Other source files
+
+- docs/product-eligibility-startup-program-2026-03.html  ·919 lines

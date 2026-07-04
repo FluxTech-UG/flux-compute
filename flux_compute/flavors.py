@@ -16,12 +16,12 @@ Two independent gates decide whether a flavor may run a FluxTech simulation:
 CPU flavors are always fp64 healthy and are the right choice for small runs, and
 for a wide fan-out of one-job-per-VM CPU work, where GPU kernel-launch latency
 would dominate. The classifier treats them as usable and prices them (b3-*/c3-*)
-from the OVH catalog. Whether CPU instance spend is *covered by the Startup
-Program credits*, however, is unconfirmed: the March 2026 eligibility list cited
-above names only GPU cards and is silent on CPU. So for a CPU flavor the
-credit_eligible flag means "not a blocked flavor / usable", not a sourced billing
-guarantee. Do not present CPU as credit-covered until it is confirmed with OVH
-(see README, "Open question for John — CPU credit coverage").
+from the OVH catalog. CPU instance spend IS covered by Startup Program credits:
+the program's product-eligibility guide (March 2026, archived at
+docs/product-eligibility-startup-program-2026-03.html) marks every b-series and
+c-series instance "Covered" at both program levels, with GPU instances as the
+only restricted family — so for CPU flavors credit_eligible is a sourced billing
+fact, same as for the GPU cards (README, "CPU credit coverage").
 """
 from __future__ import annotations
 
@@ -78,10 +78,9 @@ _GPU_RULES = (
                  "A10: not covered by Startup Program credits.")),
 )
 
-# CPU flavor families on Public Cloud: fp64-healthy and treated as usable. Their
-# Startup Program credit coverage is unconfirmed (see the module docstring and
-# the README open question); classify() sets credit_eligible=True to keep them
-# usable, not as a sourced billing claim.
+# CPU flavor families on Public Cloud: fp64-healthy, usable, and covered by
+# Startup Program credits (the archived eligibility guide marks every b-/c-series
+# instance "Covered"; only GPU instances are restricted — module docstring).
 _CPU_PREFIXES = ("b3-", "b2-", "c3-", "c2-", "r3-", "r2-", "d2-", "i1-", "bm-")
 
 
@@ -121,8 +120,8 @@ def classify(name: str) -> FlavorVerdict:
         if n.startswith(prefix):
             return FlavorVerdict(
                 name, "cpu", None, True, True, price,
-                "CPU flavor: fp64-healthy and usable; best for small runs and wide "
-                "one-job-per-VM fan-out. Startup Program credit coverage unconfirmed.",
+                "CPU flavor: fp64-healthy, covered by Startup Program credits; best "
+                "for small runs and wide one-job-per-VM fan-out.",
             )
 
     return FlavorVerdict(

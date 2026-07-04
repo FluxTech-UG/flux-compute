@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OVHcloud Startup Program — Product Eligibility</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ── OVHcloud Brand Tokens ── */
+:root {
+  /* OVHcloud exact brand colours */
+  --ovh-blue:       #00B1FF;
+  --ovh-navy:       #123F6D;
+  --ovh-navy-dark:  #0D2F52;
+  --ovh-navy-light: #1A5499;
+  --ovh-cyan:       #00E0FF;
+  --ovh-white:      #FFFFFF;
+  --ovh-gray-50:    #F7F8FA;
+  --ovh-gray-100:   #EEF0F4;
+  --ovh-gray-200:   #DEE1E8;
+  --ovh-gray-300:   #C4C8D3;
+  --ovh-gray-400:   #9299A8;
+  --ovh-gray-500:   #636B7A;
+  --ovh-gray-700:   #2F3542;
+  --ovh-gray-900:   #1A1D24;
+  /* Semantic */
+  --bg:             var(--ovh-gray-50);
+  --surface:        var(--ovh-white);
+  --text:           var(--ovh-gray-900);
+  --text-muted:     var(--ovh-gray-500);
+  --text-faint:     var(--ovh-gray-400);
+  --border:         var(--ovh-gray-200);
+  --divider:        var(--ovh-gray-100);
+  /* Status colours */
+  --green:          #00A36C;
+  --green-bg:       #E6F7F2;
+  --green-border:   #B3E6D5;
+  --red:            #D93C2F;
+  --red-bg:         #FDECEA;
+  --red-border:     #F5C0BB;
+  --amber:          #E07B00;
+  --amber-bg:       #FFF4E5;
+  --amber-border:   #FFDEA3;
+  --purple:         #6E3FD6;
+  --purple-bg:      #F0EBFB;
+  --purple-border:  #C9B8F0;
+  --gray:           #636B7A;
+  --gray-bg:        #EEF0F4;
+  --gray-border:    #C4C8D3;
+  /* Spacing */
+  --r-sm: .375rem; --r-md: .5rem; --r-lg: .75rem; --r-xl: 1rem; --r-2xl: 1.5rem; --r-full: 9999px;
+  --s1:.25rem;--s2:.5rem;--s3:.75rem;--s4:1rem;--s5:1.25rem;--s6:1.5rem;
+  --s8:2rem;--s10:2.5rem;--s12:3rem;--s16:4rem;
+  --shadow-sm: 0 1px 3px rgba(18,63,109,.08), 0 1px 2px rgba(18,63,109,.04);
+  --shadow-md: 0 4px 16px rgba(18,63,109,.10), 0 2px 4px rgba(18,63,109,.06);
+  --shadow-lg: 0 12px 40px rgba(18,63,109,.13);
+  --t: 160ms cubic-bezier(.16,1,.3,1);
+  --ff: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-font-smoothing: antialiased; scroll-behavior: smooth; scroll-padding-top: 72px; }
+body { font-family: var(--ff); font-size: 15px; color: var(--text); background: var(--bg); min-height: 100dvh; line-height: 1.6; }
+button { cursor: pointer; background: none; border: none; font: inherit; color: inherit; }
+a { color: var(--ovh-navy); text-decoration: none; }
+a:hover { color: var(--ovh-blue); }
+:focus-visible { outline: 2px solid var(--ovh-blue); outline-offset: 2px; border-radius: var(--r-sm); }
+a, button { transition: color var(--t), background var(--t), border-color var(--t), box-shadow var(--t), opacity var(--t); }
+
+/* ── TOP HEADER BAR (OVHcloud style) ── */
+.topbar {
+  background: var(--ovh-navy);
+  padding: 0 var(--s8);
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  box-shadow: 0 2px 8px rgba(0,0,0,.18);
+}
+.topbar-left { display: flex; align-items: center; gap: var(--s6); }
+.brand { display: flex; align-items: center; gap: var(--s3); text-decoration: none; }
+
+
+.logo-placeholder { display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+
+.nav-pill {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(255,255,255,.08);
+  border-radius: var(--r-full);
+  padding: 3px;
+}
+.nav-pill-btn {
+  padding: 5px 14px;
+  border-radius: var(--r-full);
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255,255,255,.6);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.nav-pill-btn.on {
+  background: var(--ovh-blue);
+  color: var(--ovh-navy);
+}
+.nav-pill-btn:hover:not(.on) { color: var(--ovh-white); background: rgba(255,255,255,.12); }
+.topbar-right { display: flex; align-items: center; gap: var(--s3); }
+.topbar-link {
+  font-size: 12px;
+  color: rgba(255,255,255,.65);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: var(--r-md);
+}
+.topbar-link:hover { color: var(--ovh-white); background: rgba(255,255,255,.1); }
+.topbar-link svg { flex-shrink: 0; }
+
+/* ── HERO (OVHcloud gradient header style) ── */
+.hero {
+  background: linear-gradient(135deg, var(--ovh-navy-dark) 0%, var(--ovh-navy) 55%, var(--ovh-navy-light) 100%);
+  padding: var(--s12) var(--s8);
+  position: relative;
+  overflow: hidden;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 60% 80% at 80% 50%, rgba(0,177,255,.12) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 60% at 10% 80%, rgba(0,224,255,.07) 0%, transparent 50%);
+  pointer-events: none;
+}
+.hero-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s8);
+  position: relative;
+}
+.hero-text { flex: 1; }
+.hero-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  background: rgba(0,177,255,.15);
+  border: 1px solid rgba(0,177,255,.3);
+  border-radius: var(--r-full);
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ovh-blue);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: var(--s4);
+}
+.hero h1 {
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+  font-weight: 700;
+  color: var(--ovh-white);
+  line-height: 1.15;
+  margin-bottom: var(--s3);
+  letter-spacing: -.02em;
+}
+.hero h1 em {
+  font-style: normal;
+  color: var(--ovh-blue);
+}
+.hero p {
+  font-size: 14px;
+  color: rgba(255,255,255,.7);
+  max-width: 52ch;
+  line-height: 1.65;
+}
+.hero-stats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  flex-shrink: 0;
+}
+.stat-card {
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: var(--r-xl);
+  padding: var(--s4) var(--s5);
+  min-width: 130px;
+  text-align: center;
+  backdrop-filter: blur(8px);
+}
+.stat-n {
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -.03em;
+}
+.stat-n.g { color: #4DEBA3; }
+.stat-n.r { color: #FF7070; }
+.stat-l { font-size: 11px; color: rgba(255,255,255,.55); margin-top: 3px; text-transform: uppercase; letter-spacing: .05em; font-weight: 500; }
+
+/* ── NOTICE STRIP ── */
+.notice-strip {
+  background: rgba(0,177,255,.06);
+  border-bottom: 1px solid rgba(0,177,255,.15);
+  padding: var(--s3) var(--s8);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  font-size: 13px;
+  color: var(--ovh-navy);
+}
+.notice-strip svg { color: var(--ovh-blue); flex-shrink: 0; margin-top: 2px; }
+.notice-strip strong { color: var(--ovh-navy); }
+.notice-strip a { color: var(--ovh-blue); font-weight: 500; }
+.notice-strip a:hover { text-decoration: underline; }
+
+/* ── MAIN ── */
+.main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--s8) var(--s8);
+  width: 100%;
+}
+
+/* ── CONTROLS ── */
+.controls {
+  display: flex;
+  gap: var(--s3);
+  margin-bottom: var(--s6);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.search-wrap { flex: 1; min-width: 220px; position: relative; }
+.search-ico { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-faint); pointer-events: none; }
+.search {
+  width: 100%;
+  padding: 10px 14px 10px 40px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-family: var(--ff);
+  transition: border-color var(--t), box-shadow var(--t);
+}
+.search::placeholder { color: var(--text-faint); }
+.search:focus { outline: none; border-color: var(--ovh-blue); box-shadow: 0 0 0 3px rgba(0,177,255,.15); }
+
+.filter-group { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.f-btn {
+  padding: 8px 16px;
+  border-radius: var(--r-full);
+  font-size: 13px;
+  font-weight: 600;
+  border: 1.5px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.f-btn:hover:not(.fa):not(.fy):not(.fn) { border-color: var(--ovh-gray-300); color: var(--text); background: var(--ovh-gray-100); }
+.fa { background: var(--ovh-navy); color: #fff; border-color: var(--ovh-navy); }
+.fa:hover { background: var(--ovh-navy-light); border-color: var(--ovh-navy-light); }
+.fy { background: var(--green-bg); color: var(--green); border-color: var(--green-border); }
+.fn { background: var(--red-bg); color: var(--red); border-color: var(--red-border); }
+
+/* ── LEGEND ── */
+.legend {
+  display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center;
+  margin-bottom: var(--s6);
+  padding: var(--s3) var(--s4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.legend-lbl { font-size: 11px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: .06em; margin-right: var(--s1); }
+
+/* ── BADGE ── */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px;
+  border-radius: var(--r-full);
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.badge.g { background: var(--green-bg); color: var(--green); border-color: var(--green-border); }
+.badge.r { background: var(--red-bg); color: var(--red); border-color: var(--red-border); }
+.badge.a { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
+.badge.p { background: var(--purple-bg); color: var(--purple); border-color: var(--purple-border); }
+.badge.gr { background: var(--gray-bg); color: var(--gray); border-color: var(--gray-border); }
+
+/* ── CATEGORY CARD ── */
+.cats { display: flex; flex-direction: column; gap: var(--s4); }
+.cat {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--t);
+}
+.cat:hover { box-shadow: var(--shadow-md); }
+.cat.hidden { display: none !important; }
+
+.cat-hdr {
+  padding: var(--s3) var(--s5);
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  cursor: pointer;
+  user-select: none;
+  background: var(--surface);
+  border-bottom: 1.5px solid var(--divider);
+}
+.cat-hdr:hover { background: var(--ovh-gray-50); }
+
+.cat-ico {
+  width: 34px; height: 34px;
+  border-radius: var(--r-md);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.cat-title { flex: 1; }
+.cat-name { font-size: 14px; font-weight: 700; color: var(--ovh-navy); letter-spacing: -.01em; }
+.cat-family { font-size: 11px; color: var(--text-faint); font-weight: 500; text-transform: uppercase; letter-spacing: .04em; margin-top: 1px; }
+.cat-cnt {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--ovh-gray-100);
+  border: 1px solid var(--ovh-gray-200);
+  padding: 2px 9px;
+  border-radius: var(--r-full);
+  font-weight: 600;
+}
+.cat-chev { color: var(--text-faint); transition: transform var(--t); flex-shrink: 0; }
+.cat.coll .cat-chev { transform: rotate(-90deg); }
+.cat.coll .cat-body { display: none; }
+
+/* ── PRODUCT ROW ── */
+.p-row {
+  display: flex; align-items: center; gap: var(--s4);
+  padding: 11px var(--s5);
+  border-bottom: 1px solid var(--divider);
+  transition: background var(--t);
+}
+.p-row:last-child { border-bottom: none; }
+.p-row:hover { background: var(--ovh-gray-50); }
+.p-row[hidden] { display: none !important; }
+
+.p-info { flex: 1; min-width: 0; }
+.p-name { font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.3; }
+.p-desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; line-height: 1.4; }
+.p-note { font-size: 11px; color: var(--ovh-blue); font-weight: 500; margin-top: 3px; }
+
+.p-tags { display: flex; gap: var(--s2); flex-shrink: 0; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.p-price {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+
+
+/* ── SECTION DIVIDER ── */
+.subcat-row {
+  padding: 6px var(--s5);
+  background: linear-gradient(90deg, rgba(18,63,109,.04) 0%, transparent 100%);
+  border-bottom: 1px solid var(--divider);
+  display: flex; align-items: center; gap: var(--s2);
+}
+.subcat-name {
+  font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ovh-navy);
+  opacity: .55;
+}
+
+/* ── EMPTY ── */
+.empty { text-align: center; padding: var(--s16) var(--s8); color: var(--text-muted); display: none; }
+.empty.on { display: block; }
+.empty svg { margin: 0 auto var(--s4); color: var(--ovh-gray-300); }
+.empty h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: var(--s2); color: var(--text); }
+.empty p { font-size: 13px; }
+
+/* ── FOOTER ── */
+.footer {
+  background: var(--ovh-navy);
+  padding: var(--s8);
+  margin-top: var(--s16);
+  text-align: center;
+}
+.footer p { font-size: 12px; color: rgba(255,255,255,.4); }
+.footer a { color: rgba(255,255,255,.6); }
+.footer a:hover { color: var(--ovh-blue); }
+
+/* ── RESPONSIVE ── */
+@media (max-width: 700px) {
+  .topbar { padding: 0 var(--s4); }
+  .hero { padding: var(--s8) var(--s4); }
+  .hero-inner { flex-direction: column; }
+  .hero-stats { flex-direction: row; }
+  .stat-card { flex: 1; }
+  .main { padding: var(--s5) var(--s4); }
+  .controls { gap: var(--s2); }
+  .p-price { display: none; }
+  .p-row { padding: 10px var(--s4); }
+  .cat-hdr { padding: var(--s3) var(--s4); }
+  .notice-strip { padding: var(--s3) var(--s4); font-size: 12px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── TOP BAR ── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <a class="brand" href="#">
+      <!-- Logo placeholder — replace src with your OVHcloud logo asset -->
+      <div class="logo-placeholder" aria-label="OVHcloud logo">
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="36" height="36" rx="8" fill="rgba(255,255,255,0.12)"/>
+          <rect x="1" y="1" width="34" height="34" rx="7" stroke="rgba(255,255,255,0.2)" stroke-width="1" fill="none"/>
+          <text x="18" y="24" text-anchor="middle" font-family="Inter,sans-serif" font-weight="800" font-size="13" fill="white" letter-spacing="-0.5">LOGO</text>
+        </svg>
+      </div>
+    </a>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <div class="nav-pill" role="group" aria-label="Program level">
+      <button class="nav-pill-btn on" id="b-start" onclick="setLevel('start')">START</button>
+      <button class="nav-pill-btn" id="b-scale" onclick="setLevel('scale')">SCALE</button>
+    </div>
+    <a class="topbar-link" href="https://startup.ovhcloud.com/en/" target="_blank" rel="noopener">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      Apply now
+    </a>
+  </div>
+</header>
+
+<!-- ── HERO ── -->
+<section class="hero">
+  <div class="hero-inner">
+    <div class="hero-text">
+      <div class="hero-kicker">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 21 12 17.77 5.82 21 7 14.14l-5-4.87 6.91-1.01L12 2z"/></svg>
+        OVHcloud Startup Program · Updated March 2026
+      </div>
+      <h1>Which products are covered by your <em>startup credits</em>?</h1>
+      <p>A complete, searchable reference of all OVHcloud products and their Startup Program credit eligibility. Toggle your program level (START / SCALE) to see what's covered for you.</p>
+    </div>
+    <div class="hero-stats">
+      <div class="stat-card">
+        <div class="stat-n g" id="sn-e">—</div>
+        <div class="stat-l">Covered</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-n r" id="sn-n">—</div>
+        <div class="stat-l">Not covered</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── NOTICE ── -->
+<div class="notice-strip">
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+  <div>
+    <strong>New products rule:</strong> Any new Public Cloud product is automatically eligible. For products not yet in this list, the rule is: only products added as an option to already-eligible products, or those from the Public Cloud range, will be eligible.
+    GPU instances are restricted — only <strong>V100, V100S and RTX5000</strong> are available with credits.
+    <strong>SecNumCloud</strong> requires a separate NIC-handle; credits cannot be used across both NICs.
+    <a href="https://www.ovhcloud.com/en/public-cloud/regions-availability/" target="_blank" rel="noopener">See regional availability →</a>
+  </div>
+</div>
+
+<!-- ── MAIN ── -->
+<main class="main">
+
+  <!-- controls -->
+  <div class="controls">
+    <div class="search-wrap">
+      <svg class="search-ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input class="search" type="search" id="q" placeholder="Search product, instance, e.g. b3-8, Kafka, Load Balancer…" oninput="go()" autocomplete="off">
+    </div>
+    <div class="filter-group">
+      <button class="f-btn fa" id="f-all" onclick="sf('all')">All products</button>
+      <button class="f-btn" id="f-yes" onclick="sf('yes')">✓ Covered only</button>
+      <button class="f-btn" id="f-no" onclick="sf('no')">✗ Not covered</button>
+    </div>
+  </div>
+
+  <!-- legend -->
+  <div class="legend">
+    <span class="legend-lbl">Key:</span>
+    <span class="badge g"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>Covered by credits</span>
+    <span class="badge r"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6 6 18M6 6l12 12"/></svg>Not covered</span>
+    <span class="badge a">Free / Included</span>
+    <span class="badge p">★ SCALE only</span>
+    <span class="badge gr">🔒 SecNumCloud</span>
+    <span style="font-size:12px;color:var(--text-faint);margin-left:auto">Prices ex. VAT · <a href="https://www.ovhcloud.com/en-ie/public-cloud/prices/" target="_blank" rel="noopener" style="color:var(--ovh-blue)">Full price list →</a></span>
+  </div>
+
+  <!-- categories -->
+  <div class="cats" id="cats"></div>
+  <div class="empty" id="emp">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6M11 8v6"/></svg>
+    <h3>No results found</h3>
+    <p>Try a different search term or clear your filter.</p>
+  </div>
+
+</main>
+
+<!-- ── FOOTER ── -->
+<footer class="footer">
+  <p>Data updated March 2026 · <a href="https://startup.ovhcloud.com/en/" target="_blank" rel="noopener">OVHcloud Startup Program</a> · <a href="https://help.ovhcloud.com/csm/en-gb-startup-program-available-products?id=kb_article_view&sysparm_article=KB0073085" target="_blank" rel="noopener">Official eligibility guide</a></p>
+</footer>
+
+<script>
+// ── DATA ─────────────────────────────────────────────────────
+// s: g=covered, r=not_covered, a=free/included, p=scale_only, gr=secnumcloud/conditional
+// usa: g=covered, r=not, a=free, '?'=unknown, null=same_as_eu
+// note: extra annotation shown on row
+const DATA = [
+
+/* ══ HOSTED PRIVATE CLOUD ══════════════════════════════════ */
+{fam:"Hosted Private Cloud", cat:"VMware", color:"#6E3FD6", items:[
+  {n:"VMware on OVHcloud (Hosted Private Cloud, Healthcare, PCI-DSS, vSphere, vSan, VCFaaS, MS licence)",d:"Full VMware stack — managed vSphere, compliance-ready deployments",pr:"From €0.15/hr",s:"g",usa:"g"},
+  {n:"SecNumCloud-qualified Hosted Private Cloud",d:"French sovereign cloud — requires separate NIC-handle",pr:"Custom",s:"gr",usa:"r",note:"⚠ Separate NIC-handle required — credits not transferable between NICs"},
+  {n:"SAP HANA on Private Cloud",d:"Certified SAP HANA infrastructure",pr:"Custom",s:"p",usa:"g",scaleOnly:true},
+  {n:"Option: Veem Backup for VMware",d:"Veeam backup add-on for VMware",pr:"Varies",s:"r",usa:"g"},
+  {n:"Option: Zerto for VMware",d:"Disaster recovery add-on",pr:"Varies",s:"r",usa:"g"},
+  {n:"Managed Bare Metal — Essential range",d:"VMware-powered managed bare metal",pr:"From €0.50/hr",s:"g",usa:"g"},
+  {n:"Microsoft Licences",d:"Windows Server, SQL Server licensing",pr:"Varies",s:"g",usa:"?"},
+]},
+{fam:"Hosted Private Cloud", cat:"Nutanix", color:"#6E3FD6", items:[
+  {n:"Nutanix (Package & BYOL)",d:"Hyper-converged infrastructure on dedicated hardware",pr:"Custom",s:"g",usa:"?"},
+]},
+{fam:"Hosted Private Cloud", cat:"Security & Network", color:"#6E3FD6", items:[
+  {n:"OVH Cloud Connect",d:"Dedicated private connectivity to OVHcloud datacentres",pr:"Varies",s:"r",usa:"r"},
+  {n:"vRack (Private Network)",d:"Global private network interconnect between OVHcloud services",pr:"Free",s:"a",usa:"a"},
+]},
+
+/* ══ PUBLIC CLOUD — COMPUTE ═════════════════════════════════ */
+{fam:"Public Cloud", cat:"Compute — General Purpose (b-series)", color:"#00B1FF", items:[
+  {n:"b3-8",d:"2 vCore · 8 GB RAM · 50 GB NVMe · 500 Mbps",pr:"€0.0512/hr",s:"g",usa:"g"},
+  {n:"b3-16",d:"4 vCore · 16 GB RAM · 100 GB NVMe · 1 Gbps",pr:"€0.1023/hr",s:"g",usa:"g"},
+  {n:"b3-32",d:"8 vCore · 32 GB RAM · 200 GB NVMe · 2 Gbps",pr:"€0.2046/hr",s:"g",usa:"g"},
+  {n:"b3-64",d:"16 vCore · 64 GB RAM · 400 GB NVMe · 4 Gbps",pr:"€0.4092/hr",s:"g",usa:"g"},
+  {n:"b3-128",d:"32 vCore · 128 GB RAM · 400 GB NVMe · 8 Gbps",pr:"€0.7439/hr",s:"g",usa:"g"},
+  {n:"b3-256",d:"64 vCore · 256 GB RAM · 400 GB NVMe · 16 Gbps",pr:"€1.4878/hr",s:"g",usa:"g"},
+  {n:"b3-512",d:"128 vCore · 512 GB RAM · 400 GB NVMe · 20 Gbps",pr:"€2.9756/hr",s:"g",usa:"g"},
+  {n:"b3-640",d:"160 vCore · 640 GB RAM · 400 GB NVMe · 20 Gbps",pr:"€3.7195/hr",s:"g",usa:"g"},
+  {n:"b2-7",d:"2 vCore · 7 GB RAM · 50 GB SSD · 250 Mbps guaranteed",pr:"€0.0681/hr",s:"g",usa:"g"},
+  {n:"b2-15",d:"4 vCore · 15 GB RAM · 100 GB SSD · 250 Mbps guaranteed",pr:"€0.129/hr",s:"g",usa:"g"},
+  {n:"b2-30",d:"8 vCore · 30 GB RAM · 200 GB SSD · 500 Mbps guaranteed",pr:"€0.261/hr",s:"g",usa:"g"},
+  {n:"b2-60",d:"16 vCore · 60 GB RAM · 400 GB SSD · 1 Gbps guaranteed",pr:"€0.505/hr",s:"g",usa:"g"},
+  {n:"b2-120",d:"32 vCore · 120 GB RAM · 400 GB SSD · 10 Gbps",pr:"€0.993/hr",s:"g",usa:"g"},
+]},
+{fam:"Public Cloud", cat:"Compute — Compute Optimised (c-series)", color:"#00B1FF", items:[
+  {n:"c3-4",d:"2 vCore · 4 GB RAM · 50 GB NVMe · 250 Mbps",pr:"€0.0415/hr",s:"g",usa:"g"},
+  {n:"c3-8",d:"4 vCore · 8 GB RAM · 100 GB NVMe · 500 Mbps",pr:"€0.083/hr",s:"g",usa:"g"},
+  {n:"c3-16",d:"8 vCore · 16 GB RAM · 200 GB NVMe · 1 Gbps",pr:"€0.1659/hr",s:"g",usa:"g"},
+  {n:"c3-32",d:"16 vCore · 32 GB RAM · 400 GB NVMe · 2 Gbps",pr:"€0.3318/hr",s:"g",usa:"g"},
+  {n:"c3-64",d:"32 vCore · 64 GB RAM · 400 GB NVMe · 4 Gbps",pr:"€0.6637/hr",s:"g",usa:"g"},
+  {n:"c3-128",d:"64 vCore · 128 GB RAM · 400 GB NVMe · 8 Gbps",pr:"€1.3274/hr",s:"g",usa:"g"},
+  {n:"c3-256",d:"128 vCore · 256 GB RAM · 400 GB NVMe · 20 Gbps",pr:"€2.6547/hr",s:"g",usa:"g"},
+  {n:"c2-7",d:"2 vCore · 7 GB RAM · 50 GB SSD · 250 Mbps",pr:"€0.0978/hr",s:"g",usa:"g"},
+  {n:"c2-15",d:"4 vCore · 15 GB RAM · 100 GB SSD · 250 Mbps",pr:"€0.19/hr",s:"g",usa:"g"},
+  {n:"c2-30",d:"8 vCore · 30 GB RAM · 200 GB SSD · 500 Mbps",pr:"€0.383/hr",s:"g",usa:"g"},
+  {n:"c2-60",d:"16 vCore · 60 GB RAM · 400 GB SSD · 1 Gbps",pr:"€0.749/hr",s:"g",usa:"g"},
+  {n:"c2-120",d:"32 vCore · 120 GB RAM · 400 GB SSD · 10 Gbps",pr:"€1.48/hr",s:"g",usa:"g"},
+]},
+{fam:"Public Cloud", cat:"Compute — Memory Optimised (r-series)", color:"#00B1FF", items:[
+  {n:"r3-16",d:"2 vCore · 16 GB RAM · 50 GB NVMe · 500 Mbps",pr:"€0.0602/hr",s:"g",usa:"g"},
+  {n:"r3-32",d:"4 vCore · 32 GB RAM · 100 GB NVMe · 1 Gbps",pr:"€0.1203/hr",s:"g",usa:"g"},
+  {n:"r3-64",d:"8 vCore · 64 GB RAM · 200 GB NVMe · 2 Gbps",pr:"€0.2407/hr",s:"g",usa:"g"},
+  {n:"r3-128",d:"16 vCore · 128 GB RAM · 400 GB NVMe · 4 Gbps",pr:"€0.4813/hr",s:"g",usa:"g"},
+  {n:"r3-256",d:"32 vCore · 256 GB RAM · 400 GB NVMe · 8 Gbps",pr:"€0.9627/hr",s:"g",usa:"g"},
+  {n:"r3-512",d:"64 vCore · 512 GB RAM · 400 GB NVMe · 20 Gbps",pr:"€1.9254/hr",s:"g",usa:"g"},
+  {n:"r3-1024",d:"128 vCore · 1 TB RAM · 400 GB NVMe · 20 Gbps",pr:"€3.8508/hr",s:"g",usa:"g"},
+  {n:"r2-15",d:"2 vCore · 15 GB RAM · 50 GB SSD",pr:"€0.0978/hr",s:"g",usa:"g"},
+  {n:"r2-30",d:"2 vCore · 30 GB RAM · 50 GB SSD",pr:"€0.113/hr",s:"g",usa:"g"},
+  {n:"r2-60",d:"4 vCore · 60 GB RAM · 100 GB SSD",pr:"€0.22/hr",s:"g",usa:"g"},
+  {n:"r2-120",d:"8 vCore · 120 GB RAM · 200 GB SSD",pr:"€0.443/hr",s:"g",usa:"g"},
+  {n:"r2-240",d:"16 vCore · 240 GB RAM · 400 GB SSD",pr:"€0.871/hr",s:"g",usa:"g"},
+]},
+{fam:"Public Cloud", cat:"Compute — Storage Optimised (i-series)", color:"#00B1FF", items:[
+  {n:"i1-45",d:"8 vCore · 45 GB RAM · 50 GB SSD + 1.9 TB NVMe",pr:"€0.439/hr",s:"g",usa:"g"},
+  {n:"i1-90",d:"16 vCore · 90 GB RAM · 50 GB SSD + 2×1.9 TB NVMe",pr:"€0.879/hr",s:"g",usa:"g"},
+  {n:"i1-180",d:"32 vCore · 180 GB RAM · 50 GB SSD + 4×1.9 TB NVMe",pr:"€1.76/hr",s:"g",usa:"g"},
+]},
+{fam:"Public Cloud", cat:"Compute — Discovery (d-series)", color:"#00B1FF", items:[
+  {n:"d2-2",d:"1 vCore · 2 GB RAM · 25 GB · 100 Mbps (shared) — ideal for dev/test",pr:"€0.0099/hr",s:"g",usa:"g"},
+  {n:"d2-4",d:"2 vCore · 4 GB RAM · 50 GB · 250 Mbps (shared)",pr:"€0.0198/hr",s:"g",usa:"g"},
+  {n:"d2-8",d:"4 vCore · 8 GB RAM · 50 GB · 500 Mbps (shared)",pr:"€0.0357/hr",s:"g",usa:"g"},
+]},
+{fam:"Public Cloud", cat:"Compute — Metal Instances (Baremetal Cloud)", color:"#00B1FF", items:[
+  {n:"bm-s1",d:"4 vCore · 32 GiB RAM · 2×960 GB SSD · 1 Gbps",pr:"€0.50/hr",s:"g",usa:"?"},
+  {n:"bm-m1",d:"8 vCore · 64 GiB RAM · 2×960 GB SSD · 1 Gbps",pr:"€0.85/hr",s:"g",usa:"?"},
+  {n:"bm-l1",d:"16 vCore · 128 GiB RAM · 2×960 GB SSD · 1 Gbps",pr:"€1.45/hr",s:"g",usa:"?"},
+]},
+{fam:"Public Cloud", cat:"Compute — Nvidia NGC Platform (GPU Eligible ✓)", color:"#00A36C", items:[
+  {n:"GPU Instances — V100 / V100S / RTX5000",d:"Only these GPU models are available with Startup Program credits",pr:"From €0.36/hr",s:"g",usa:"g",note:"ℹ Only V100, V100S and RTX5000 GPUs are available — other GPU models are blocked"},
+  {n:"t1-le-45 (Tesla V100 16 GB)",d:"8 vCore · 45 GB RAM · 1×V100 · 300 GB NVMe",pr:"€0.70/hr",s:"g",usa:"g"},
+  {n:"t1-le-90 (Tesla V100 16 GB)",d:"16 vCore · 90 GB RAM · 2×V100 · 400 GB NVMe",pr:"€1.40/hr",s:"g",usa:"g"},
+  {n:"t1-le-180 (Tesla V100 16 GB)",d:"32 vCore · 180 GB RAM · 4×V100 · 400 GB NVMe",pr:"€2.80/hr",s:"g",usa:"g"},
+  {n:"t2-le-45 (Tesla V100S 32 GB)",d:"15 vCore · 45 GB RAM · 1×V100S · 300 GB NVMe",pr:"€0.80/hr",s:"g",usa:"g"},
+  {n:"t2-le-90 (Tesla V100S 32 GB)",d:"30 vCore · 90 GB RAM · 2×V100S · 500 GB NVMe",pr:"€1.60/hr",s:"g",usa:"g"},
+  {n:"t2-le-180 (Tesla V100S 32 GB)",d:"60 vCore · 180 GB RAM · 4×V100S · 500 GB NVMe",pr:"€3.20/hr",s:"g",usa:"g"},
+  {n:"rtx5000-28",d:"4 vCore · 28 GB RAM · 1×Quadro RTX5000 · 400 GB SSD",pr:"€0.36/hr",s:"g",usa:"g"},
+  {n:"rtx5000-56",d:"8 vCore · 56 GB RAM · 2×Quadro RTX5000 · 400 GB SSD",pr:"€0.72/hr",s:"g",usa:"g"},
+  {n:"rtx5000-84",d:"16 vCore · 84 GB RAM · 3×Quadro RTX5000 · 400 GB SSD",pr:"€1.08/hr",s:"g",usa:"g"},
+]},
+{fam:"Public Cloud", cat:"Compute — GPU Instances NOT Covered (H100, A100, L40S, L4, A10)", color:"#D93C2F", items:[
+  {n:"h100-380",d:"30 vCore · 380 GB RAM · H100 80 GB",pr:"€2.80/hr",s:"r",usa:"r",note:"⛔ H100 GPU — blocked for Startup Program"},
+  {n:"h100-760",d:"60 vCore · 760 GB RAM · 2×H100 80 GB",pr:"€5.60/hr",s:"r",usa:"r"},
+  {n:"h100-1520",d:"120 vCore · 1.52 TB RAM · 4×H100 80 GB",pr:"€11.20/hr",s:"r",usa:"r"},
+  {n:"a100-180",d:"15 vCore · 180 GB RAM · A100 80 GB",pr:"€2.75/hr",s:"r",usa:"r",note:"⛔ A100 GPU — blocked for Startup Program"},
+  {n:"a100-360",d:"30 vCore · 360 GB RAM · 2×A100 80 GB",pr:"€5.50/hr",s:"r",usa:"r"},
+  {n:"a100-720",d:"60 vCore · 720 GB RAM · 4×A100 80 GB",pr:"€11/hr",s:"r",usa:"r"},
+  {n:"l40s-90",d:"15 vCore · 90 GB RAM · L40S 48 GB",pr:"€1.40/hr",s:"r",usa:"r"},
+  {n:"l40s-180",d:"30 vCore · 180 GB RAM · 2×L40S 48 GB",pr:"€2.80/hr",s:"r",usa:"r"},
+  {n:"l40s-360",d:"60 vCore · 360 GB RAM · 4×L40S 48 GB",pr:"€5.60/hr",s:"r",usa:"r"},
+  {n:"l4-90",d:"22 vCore · 90 GB RAM · L4 24 GB",pr:"€0.75/hr",s:"r",usa:"r"},
+  {n:"l4-180",d:"45 vCore · 180 GB RAM · 2×L4 24 GB",pr:"€1.50/hr",s:"r",usa:"r"},
+  {n:"l4-360",d:"90 vCore · 360 GB RAM · 4×L4 24 GB",pr:"€3/hr",s:"r",usa:"r"},
+  {n:"a10-45",d:"30 vCore · 45 GB RAM · A10 24 GB",pr:"€0.76/hr",s:"r",usa:"r"},
+  {n:"a10-90",d:"60 vCore · 90 GB RAM · 2×A10 24 GB",pr:"€1.52/hr",s:"r",usa:"r"},
+  {n:"a10-180",d:"120 vCore · 180 GB RAM · 4×A10 24 GB",pr:"€3.04/hr",s:"r",usa:"r"},
+]},
+{fam:"Public Cloud", cat:"Compute — Images & Backups", color:"#00B1FF", items:[
+  {n:"Instance Backup",d:"Backup of instance snapshots — billed per GB",pr:"€0.000028/GB/hr",s:"g",usa:"g"},
+  {n:"Private Image Catalog",d:"Store custom VM images — billed per GB",pr:"€0.000015/GB/hr",s:"g",usa:"g"},
+  {n:"Public Image Catalog",d:"OVHcloud-managed OS images (Ubuntu, Debian, Windows…)",pr:"Free",s:"a",usa:"a"},
+  {n:"Infra as Code",d:"Terraform/Ansible templates and tooling",pr:"Free",s:"g",usa:"?"},
+]},
+
+/* ══ PUBLIC CLOUD — STORAGE ═════════════════════════════════ */
+{fam:"Public Cloud", cat:"Storage & Backup — Block Storage", color:"#0D8A5E", items:[
+  {n:"Block Storage Classic",d:"From 500 IOPS — billed per GB provisioned",pr:"€0.000059/GB/hr",s:"g",usa:"g"},
+  {n:"Block Storage High Speed",d:"Up to 3000 IOPS",pr:"€0.000131/GB/hr",s:"g",usa:"g"},
+  {n:"Block Storage High Speed Gen2",d:"30 IOPS/GB · up to 20 000 IOPS/vol · 0.5 MB/s/GB",pr:"€0.000131/GB/hr",s:"g",usa:"g"},
+  {n:"Volume Snapshot",d:"Point-in-time snapshot of block volumes",pr:"€0.000065/GB/hr",s:"g",usa:"g"},
+  {n:"Instance Backup / Volume Backup",d:"Backup stored in Object Storage",pr:"€0.000028/GB/hr",s:"g",usa:"g"},
+]},
+{fam:"Public Cloud", cat:"Storage & Backup — Object & File Storage", color:"#0D8A5E", items:[
+  {n:"Object Storage Standard (S3)",d:"S3-compatible · outgoing traffic included",pr:"€0.0000275/GiB/hr",s:"g",usa:"g"},
+  {n:"Object Storage Standard 3-AZ",d:"Three availability zones",pr:"€0.00001917/GiB/hr",s:"g",usa:"g"},
+  {n:"Object Storage High Performance",d:"Low-latency object storage",pr:"€0.000025/GiB/hr",s:"g",usa:"g"},
+  {n:"Object Storage Infrequent Access",d:"Low-cost · €0.004/GiB retrieval",pr:"€0.00000548/GiB/hr",s:"g",usa:"g"},
+  {n:"Object Storage Active Archive",d:"Long-term immediate access · €0.018/GiB retrieval",pr:"€0.00000617/GiB/hr",s:"g",usa:"g"},
+  {n:"Object Storage Standard (SWIFT)",d:"OpenStack Swift API",pr:"€0.000015/GiB/hr",s:"g",usa:"g"},
+  {n:"File Storage Standard (beta)",d:"24 IOPS/GB · 0.25 MB/s/GB",pr:"Free (beta)",s:"a",usa:"?",note:"💡 Free Alpha/Beta in progress"},
+  {n:"Cloud Archive",d:"Cold storage · €0.01/GiB incoming · 180-day minimum",pr:"€0.0000033/GiB/hr",s:"g",usa:"g"},
+  {n:"Cold Archive",d:"Deep-freeze · €0.009/GiB retrieval · 180-day minimum",pr:"€0.00000228/GiB/hr",s:"g",usa:"?"},
+]},
+
+/* ══ PUBLIC CLOUD — NETWORK ═════════════════════════════════ */
+{fam:"Public Cloud", cat:"Network", color:"#7C3AED", items:[
+  {n:"Load Balancer (S / M / L / XL)",d:"Distribute traffic — 200 Mbps to 4 Gbps",pr:"From €0.0083/hr",s:"g",usa:"?"},
+  {n:"vRack (Private Network)",d:"Connect instances globally — free to create and use",pr:"Free",s:"a",usa:"a"},
+  {n:"Bandwidth",d:"Incoming & outgoing traffic on instances — SCALE only for extra quotas",pr:"Included / SCALE★",s:"g",usa:"?",note:"★ Free everywhere except APAC — SCALE level for extended quotas"},
+  {n:"IP Failover / Public IP (legacy)",d:"Legacy failover IP — replaced by Floating IP",pr:"Varies",s:"r",usa:"?"},
+  {n:"Floating IP (IPv4)",d:"Move public IP between instances and services",pr:"€0.0025/hr",s:"g",usa:"?"},
+  {n:"Gateway (S / M / L / XL / 2XL)",d:"Outbound NAT for private instances — 200 Mbps to 8 Gbps",pr:"From €0.0028/hr",s:"g",usa:"?"},
+  {n:"Anti-DDoS",d:"Standard DDoS protection included on all Public Cloud products",pr:"Included",s:"a",usa:"a"},
+]},
+
+/* ══ PUBLIC CLOUD — CONTAINERS ══════════════════════════════ */
+{fam:"Public Cloud", cat:"Containers & Orchestration", color:"#0E7490", items:[
+  {n:"Managed Kubernetes Service (Free tier)",d:"99.5% SLO · 400 MiB ETCD · max 100 nodes",pr:"Free",s:"a",usa:"g"},
+  {n:"Managed Kubernetes Service (Standard)",d:"99.99% SLA · 8 GiB ETCD · max 500 nodes — control plane free, pay for nodes",pr:"Free control plane",s:"g",usa:"g"},
+  {n:"Managed Kubernetes Load Balancer",d:"Network load balancer for K8s ingress",pr:"€0.0134/hr",s:"g",usa:"g"},
+  {n:"Managed Rancher Service — OVHcloud Edition",d:"Multi-cluster K8s management · min 20 vCPU",pr:"€0.00685/vCPU/hr",s:"g",usa:"g"},
+  {n:"Managed Rancher Service — Standard",d:"Full Rancher · min 20 vCPU",pr:"€0.01712/vCPU/hr",s:"g",usa:"g"},
+  {n:"Managed Private Registry (S / M / L)",d:"Secure container image registry — 200 GB to 5 TB",pr:"From €0.0237/hr",s:"g",usa:"g"},
+  {n:"Workflow Management",d:"CI/CD pipeline and data workflows",pr:"Varies",s:"g",usa:"?"},
+  {n:"Public Image Catalog",d:"OVHcloud-managed container images",pr:"Free",s:"a",usa:"a"},
+  {n:"Private Image Catalog",d:"Your own container image store",pr:"€0.000015/GB/hr",s:"g",usa:"g"},
+]},
+
+/* ══ PUBLIC CLOUD — DATA & ANALYTICS ════════════════════════ */
+{fam:"Public Cloud", cat:"Data & Analytics", color:"#BE185D", items:[
+  {n:"Data Processing (Apache Spark)",d:"Serverless Spark jobs — pay per job/resource hour",pr:"Resource-based",s:"g",usa:"?"},
+  {n:"Logs Data Platform",d:"Log ingestion, retention and analysis",pr:"Varies",s:"g",usa:"?"},
+]},
+{fam:"Public Cloud", cat:"Data Platform", color:"#BE185D", items:[
+  {n:"Data Catalog",d:"Unified metadata and data governance",pr:"Varies",s:"g",usa:"?"},
+  {n:"Data Processing Engine",d:"Managed data pipeline execution",pr:"Varies",s:"g",usa:"?"},
+  {n:"Lakehouse Manager",d:"Unified analytics over data lake and warehouse",pr:"Varies",s:"g",usa:"?"},
+  {n:"Analytics Manager",d:"BI and analytics layer",pr:"Varies",s:"g",usa:"?"},
+  {n:"Application Services",d:"App deployment and serving layer",pr:"Varies",s:"g",usa:"?"},
+  {n:"Data Platform Capacity Compute option",d:"Dedicated compute attached to Data Platform",pr:"Varies",s:"g",usa:"?"},
+]},
+
+/* ══ PUBLIC CLOUD — AI & ML ═════════════════════════════════ */
+{fam:"Public Cloud", cat:"AI & ML", color:"#0066CC", items:[
+  {n:"AI Training",d:"Distributed model training jobs — GPU/CPU",pr:"Compute-based",s:"g",usa:"?"},
+  {n:"AI Dashboard",d:"Experiment tracking and model management",pr:"Varies",s:"g",usa:"?"},
+  {n:"AI Deploy",d:"Model serving and inference endpoints",pr:"Compute-based",s:"g",usa:"?"},
+  {n:"AI Endpoints",d:"Pre-deployed model APIs (LLMs, vision, speech…)",pr:"Per call/token",s:"g",usa:"?"},
+  {n:"AI Notebook / Quantum Notebook",d:"Jupyter notebooks with GPU — includes Quantum exploration env",pr:"Compute-based",s:"g",usa:"?"},
+]},
+
+/* ══ PUBLIC CLOUD — DATABASES ════════════════════════════════ */
+{fam:"Public Cloud", cat:"Databases", color:"#B45309", items:[
+  {n:"Managed MySQL (Essential/Business/Production/Enterprise)",d:"1–3 node HA · DB1-4 to B3-256 range",pr:"From €0.0746/hr",s:"g",usa:"?"},
+  {n:"Managed PostgreSQL (Essential/Business/Production/Enterprise)",d:"1–3 node HA · DB1-4 to B3-256 range",pr:"From €0.0746/hr",s:"g",usa:"?"},
+  {n:"Managed MongoDB (Discovery FREE / Production / Advanced)",d:"3-node HA · Discovery free tier · B3 range",pr:"Free tier + from €0.023/node/hr",s:"g",usa:"?"},
+  {n:"Managed Redis / Valkey",d:"In-memory data store — Essential/Business/Enterprise",pr:"From €0.068/hr",s:"g",usa:"?"},
+  {n:"Managed Kafka + Kafka Connect + MirrorMaker",d:"Event streaming, connectors and replication",pr:"From €0.068/hr",s:"g",usa:"?"},
+  {n:"Managed OpenSearch",d:"Search and log analytics",pr:"From €0.068/hr",s:"g",usa:"?"},
+  {n:"Managed Cassandra",d:"Distributed NoSQL",pr:"From €0.068/hr",s:"g",usa:"?"},
+  {n:"Managed M3 (Timeseries)",d:"High-throughput metrics store",pr:"From €0.68/hr",s:"g",usa:"?"},
+  {n:"Managed Grafana",d:"Hosted Grafana dashboards and alerting",pr:"From €0.068/hr",s:"g",usa:"?"},
+  {n:"Caching",d:"Managed caching layer",pr:"Varies",s:"g",usa:"?"},
+]},
+
+/* ══ BAREMETAL ══════════════════════════════════════════════ */
+{fam:"Baremetal", cat:"Dedicated Servers — NOT Covered", color:"#D93C2F", items:[
+  {n:"Rise / Advanced / Game / Storage / Scale ranges",d:"Unmanaged dedicated hardware — all standard ranges",pr:"From €40/mo",s:"r",usa:"?"},
+  {n:"High Grade range",d:"High-performance dedicated servers",pr:"Custom",s:"r",usa:"?",note:"★ SCALE may get manual invoice via Sales Admin"},
+]},
+{fam:"Baremetal", cat:"VPS — NOT Covered", color:"#D93C2F", items:[
+  {n:"VPS (Starter / Value / Essential / Comfort / Elite)",d:"Virtual Private Servers — all tiers",pr:"From €3.99/mo",s:"r",usa:"r"},
+]},
+{fam:"Baremetal", cat:"Managed Bare Metal", color:"#0D8A5E", items:[
+  {n:"Managed Bare Metal — Essential range",d:"VMware-powered managed bare metal",pr:"From €0.50/hr",s:"g",usa:"?"},
+]},
+{fam:"Baremetal", cat:"Storage & Backup (Baremetal)", color:"#B45309", items:[
+  {n:"Cloud Disk Array (SAN)",d:"Network-attached SAN storage",pr:"Varies",s:"g",usa:"?"},
+  {n:"NAS-HA",d:"High-availability NAS",pr:"Varies",s:"g",usa:"?"},
+  {n:"Enterprise File Storage",d:"Managed enterprise NFS/SMB",pr:"Varies",s:"r",usa:"?"},
+  {n:"Veeam Cloud Connect",d:"Cloud backup target for Veeam",pr:"Varies",s:"g",usa:"r"},
+  {n:"Veeam Backup Enterprise",d:"Veeam Backup & Replication enterprise licence",pr:"Varies",s:"g",usa:"r"},
+  {n:"Option: Backup Storage (for Dedicated Server)",d:"Backup add-on for dedicated servers",pr:"Varies",s:"r",usa:"g",note:"★ SCALE only via Sales Admin for USA"},
+  {n:"NetApp",d:"NetApp managed storage solutions",pr:"Custom",s:"r",usa:"?"},
+  {n:"Managed Big Data Cluster",d:"Managed Hadoop/big data cluster",pr:"Custom",s:"r",usa:"r"},
+]},
+{fam:"Baremetal", cat:"Network & Security (Baremetal)", color:"#7C3AED", items:[
+  {n:"Load Balancer",d:"Hardware load balancer for baremetal",pr:"Varies",s:"g",usa:"?"},
+  {n:"vRack (Private Network)",d:"Private interconnect — free",pr:"Free",s:"a",usa:"a"},
+  {n:"OVH Cloud Connect",d:"Dedicated private line to OVHcloud",pr:"Varies",s:"r",usa:"?"},
+  {n:"Bandwidth (Baremetal)",d:"Additional bandwidth for dedicated servers",pr:"Varies",s:"g",note:"★ Free everywhere except APAC",usa:"?"},
+  {n:"IP Failover (Baremetal)",d:"Legacy failover IP for dedicated servers",pr:"Varies",s:"r",usa:"r"},
+  {n:"CDN Infrastructure",d:"Content delivery network",pr:"Varies",s:"r",usa:"r"},
+]},
+
+/* ══ WEB CLOUD — NOT COVERED ════════════════════════════════ */
+{fam:"Web Cloud", cat:"Web PaaS, Domains, Hosting — NOT Covered", color:"#D93C2F", items:[
+  {n:"Web PaaS (Platform.sh powered)",d:"Managed web application platform",pr:"Varies",s:"r",usa:"r"},
+  {n:"Domain Names",d:"Registration, transfer, renewal — all TLDs",pr:"Varies",s:"r",usa:"r"},
+  {n:"Web Hosting (shared plans)",d:"Personal, Pro, Performance shared hosting",pr:"From €2.99/mo",s:"r",usa:"r"},
+  {n:"Email / Microsoft 365 / Exchange",d:"MX Plan, Hosted Exchange, Microsoft 365",pr:"Varies",s:"r",usa:"r"},
+  {n:"SharePoint / Collaborative Tools",d:"Microsoft collaboration suite via OVHcloud",pr:"Varies",s:"r",usa:"r"},
+]},
+
+/* ══ TELECOM — NOT COVERED ══════════════════════════════════ */
+{fam:"Telecom", cat:"Telecom — NOT Covered", color:"#636B7A", items:[
+  {n:"Fiber & Broadband Access",d:"Internet connectivity subscriptions",pr:"Varies",s:"r",usa:"r"},
+  {n:"Telephony / SIP Trunk / VoIP",d:"Voice services and number porting",pr:"Varies",s:"r",usa:"r"},
+  {n:"SMS & Fax",d:"Bulk SMS and fax services",pr:"Varies",s:"r",usa:"r"},
+  {n:"OverTheBox",d:"Internet bonding and failover device",pr:"Varies",s:"r",usa:"r"},
+]},
+
+/* ══ SUPPORT ════════════════════════════════════════════════ */
+{fam:"Support", cat:"Support Plans", color:"#0E7490", items:[
+  {n:"Standard Support",d:"Community forum and documentation — always free",pr:"Free",s:"a",usa:"a"},
+  {n:"Premium Support",d:"Priority ticket response and expert access — both START and SCALE",pr:"Varies",s:"g",usa:"?"},
+  {n:"Business Support",d:"SCALE level only — manual invoice via Sales Admin",pr:"Included (SCALE)",s:"p",usa:"?",scaleOnly:true},
+  {n:"Enterprise Support",d:"Full enterprise SLA — not covered by credits",pr:"Custom",s:"r",usa:"r"},
+]},
+];
+
+// ── STATE ─────────────────────────────────────────────────
+let filter='all', level='start';
+
+function effS(item){
+  if(item.s==='p') return level==='scale'?'g':'r';
+  return item.s;
+}
+
+function badgeHtml(item){
+  const s=effS(item);
+  if(item.s==='p'&&level==='scale') return `<span class="badge p">★ SCALE</span>`;
+  if(item.s==='p') return `<span class="badge r">✗ Not (START)</span>`;
+  if(item.s==='gr') return `<span class="badge gr">🔒 SecNumCloud</span>`;
+  if(s==='g') return `<span class="badge g">✓ Covered</span>`;
+  if(s==='r') return `<span class="badge r">✗ Not covered</span>`;
+  if(s==='a') return `<span class="badge a">Free</span>`;
+  return `<span class="badge gr">Conditional</span>`;
+}
+
+
+
+function render(){
+  const container=document.getElementById('cats');
+  container.innerHTML='';
+  DATA.forEach((cat,ci)=>{
+    const div=document.createElement('div');
+    div.className='cat';div.dataset.ci=ci;
+    const rows=cat.items.map(item=>`
+      <div class="p-row"
+           data-s="${item.s}"
+           data-es="${effS(item)}"
+           data-k="${(item.n+' '+(item.d||'')).toLowerCase()}"
+           data-so="${item.scaleOnly?1:0}">
+        <div class="p-info">
+          <div class="p-name">${item.n}</div>
+          ${item.d?`<div class="p-desc">${item.d}</div>`:''}
+          ${item.note?`<div class="p-note">${item.note}</div>`:''}
+        </div>
+        <div class="p-price">${item.pr||''}</div>
+        <div class="p-tags">
+          ${badgeHtml(item)}
+
+        </div>
+      </div>`).join('');
+
+    div.innerHTML=`
+      <div class="cat-hdr" onclick="toggleCat(${ci})">
+        <div class="cat-ico" style="background:${cat.color}18">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${cat.color}" stroke-width="2.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+        </div>
+        <div class="cat-title">
+          <div class="cat-name">${cat.cat}</div>
+          <div class="cat-family">${cat.fam}</div>
+        </div>
+        <span class="cat-cnt" id="cc${ci}">${cat.items.length}</span>
+
+        <svg class="cat-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+      </div>
+      <div class="cat-body">${rows}</div>`;
+    container.appendChild(div);
+  });
+  updateStats();
+}
+
+function toggleCat(ci){
+  document.querySelector(`[data-ci="${ci}"]`).classList.toggle('coll');
+}
+
+function go(){
+  const q=document.getElementById('q').value.toLowerCase().trim();
+  let total=0;
+  document.querySelectorAll('.cat').forEach((catEl,ci)=>{
+    const rows=catEl.querySelectorAll('.p-row');
+    let vis=0;
+    rows.forEach(r=>{
+      const es=r.dataset.es, match=!q||r.dataset.k.includes(q);
+      let show=match;
+      if(filter==='yes') show=show&&(es==='g'||es==='a');
+      if(filter==='no') show=show&&es==='r';
+      r.hidden=!show;
+      if(show)vis++;
+    });
+    const cc=document.getElementById('cc'+ci);
+    if(cc)cc.textContent=vis;
+    catEl.classList.toggle('hidden',vis===0);
+    total+=vis;
+  });
+  document.getElementById('emp').classList.toggle('on',total===0);
+  updateStats();
+}
+
+function sf(f){
+  filter=f;
+  ['all','yes','no'].forEach(x=>{
+    const b=document.getElementById('f-'+x);
+    b.className='f-btn'+(f===x?(x==='all'?' fa':x==='yes'?' fy':' fn'):'');
+  });
+  go();
+}
+
+function setLevel(l){
+  level=l;
+  document.getElementById('b-start').classList.toggle('on',l==='start');
+  document.getElementById('b-scale').classList.toggle('on',l==='scale');
+  document.querySelectorAll('.p-row').forEach(r=>{
+    if(r.dataset.so==='1'){
+      r.dataset.es=l==='scale'?'g':'r';
+      const badge=r.querySelector('.badge');
+      if(badge){
+        if(l==='scale'){badge.className='badge p';badge.textContent='★ SCALE';}
+        else{badge.className='badge r';badge.textContent='✗ Not (START)';}
+      }
+    }
+  });
+  go();
+}
+
+function updateStats(){
+  let e=0,n=0;
+  DATA.forEach(cat=>cat.items.forEach(item=>{
+    const s=effS(item);
+    if(s==='g'||s==='a')e++;else n++;
+  }));
+  document.getElementById('sn-e').textContent=e;
+  document.getElementById('sn-n').textContent=n;
+}
+
+render();
+</script>
+</body>
+</html>

@@ -34,23 +34,27 @@ refused for sims by default. **Default sim flavor: `t2-le-45`** (V100S 32GB,
 available across EU regions). Plain V100 (`t1-le-*`, 16GB, slightly cheaper)
 exists only in BHS5 (Canada); `recommended_for_sim` picks the cheapest
 fp64-healthy GPU actually present in the target region. CPU flavors (`c3-*`,
-`b3-*`) are fp64-healthy and priced from the OVH catalog, and are the right
-choice for small runs and for a wide one-job-per-VM fan-out; their Startup
-Program credit coverage is an open question (below).
+`b3-*`) are fp64-healthy, priced from the OVH catalog, **covered by Startup
+Program credits** (below), and the right choice for small runs and for a wide
+one-job-per-VM fan-out.
 
 `flux_compute.flavors.classify(name)` and `recommended_for_sim(names)` encode
 this policy; it is enforced, not advisory.
 
-### Open question for John — CPU credit coverage
+### CPU credit coverage — CONFIRMED covered
 
-The March 2026 product-eligibility list this repo cites names only **GPU cards**
-(V100/V100S covered; RTX5000 covered but fp64-crippled; H100/A100/L40S/L4/A10 not
-covered). It is silent on whether **CPU instance spend** (`b3-*`, `c3-*`) draws
-from the Startup Program credits or is billed to the account. The policy treats
-CPU flavors as usable and prices them from the OVH catalog, but their credit
-coverage is **unconfirmed** — no cited source answers it, so it is deliberately
-not asserted. Confirm with OVH (or the program terms) before running a wide CPU
-batch on the assumption it is free, and record the answer here.
+**CPU instance spend (`b3-*`, `c3-*`) draws from Startup Program credits.**
+Source of record: the program's product-eligibility guide (March 2026),
+archived in this repo at `docs/product-eligibility-startup-program-2026-03.html`
+— every General Purpose (b-series) and Compute Optimised (c-series) instance
+row is marked "✓ Covered" at both program levels, and the guide's general rule
+states the Public Cloud range is eligible with **GPU instances as the only
+restricted family** ("only V100, V100S and RTX5000 are available with
+credits"). Corroborated by OVH's public docs, which scope the voucher exclusions
+to specific GPU models only (A100/H100/L4/L40S):
+<https://docs.ovhcloud.com/en/guides/account-and-service-management/startup-program/available-products>.
+The guide's per-flavor prices (e.g. b3-8 at EUR 0.0512/hr) match the
+`_KNOWN_PRICE_EUR_HR` table, confirming both draw from the same catalog.
 
 ## Install
 
