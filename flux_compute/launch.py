@@ -138,8 +138,10 @@ def resolve_spec(conn, region: str, flavor: str | None = None, keypair: str | No
 
 def plan(cloud: str | None = None, region: str | None = None, flavor: str | None = None) -> int:
     from .auth import connect
+    from .reap import warn_strays  # function-level: reap imports provision, which imports this module
 
     conn = connect(cloud=cloud, region=region)
+    warn_strays(conn)
     reg = (region
            or getattr(getattr(conn, "config", None), "region_name", None)
            or os.environ.get("OS_REGION_NAME")

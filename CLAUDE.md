@@ -40,17 +40,29 @@ No silent defaults. Missing credentials raise with the remedy; a region exposing
 no credit-eligible, fp64-healthy GPU raises rather than falling back to RTX5000 or
 a blocked card. Switch region (GRA11, DE1, BHS5) instead.
 
-### Cost guardrails are mandatory once `run` exists (Phase 1+).
+### Cost guardrails are enforced by mechanism, not trust.
 Every provisioned instance must have a definite teardown path; an idle GPU
-quietly burns startup credits. Phase 1's `run` tears down on completion and on
-error; Phase 2 adds a hard spend cap.
+quietly burns startup credits. The enforcement stack (`flux_compute/provision.py`,
+`flux_compute/reap.py`): `run`/`sweep`/`bake` tear down on completion and on
+error with a retried, verified server delete, and a delete that cannot be
+verified prints a STRANDED INSTANCE banner with the cleanup commands and exits
+nonzero. Every created server is stamped with TTL metadata at create time
+(`flux_expires_at` = wall cap + a generous margin; `flux_keep=true` on `--keep`
+runs), `flux-compute reap` auto-deletes only stamped instances past their
+expiry (keep-flagged and unstamped name-prefix matches are report-only, taken
+only via `--all` + confirmation, and unidentifiable servers are never touched),
+and every command that connects surfaces strays with accrued cost before doing
+its own work. `sweep --budget` is the hard spend cap and refuses unpriced
+flavors. Do not add a provisioning path that bypasses the TTL stamp or the
+verified teardown.
 
 ## Layout
 
 - `flux_compute/flavors.py`: the credit + fp64 flavor policy (pure logic, tested).
 - `flux_compute/auth.py`: `connect()` to the OVH project from clouds.yaml / OS_* env.
 - `flux_compute/doctor.py`: `flux-compute doctor`, the API health check.
-- `flux_compute/cli.py`: argparse entry point (`doctor`; `run` is a Phase 1 stub).
+- `flux_compute/cli.py`: argparse entry point (`doctor`, `preflight`, `run`,
+  `sweep`, `reap`, `bake`, `push`).
 - `examples/clouds.yaml.example`: OVH application-credential template.
 
 ## Tests

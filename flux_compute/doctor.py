@@ -10,10 +10,12 @@ import os
 
 from .auth import connect
 from .flavors import classify, recommended_for_sim
+from .reap import warn_strays
 
 
 def run_doctor(cloud: str | None = None, region: str | None = None) -> int:
     conn = connect(cloud=cloud, region=region)
+    warn_strays(conn, full=True)
 
     print("Authenticated to OVH OpenStack.")
     print(f"  project: {_project_of(conn) or '(unknown)'}")

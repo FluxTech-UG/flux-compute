@@ -32,7 +32,10 @@ def bake(cloud=None, region=None, name=None, script=None, flavor=None,
     if not script:
         raise RuntimeError("bake needs --script (the setup script to bake in)")
 
+    from .reap import warn_strays
+
     conn = connect(cloud=cloud, region=region)
+    warn_strays(conn)
     # Always bake from the stock NVIDIA base image, never a prior baked image.
     spec = resolve_spec(conn, _region(conn, region), flavor=flavor)
     _print_plan(spec)

@@ -151,6 +151,40 @@ def describe(c: Candidate) -> str:
             f"      [{c.bucket}] {c.why}")
 
 
+def warn_strays(conn, full=False, now=None):
+    """Advisory stray check run at the start of every CLI command that
+    connects: surface flux-compute instances that are past TTL, legacy, or
+    keep-flagged, with their accrued cost, and point at `flux-compute reap`.
+
+    Never deletes anything (an unrelated command must not turn destructive).
+    A failed server list is reported and skipped rather than breaking the
+    command the user actually asked for. Returns the surfaced candidates.
+    """
+    try:
+        now = now or datetime.now(timezone.utc)
+        cands = find_candidates(list(conn.compute.servers(details=True)), now)
+    except Exception as exc:
+        print(f"note: stray-instance check skipped "
+              f"({type(exc).__name__}: {str(exc)[:80]})", file=sys.stderr)
+        return []
+    noisy = [c for c in cands if c.is_stray or c.bucket == "keep"]
+    if not noisy:
+        return []
+    if full:
+        print("flux-compute instances needing attention:", file=sys.stderr)
+        for c in noisy:
+            print(f"  - {describe(c)}", file=sys.stderr)
+        print("  run: flux-compute reap", file=sys.stderr)
+        return noisy
+    for c in noisy:
+        cost = f"~EUR {c.cost_eur:.2f} burned" if c.cost_eur is not None else "cost n/a"
+        age = f"{c.age_hr:.1f}h old" if c.age_hr is not None else "age unknown"
+        kind = "stranded" if c.is_stray else "kept (--keep)"
+        print(f"WARNING: {kind} instance {c.name} ({c.flavor or '?'}, {age}, {cost}) "
+              f"- run: flux-compute reap", file=sys.stderr)
+    return noisy
+
+
 def _confirm(prompt) -> bool:
     try:
         ans = input(prompt)

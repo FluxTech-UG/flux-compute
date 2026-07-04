@@ -9,6 +9,7 @@ from __future__ import annotations
 from .auth import connect
 from .flavors import classify, recommended_for_sim
 from .launch import PUBLIC_NETWORK
+from .reap import warn_strays
 
 # A single V100S (t2-le-45) is 15 vCPU; treat that as the core-quota floor.
 _MIN_CORES = 15
@@ -34,6 +35,7 @@ def gather(conn) -> dict:
 
 def run_preflight(cloud: str | None = None, region: str | None = None) -> int:
     conn = connect(cloud=cloud, region=region)
+    warn_strays(conn, full=True)
     d = gather(conn)
 
     print("flux-compute preflight (read-only launch-readiness check):")

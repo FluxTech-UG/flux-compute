@@ -20,10 +20,10 @@ _flux-compute command-line entry point._
 
 ### flux_compute/doctor.py
 _`flux-compute doctor`: verify OVH OpenStack API access._
-- run_doctor(cloud: str | None=None, region: str | None=None) -> int  ·L15
-- _print_group(title: str, verdicts) -> None  ·L62
-- _region_of(conn, region)  ·L71
-- _project_of(conn)  ·L78
+- run_doctor(cloud: str | None=None, region: str | None=None) -> int  ·L16
+- _print_group(title: str, verdicts) -> None  ·L64
+- _region_of(conn, region)  ·L73
+- _project_of(conn)  ·L80
 
 ### flux_compute/flavors.py
 _OVH Public Cloud flavor policy for the FluxTech Startup Program._
@@ -59,9 +59,9 @@ _Push artifacts to OVH Object Storage (Swift) for durable cloud copies._
 
 ### flux_compute/preflight.py
 _`flux-compute preflight`: read-only check that a region can actually launch._
-- const _MIN_CORES  ·L14
-- gather(conn) -> dict  ·L17
-- run_preflight(cloud: str | None=None, region: str | None=None) -> int  ·L35
+- const _MIN_CORES  ·L15
+- gather(conn) -> dict  ·L18
+- run_preflight(cloud: str | None=None, region: str | None=None) -> int  ·L36
 
 ### flux_compute/provision.py
 _Provision a GPU instance, run work on it, and always tear it down._
@@ -97,7 +97,7 @@ _Provision a GPU instance, run work on it, and always tear it down._
 - _rsync_down(ip, keyfile, remote, local)  ·L250
 - @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L258
 - smoke_test(cloud=None, region=None, flavor=None) -> int  ·L326
-- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L346
+- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L349
 
 ### flux_compute/reap.py
 _`flux-compute reap`: find flux-compute instances and delete the expired ones._
@@ -110,20 +110,21 @@ _`flux-compute reap`: find flux-compute instances and delete the expired ones._
 - _server_flavor_name(server)  ·L124
 - find_candidates(servers, now)  ·L133 — Assess every server; only positively identified flux-compute instances
 - describe(c: Candidate) -> str  ·L146
-- _confirm(prompt) -> bool  ·L154
-- _reap_one(conn, c: Candidate) -> bool  ·L162 — Delete one candidate's server (verified) plus its same-named keypair and
-- run_reap(cloud=None, region=None, yes=False, take_all=False) -> int  ·L183
+- warn_strays(conn, full=False, now=None)  ·L154 — Advisory stray check run at the start of every CLI command that
+- _confirm(prompt) -> bool  ·L188
+- _reap_one(conn, c: Candidate) -> bool  ·L196 — Delete one candidate's server (verified) plus its same-named keypair and
+- run_reap(cloud=None, region=None, yes=False, take_all=False) -> int  ·L217
 
 ### flux_compute/sweep.py
 _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling._
-- parse_jobs(text)  ·L27 — Parse a jobs file: each non-blank, non-# line is 'LABEL = PARAMS'.
-- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L53 — Total worst-case cost: every job runs to its wall cap. Concurrency does
-- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L61 — Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
-- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L85 — Clamp requested parallelism to what compute-quota headroom allows.
-- _flavor_vcpus(conn, flavor_name)  ·L123 — Read the vCPU count for a flavor from the compute API, or raise.
-- _failure_status(exc)  ·L134 — Label a per-job failure for the job record. A teardown strand reads as
-- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L149 — Run run_one(job) across up to max_workers threads (one instance per job);
-- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, plan_only=False) …  ·L165
+- parse_jobs(text)  ·L28 — Parse a jobs file: each non-blank, non-# line is 'LABEL = PARAMS'.
+- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L54 — Total worst-case cost: every job runs to its wall cap. Concurrency does
+- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L62 — Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
+- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L86 — Clamp requested parallelism to what compute-quota headroom allows.
+- _flavor_vcpus(conn, flavor_name)  ·L124 — Read the vCPU count for a flavor from the compute API, or raise.
+- _failure_status(exc)  ·L135 — Label a per-job failure for the job record. A teardown strand reads as
+- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L150 — Run run_one(job) across up to max_workers threads (one instance per job);
+- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, plan_only=False) …  ·L166
 
 ### tests/test_flavors.py
 _Pure-logic tests for the flavor policy. No network, no credentials._
@@ -195,6 +196,9 @@ _Pure-logic tests for reap selection: expiry math, positive identification,_
 - test_keep_flagged_is_never_auto_reaped_no_matter_how_old()  ·L95
 - test_cost_estimate_age_times_catalog_price()  ·L106
 - test_find_candidates_partitions_a_mixed_fleet()  ·L114
+- _conn_with(servers)  ·L139
+- test_warn_strays_surfaces_expired_legacy_and_keep_but_not_inflight(capsys)  ·L143
+- test_warn_strays_never_breaks_the_calling_command(capsys)  ·L165
 
 ### tests/test_sweep.py
 _Pure-logic tests for the sweep helpers. No network, no credentials._

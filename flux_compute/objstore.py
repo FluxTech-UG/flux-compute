@@ -56,7 +56,9 @@ def run_push(cloud=None, region=None, local_dir=None, container=None, prefix="")
     if not local_dir or not container:
         raise RuntimeError("push needs a local DIR and a CONTAINER")
     from .auth import connect
+    from .reap import warn_strays
     conn = connect(cloud=cloud, region=region)
+    warn_strays(conn)
     n, osr = push_dir(conn, container, local_dir, prefix=prefix)
     print(f"uploaded {n} file(s) from {local_dir} -> container {container} (object-store region {osr})"
           + (f" under {prefix}/" if prefix else ""))

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from flux_compute.provision import ttl_metadata, ttl_minutes_for
-from flux_compute.reap import assess, find_candidates, parse_utc
+from flux_compute.reap import assess, find_candidates, parse_utc, warn_strays
 
 NOW = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -132,3 +132,39 @@ def test_find_candidates_partitions_a_mixed_fleet():
     assert by_id["s3"].bucket == "expired-stamped"
     assert by_id["s4"].bucket == "keep"
     assert [c.server_id for c in cands if c.auto_reapable] == ["s3"]
+
+
+# --- per-command stray warnings ---------------------------------------------------
+
+def _conn_with(servers):
+    return SimpleNamespace(compute=SimpleNamespace(servers=lambda details=True: servers))
+
+
+def test_warn_strays_surfaces_expired_legacy_and_keep_but_not_inflight(capsys):
+    servers = [
+        SimpleNamespace(id="s1", name="web-1", metadata={}, created_at=_iso(NOW),
+                        flavor={"original_name": "b3-8"}),                     # foreign: silent
+        SimpleNamespace(id="s2", name="flux-compute-sweep-live", metadata=_stamp(+25),
+                        created_at=_iso(NOW), flavor={"original_name": "b3-8"}),  # in flight: silent
+        SimpleNamespace(id="s3", name="flux-compute-run-old", metadata={},
+                        created_at=_iso(NOW - timedelta(hours=46)),
+                        flavor={"original_name": "t2-le-45"}),                 # legacy stray
+        SimpleNamespace(id="s4", name="flux-compute-run-keepme", metadata=_stamp(-5, keep=True),
+                        created_at=_iso(NOW - timedelta(hours=2)),
+                        flavor={"original_name": "t2-le-45"}),                 # kept: surfaced
+    ]
+    surfaced = warn_strays(_conn_with(servers), now=NOW)
+    err = capsys.readouterr().err
+    assert {c.server_id for c in surfaced} == {"s3", "s4"}
+    assert "flux-compute-run-old" in err
+    assert "flux-compute reap" in err                # points at the remedy
+    assert "web-1" not in err                        # foreign never mentioned
+    assert "sweep-live" not in err                   # in-flight run not flagged
+
+
+def test_warn_strays_never_breaks_the_calling_command(capsys):
+    def boom(details=True):
+        raise RuntimeError("compute API down")
+    conn = SimpleNamespace(compute=SimpleNamespace(servers=boom))
+    assert warn_strays(conn, now=NOW) == []          # advisory: no raise
+    assert "stray-instance check skipped" in capsys.readouterr().err

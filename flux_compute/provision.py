@@ -324,7 +324,10 @@ def _gpu_instance(conn, spec, name, ttl_minutes, keep=False):
 
 
 def smoke_test(cloud=None, region=None, flavor=None) -> int:
+    from .reap import warn_strays  # function-level: reap imports this module
+
     conn = connect(cloud=cloud, region=region)
+    warn_strays(conn)
     spec = resolve_spec(conn, _region(conn, region), flavor=flavor)
     _print_plan(spec)
     label, check = _smoke_command(spec.gpu_model)
@@ -345,7 +348,10 @@ def smoke_test(cloud=None, region=None, flavor=None) -> int:
 
 def run_job(cloud=None, region=None, flavor=None, uploads=(), script=None,
             fetch=(), keep=False, exec_timeout=2400, image=None) -> int:
+    from .reap import warn_strays  # function-level: reap imports this module
+
     conn = connect(cloud=cloud, region=region)
+    warn_strays(conn)
     spec = resolve_spec(conn, _region(conn, region), flavor=flavor, image=image)
     _print_plan(spec)
     ttl = ttl_minutes_for(-(-exec_timeout // 60))

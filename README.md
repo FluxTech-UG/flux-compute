@@ -90,6 +90,9 @@ end-to-end "is the API working?" check.
   script, fetch artifacts, tear down (`--smoke` for a GPU check; `--plan` for a dry run).
 - **`sweep --jobs FILE --max-parallel K --budget EUR`** — fan out one instance per
   job, with a pre-flight worst-case cost guard and a per-job wall-clock cap.
+- **`reap [--yes] [--all]`** — list every flux-compute instance with age, hourly
+  price and accrued cost; delete the ones past their stamped TTL (see Cost
+  guardrails below).
 - **`push DIR CONTAINER`** — durable artifact copies to OVH Object Storage (Swift).
 
 ### Tested and rejected on OVH: baked images
@@ -98,6 +101,35 @@ end-to-end "is the API working?" check.
 (image staging) — slower than the stock image + ~5 min install it replaces. The
 code is kept (correct and cloud-general) but is **not recommended on OVH**; prefer
 the stock image + per-job install.
+
+## Cost guardrails
+
+"Every provisioned instance tears down" is enforced by mechanism, not trust:
+
+- **Hard spend cap**: `sweep --budget EUR` refuses to start when worst-case
+  spend (jobs x price x wall cap) exceeds the cap, and refuses outright when the
+  flavor has no known price. Concurrency is clamped to compute-quota headroom.
+- **Wall caps**: every remote exec is killed at its cap, so a hung job cannot
+  run up the bill.
+- **Verified teardown**: the per-run server delete is retried and verified gone
+  (`wait_for_delete`); a delete that cannot be verified prints a multi-line
+  STRANDED INSTANCE banner with the exact cleanup commands and exits nonzero.
+- **TTL metadata**: every created server is stamped `flux_created_by` and
+  `flux_expires_at` (wall cap + max(30 min, 25% of the cap) — generous on
+  purpose: reap must never fire early). `--keep` runs also stamp
+  `flux_keep=true`.
+- **`flux-compute reap`**: auto-deletes only instances that are positively
+  metadata-stamped AND past their stamped expiry (`--yes` for non-interactive
+  use), removing the same-named keypair and security group with them. Everything
+  else it only reports, annotated with the decision basis: keep-flagged and
+  unstamped-legacy (name-prefix, no stamp) instances need `--all` plus an
+  interactive confirmation; servers it cannot positively identify as
+  flux-compute-created are never listed or touched. Exits nonzero while strays
+  remain.
+- **Stray visibility**: every command that connects (`doctor`, `preflight`,
+  `run`, `sweep`, `bake`, `push`) first surfaces any stranded or kept instance
+  with its accrued cost and points at `reap` — advisory only; no command other
+  than `reap` ever deletes.
 
 ## Tests
 

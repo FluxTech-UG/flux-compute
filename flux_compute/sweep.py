@@ -22,6 +22,7 @@ from .provision import (
     _gpu_instance, _print_plan, _region, _rsync_down, _rsync_up, _scp_up, _ssh,
     ttl_minutes_for,
 )
+from .reap import warn_strays
 
 
 def parse_jobs(text):
@@ -178,6 +179,7 @@ def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
         jobs = parse_jobs(fh.read())
 
     conn0 = connect(cloud=cloud, region=region)
+    warn_strays(conn0)
     spec = resolve_spec(conn0, _region(conn0, region), flavor=flavor, image=image)
     _print_plan(spec)
 
