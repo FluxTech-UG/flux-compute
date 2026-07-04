@@ -13,8 +13,15 @@ Two independent gates decide whether a flavor may run a FluxTech simulation:
      (RTX5000) runs it at ~1/32, so RTX5000 is credit-eligible but not fp64
      healthy, and is refused for sims by default.
 
-CPU flavors are always fp64 healthy and credit eligible; they are the right
-choice for small runs where GPU kernel-launch latency would dominate.
+CPU flavors are always fp64 healthy and are the right choice for small runs, and
+for a wide fan-out of one-job-per-VM CPU work, where GPU kernel-launch latency
+would dominate. The classifier treats them as usable and prices them (b3-*/c3-*)
+from the OVH catalog. Whether CPU instance spend is *covered by the Startup
+Program credits*, however, is unconfirmed: the March 2026 eligibility list cited
+above names only GPU cards and is silent on CPU. So for a CPU flavor the
+credit_eligible flag means "not a blocked flavor / usable", not a sourced billing
+guarantee. Do not present CPU as credit-covered until it is confirmed with OVH
+(see README, "Open question for John — CPU credit coverage").
 """
 from __future__ import annotations
 
@@ -71,7 +78,10 @@ _GPU_RULES = (
                  "A10: not covered by Startup Program credits.")),
 )
 
-# CPU flavor families on Public Cloud: all credit-eligible and fp64-healthy.
+# CPU flavor families on Public Cloud: fp64-healthy and treated as usable. Their
+# Startup Program credit coverage is unconfirmed (see the module docstring and
+# the README open question); classify() sets credit_eligible=True to keep them
+# usable, not as a sourced billing claim.
 _CPU_PREFIXES = ("b3-", "b2-", "c3-", "c2-", "r3-", "r2-", "d2-", "i1-", "bm-")
 
 
@@ -111,8 +121,8 @@ def classify(name: str) -> FlavorVerdict:
         if n.startswith(prefix):
             return FlavorVerdict(
                 name, "cpu", None, True, True, price,
-                "CPU flavor: credit-eligible and fp64-healthy "
-                "(best for small runs where GPU launch latency dominates).",
+                "CPU flavor: fp64-healthy and usable; best for small runs and wide "
+                "one-job-per-VM fan-out. Startup Program credit coverage unconfirmed.",
             )
 
     return FlavorVerdict(
