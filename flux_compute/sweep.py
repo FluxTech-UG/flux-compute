@@ -55,15 +55,41 @@ def worst_case_eur(n_jobs, price_eur_hr, max_minutes):
     return n_jobs * price_eur_hr * (max_minutes / 60.0)
 
 
+def budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur):
+    """Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
+
+    Returns the worst-case EUR (None when the flavor has no known price and no
+    budget is set). With a budget set, an unpriced flavor is refused rather than
+    silently skipping the guard: a money cap that cannot see the price is not a
+    cap. Add the flavor's price to _KNOWN_PRICE_EUR_HR (flavors.py) to price it.
+    """
+    wc = worst_case_eur(n_jobs, price_eur_hr, max_minutes)
+    if budget_eur is not None:
+        if price_eur_hr is None:
+            raise RuntimeError(
+                f"--budget EUR {budget_eur:.2f} was set, but flavor {flavor!r} has no "
+                f"known price, so worst-case spend cannot be bounded. Add its price to "
+                f"_KNOWN_PRICE_EUR_HR in flavors.py, or drop --budget to run unguarded."
+            )
+        if wc > budget_eur:
+            raise RuntimeError(
+                f"worst-case ~EUR {wc:.2f} exceeds budget EUR {budget_eur:.2f}; "
+                "lower --max-minutes, run fewer jobs, or raise --budget."
+            )
+    return wc
+
+
 def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
               jobs_file=None, fetch=None, into="cloud-sweep",
-              max_parallel=4, max_minutes=30, budget_eur=None, image=None) -> int:
-    if not script:
-        raise RuntimeError("sweep needs --script (the per-job job script)")
+              max_parallel=4, max_minutes=30, budget_eur=None, image=None,
+              plan_only=False) -> int:
     if not jobs_file:
         raise RuntimeError("sweep needs --jobs (a jobs file)")
-    if not fetch:
-        raise RuntimeError("sweep needs --fetch (home-relative artifact dir per job)")
+    if not plan_only:
+        if not script:
+            raise RuntimeError("sweep needs --script (the per-job job script)")
+        if not fetch:
+            raise RuntimeError("sweep needs --fetch (home-relative artifact dir per job)")
 
     with open(jobs_file) as fh:
         jobs = parse_jobs(fh.read())
@@ -72,14 +98,14 @@ def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
     spec = resolve_spec(conn0, _region(conn0, region), flavor=flavor, image=image)
     _print_plan(spec)
 
-    wc = worst_case_eur(len(jobs), spec.est_cost_eur_hr, max_minutes)
+    wc = budget_guard(spec.flavor, spec.est_cost_eur_hr, len(jobs), max_minutes, budget_eur)
     tail = f"worst-case ~EUR {wc:.2f}" if wc is not None else "price n/a"
     print(f"sweep: {len(jobs)} jobs, up to {max_parallel} parallel, "
           f"per-job cap {max_minutes} min; {tail}")
-    if budget_eur is not None and wc is not None and wc > budget_eur:
-        raise RuntimeError(
-            f"worst-case ~EUR {wc:.2f} exceeds budget EUR {budget_eur:.2f}; "
-            "lower --max-minutes, run fewer jobs, or raise --budget.")
+
+    if plan_only:
+        print("plan only: no instances launched.")
+        return 0
 
     os.makedirs(into, exist_ok=True)
 

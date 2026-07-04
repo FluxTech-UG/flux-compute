@@ -44,6 +44,24 @@ def test_cpu_flavor_is_usable():
     assert v.usable_for_sim
 
 
+def test_cpu_flavors_are_priced():
+    # The b3-* / c3-* families we fan CPU batches through carry catalog prices,
+    # so a --budget guard is not blind on them.
+    assert classify("b3-8").price_eur_hr == pytest.approx(0.0512)
+    assert classify("b3-16").price_eur_hr == pytest.approx(0.1023)
+    assert classify("c3-8").price_eur_hr == pytest.approx(0.0913)
+    assert classify("c3-32").price_eur_hr == pytest.approx(0.3650)
+
+
+def test_unpriced_cpu_flavor_is_cpu_but_priceless():
+    # A CPU family we did not price (e.g. a -flex variant) still classifies as a
+    # usable CPU flavor, but its price is unknown, which the budget guard catches.
+    v = classify("b3-8-flex")
+    assert v.kind == "cpu"
+    assert v.usable_for_sim
+    assert v.price_eur_hr is None
+
+
 def test_unknown_flavor_is_not_usable():
     v = classify("zz-9000")
     assert v.kind == "unknown"

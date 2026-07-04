@@ -75,9 +75,12 @@ def main(argv=None) -> int:
     sweep.add_argument("--max-minutes", type=int, default=30,
                        help="Per-job remote wall-clock cap; kills a hung job (default 30).")
     sweep.add_argument("--budget", type=float, default=None, metavar="EUR",
-                       help="Refuse to start if worst-case cost (jobs x price x cap) exceeds this.")
+                       help="Refuse to start if worst-case cost (jobs x price x cap) exceeds this; "
+                            "an unpriced flavor is refused rather than skipping the guard.")
+    sweep.add_argument("--plan", action="store_true",
+                       help="Resolve the spec and print the cost/budget (and quota) preview without launching (dry run).")
     sweep.add_argument("--image", default=None,
-                       help="Boot from this image name instead of the auto-selected NVIDIA image.")
+                       help="Boot from this image name instead of the auto-selected image.")
 
     bake = sub.add_parser(
         "bake",
@@ -135,7 +138,8 @@ def main(argv=None) -> int:
             return run_sweep(cloud=args.cloud, region=args.region, flavor=args.flavor,
                              uploads=args.upload, script=args.script, jobs_file=args.jobs,
                              fetch=args.fetch, into=args.into, max_parallel=args.max_parallel,
-                             max_minutes=args.max_minutes, budget_eur=args.budget, image=args.image)
+                             max_minutes=args.max_minutes, budget_eur=args.budget, image=args.image,
+                             plan_only=args.plan)
 
         if args.command == "bake":
             from .image import bake

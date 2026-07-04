@@ -26,13 +26,26 @@ from dataclasses import dataclass
 # cheapest fp64-healthy GPU actually present in the target region.
 DEFAULT_SIM_FLAVOR = "t2-le-45"
 
-# Public list prices (EUR/hr, ex VAT) for the credit-eligible flavors, from the
-# OVHcloud Startup Program product-eligibility list (March 2026). Used for cost
-# display and to rank the cheapest fp64-healthy GPU.
+# Public list prices (EUR/hr, ex VAT) from the OVHcloud public cloud order
+# catalog for the DE subsidiary (the account's billing subsidiary), read
+# 2026-07-04 from the `<flavor>.consumption` hourly pricing at
+#   https://api.ovh.com/1.0/order/catalog/public/cloud?ovhSubsidiary=DE
+# The whole table is single-sourced from that catalog, so GPU and CPU rows are
+# directly comparable. Used for cost display, to rank the cheapest fp64-healthy
+# GPU, and to bound worst-case sweep spend. Re-verify against the account catalog
+# when prices move; an unpriced flavor is refused under a sweep --budget rather
+# than silently skipping the guard.
 _KNOWN_PRICE_EUR_HR = {
+    # GPU (credit-eligible cards)
     "t1-le-45": 0.70, "t1-le-90": 1.40, "t1-le-180": 2.80,
     "t2-le-45": 0.80, "t2-le-90": 1.60, "t2-le-180": 3.20,
     "rtx5000-28": 0.36, "rtx5000-56": 0.72, "rtx5000-84": 1.08,
+    # CPU — General Purpose (b3-*, 1 vCPU : 4 GB RAM)
+    "b3-8": 0.0512, "b3-16": 0.1023, "b3-32": 0.2046, "b3-64": 0.4092,
+    "b3-128": 0.8190, "b3-256": 1.6370, "b3-512": 3.2740, "b3-640": 4.0920,
+    # CPU — Compute Optimized (c3-*, 1 vCPU : 2 GB RAM)
+    "c3-4": 0.0457, "c3-8": 0.0913, "c3-16": 0.1825, "c3-32": 0.3650,
+    "c3-64": 0.7301, "c3-128": 1.4610, "c3-256": 2.9210, "c3-320": 3.6510,
 }
 
 # GPU flavor-name prefix -> (card model, credit_eligible, fp64_healthy, reason).

@@ -28,13 +28,13 @@ _`flux-compute doctor`: verify OVH OpenStack API access._
 ### flux_compute/flavors.py
 _OVH Public Cloud flavor policy for the FluxTech Startup Program._
 - const DEFAULT_SIM_FLAVOR  ·L27
-- const _KNOWN_PRICE_EUR_HR  ·L32
-- const _GPU_RULES  ·L41
-- const _CPU_PREFIXES  ·L62
-- @dataclass class FlavorVerdict  ·L66 — The policy verdict for a single flavor name.
-  - @property usable_for_sim(self) -> bool  ·L78 — True only when both gates pass: covered by credits and fp64-healthy.
-- classify(name: str) -> FlavorVerdict  ·L83 — Classify a flavor name against the credit + fp64 policy.
-- recommended_for_sim(available_names) -> str  ·L111 — Return the cheapest credit-eligible, fp64-healthy GPU among those available.
+- const _KNOWN_PRICE_EUR_HR  ·L38
+- const _GPU_RULES  ·L54
+- const _CPU_PREFIXES  ·L75
+- @dataclass class FlavorVerdict  ·L79 — The policy verdict for a single flavor name.
+  - @property usable_for_sim(self) -> bool  ·L91 — True only when both gates pass: covered by credits and fp64-healthy.
+- classify(name: str) -> FlavorVerdict  ·L96 — Classify a flavor name against the credit + fp64 policy.
+- recommended_for_sim(available_names) -> str  ·L124 — Return the cheapest credit-eligible, fp64-healthy GPU among those available.
 
 ### flux_compute/image.py
 _Bake a reusable GPU image: provision, run a setup script, snapshot, tear down._
@@ -85,7 +85,8 @@ _Provision a GPU instance, run work on it, and always tear it down._
 _Fan out a parameter sweep across GPU instances, with a hard cost ceiling._
 - parse_jobs(text)  ·L24 — Parse a jobs file: each non-blank, non-# line is 'LABEL = PARAMS'.
 - worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L50 — Total worst-case cost: every job runs to its wall cap. Concurrency does
-- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None) -> int  ·L58
+- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L58 — Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
+- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, plan_only=False) …  ·L82
 
 ### tests/test_flavors.py
 _Pure-logic tests for the flavor policy. No network, no credentials._
@@ -95,10 +96,12 @@ _Pure-logic tests for the flavor policy. No network, no credentials._
 - @pytest.mark.parametrize test_blocked_gpus_are_not_credit_eligible(name)  ·L29
 - test_l40s_is_matched_before_l4()  ·L36
 - test_cpu_flavor_is_usable()  ·L41
-- test_unknown_flavor_is_not_usable()  ·L47
-- test_default_sim_flavor_is_a_healthy_v100()  ·L53
-- test_recommended_picks_cheapest_healthy_gpu()  ·L59
-- test_recommended_raises_when_no_healthy_gpu()  ·L65
+- test_cpu_flavors_are_priced()  ·L47
+- test_unpriced_cpu_flavor_is_cpu_but_priceless()  ·L56
+- test_unknown_flavor_is_not_usable()  ·L65
+- test_default_sim_flavor_is_a_healthy_v100()  ·L71
+- test_recommended_picks_cheapest_healthy_gpu()  ·L77
+- test_recommended_raises_when_no_healthy_gpu()  ·L83
 
 ### tests/test_launch.py
 _Pure-logic tests for launch-spec helpers. No network, no credentials._
@@ -122,3 +125,7 @@ _Pure-logic tests for the sweep helpers. No network, no credentials._
 - test_empty_jobs_raises()  ·L31
 - test_worst_case_cost()  ·L36
 - test_worst_case_price_unknown_is_none()  ·L41
+- test_budget_guard_priced_under_budget_returns_worst_case()  ·L45
+- test_budget_guard_priced_over_budget_raises()  ·L51
+- test_budget_guard_unpriced_with_budget_refuses_and_names_flavor()  ·L56
+- test_budget_guard_unpriced_without_budget_returns_none()  ·L64
