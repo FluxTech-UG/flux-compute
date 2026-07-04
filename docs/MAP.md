@@ -87,11 +87,15 @@ _Provision a GPU instance, run work on it, and always tear it down._
 - run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L229
 
 ### flux_compute/sweep.py
-_Fan out a parameter sweep across GPU instances, with a hard cost ceiling._
-- parse_jobs(text)  ·L24 — Parse a jobs file: each non-blank, non-# line is 'LABEL = PARAMS'.
-- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L50 — Total worst-case cost: every job runs to its wall cap. Concurrency does
-- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L58 — Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
-- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, plan_only=False) …  ·L82
+_Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling._
+- parse_jobs(text)  ·L26 — Parse a jobs file: each non-blank, non-# line is 'LABEL = PARAMS'.
+- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L52 — Total worst-case cost: every job runs to its wall cap. Concurrency does
+- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L60 — Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
+- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L84 — Clamp requested parallelism to what compute-quota headroom allows.
+- _flavor_vcpus(conn, flavor_name)  ·L109 — Read the vCPU count for a flavor from the compute API, or raise.
+- _failure_status(exc)  ·L120 — Label a per-job failure for the job record. A create-time quota/capacity
+- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L132 — Run run_one(job) across up to max_workers threads (one instance per job);
+- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, plan_only=False) …  ·L148
 
 ### tests/test_flavors.py
 _Pure-logic tests for the flavor policy. No network, no credentials._
@@ -136,15 +140,23 @@ _Pure-logic tests for provision helpers. No network, no credentials._
 
 ### tests/test_sweep.py
 _Pure-logic tests for the sweep helpers. No network, no credentials._
-- test_parse_label_equals_params()  ·L7
-- test_parse_skips_blanks_and_comments()  ·L12
-- test_parse_line_without_equals_is_label_and_params()  ·L17
-- test_duplicate_label_raises()  ·L21
-- test_label_with_slash_raises()  ·L26
-- test_empty_jobs_raises()  ·L31
-- test_worst_case_cost()  ·L36
-- test_worst_case_price_unknown_is_none()  ·L41
-- test_budget_guard_priced_under_budget_returns_worst_case()  ·L45
-- test_budget_guard_priced_over_budget_raises()  ·L51
-- test_budget_guard_unpriced_with_budget_refuses_and_names_flavor()  ·L56
-- test_budget_guard_unpriced_without_budget_returns_none()  ·L64
+- test_parse_label_equals_params()  ·L17
+- test_parse_skips_blanks_and_comments()  ·L22
+- test_parse_line_without_equals_is_label_and_params()  ·L27
+- test_duplicate_label_raises()  ·L31
+- test_label_with_slash_raises()  ·L36
+- test_empty_jobs_raises()  ·L41
+- test_worst_case_cost()  ·L46
+- test_worst_case_price_unknown_is_none()  ·L51
+- test_budget_guard_priced_under_budget_returns_worst_case()  ·L55
+- test_budget_guard_priced_over_budget_raises()  ·L61
+- test_budget_guard_unpriced_with_budget_refuses_and_names_flavor()  ·L66
+- test_budget_guard_unpriced_without_budget_returns_none()  ·L74
+- test_clamp_concurrency_bounded_by_core_quota()  ·L81
+- test_clamp_concurrency_bounded_by_instance_quota()  ·L87
+- test_clamp_concurrency_user_ceiling_wins_when_quota_is_ample()  ·L93
+- test_clamp_concurrency_no_core_headroom_raises()  ·L98
+- test_clamp_concurrency_no_instance_headroom_raises()  ·L105
+- test_fan_out_bounds_concurrency_and_runs_every_job()  ·L113
+- test_failure_status_flags_quota_and_capacity()  ·L135
+- test_failure_status_generic_error_stays_generic()  ·L140

@@ -1,7 +1,17 @@
 """Pure-logic tests for the sweep helpers. No network, no credentials."""
+import threading
+import time
+
 import pytest
 
-from flux_compute.sweep import budget_guard, parse_jobs, worst_case_eur
+from flux_compute.sweep import (
+    _failure_status,
+    _fan_out,
+    budget_guard,
+    clamp_concurrency,
+    parse_jobs,
+    worst_case_eur,
+)
 
 
 def test_parse_label_equals_params():
@@ -64,3 +74,68 @@ def test_budget_guard_unpriced_with_budget_refuses_and_names_flavor():
 def test_budget_guard_unpriced_without_budget_returns_none():
     # No budget set: an unknown price is not fatal, the guard just cannot bound it.
     assert budget_guard("b3-8-flex", None, 200, 30, budget_eur=None) is None
+
+
+# --- quota-aware concurrency clamp -------------------------------------------
+
+def test_clamp_concurrency_bounded_by_core_quota():
+    # 8 cores free, 2 vCPU each -> 4 instances fit; well under the 10 ceiling.
+    assert clamp_concurrency(10, 2, cores_used=0, cores_max=8,
+                             instances_used=0, instances_max=100) == 4
+
+
+def test_clamp_concurrency_bounded_by_instance_quota():
+    # Cores allow 50, but only 3 instance slots free.
+    assert clamp_concurrency(10, 2, cores_used=0, cores_max=100,
+                             instances_used=0, instances_max=3) == 3
+
+
+def test_clamp_concurrency_user_ceiling_wins_when_quota_is_ample():
+    assert clamp_concurrency(4, 2, cores_used=0, cores_max=1000,
+                             instances_used=0, instances_max=1000) == 4
+
+
+def test_clamp_concurrency_no_core_headroom_raises():
+    # 5 cores free but the flavor needs 15 -> not even one fits.
+    with pytest.raises(RuntimeError, match="cannot fit even one"):
+        clamp_concurrency(4, 15, cores_used=10, cores_max=15,
+                          instances_used=0, instances_max=100)
+
+
+def test_clamp_concurrency_no_instance_headroom_raises():
+    with pytest.raises(RuntimeError, match="cannot fit even one"):
+        clamp_concurrency(4, 2, cores_used=0, cores_max=100,
+                          instances_used=5, instances_max=5)
+
+
+# --- fan-out respects the clamp and completes every job ----------------------
+
+def test_fan_out_bounds_concurrency_and_runs_every_job():
+    K = 4
+    jobs = list(range(3 * K))          # a 3K-job sweep
+    lock = threading.Lock()
+    state = {"live": 0, "peak": 0}
+
+    def run_one(job):
+        with lock:
+            state["live"] += 1
+            state["peak"] = max(state["peak"], state["live"])
+        time.sleep(0.02)
+        with lock:
+            state["live"] -= 1
+        return (job, 0, "ok")
+
+    results = _fan_out(jobs, run_one, K)
+    assert len(results) == len(jobs)   # all jobs completed
+    assert state["peak"] <= K          # never exceeded the clamped concurrency
+
+
+# --- create-failure labelling ------------------------------------------------
+
+def test_failure_status_flags_quota_and_capacity():
+    assert _failure_status(Exception("Quota exceeded for instances")).startswith("quota/capacity")
+    assert _failure_status(Exception("No valid host was found")).startswith("quota/capacity")
+
+
+def test_failure_status_generic_error_stays_generic():
+    assert _failure_status(RuntimeError("SSH never opened within timeout")).startswith("error")

@@ -1,11 +1,13 @@
-"""Fan out a parameter sweep across GPU instances, with a hard cost ceiling.
+"""Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling.
 
 Each job runs on its own ephemeral instance (provision -> upload -> run the
 consumer's script with the job's params in $FLUX_LABEL/$FLUX_JOB -> fetch
-artifacts -> teardown), up to --max-parallel at once. Two guards bound spend: a
-pre-flight worst-case check (jobs x price x per-job wall cap) refuses to start
-above the budget, and each job's remote exec is killed at --max-minutes so a
-hung job cannot run up the bill. Teardown is per-job and unconditional.
+artifacts -> teardown), up to --max-parallel at once. Three guards bound spend
+and blast radius: a pre-flight worst-case check (jobs x price x per-job wall cap)
+refuses to start above the budget; the effective concurrency is clamped to the
+compute-quota headroom for the flavor, so the fleet cannot outrun the quota into
+create failures; and each job's remote exec is killed at --max-minutes so a hung
+job cannot run up the bill. Teardown is per-job and unconditional.
 """
 from __future__ import annotations
 
@@ -79,6 +81,70 @@ def budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur):
     return wc
 
 
+def clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max,
+                      instances_used, instances_max):
+    """Clamp requested parallelism to what compute-quota headroom allows.
+
+    One instance per job, so the number that can run at once is bounded by both
+    the core quota (headroom // vCPU-per-instance) and the instance quota
+    (headroom). Returns the effective concurrency (>=1, never above
+    max_parallel). Raises (fail-fast) when the headroom cannot fit even one
+    instance, rather than launching a fleet doomed to rc=-1 create failures.
+    """
+    if vcpus_per_instance <= 0:
+        raise RuntimeError(f"flavor vCPU count {vcpus_per_instance!r} is not positive")
+    cores_free = (cores_max or 0) - (cores_used or 0)
+    inst_free = (instances_max or 0) - (instances_used or 0)
+    fit = min(cores_free // vcpus_per_instance, inst_free)
+    if fit < 1:
+        raise RuntimeError(
+            f"compute quota cannot fit even one instance: headroom is {cores_free} "
+            f"cores / {inst_free} instances, but each instance needs "
+            f"{vcpus_per_instance} vCPU. Free running instances, request a quota "
+            f"increase, or switch region."
+        )
+    return min(max_parallel, fit)
+
+
+def _flavor_vcpus(conn, flavor_name):
+    """Read the vCPU count for a flavor from the compute API, or raise."""
+    fl = conn.compute.find_flavor(flavor_name)
+    vcpus = getattr(fl, "vcpus", None) if fl is not None else None
+    if vcpus is None:
+        raise RuntimeError(
+            f"could not read the vCPU count for flavor {flavor_name!r} from the compute API"
+        )
+    return vcpus
+
+
+def _failure_status(exc):
+    """Label a per-job failure for the job record. A create-time quota/capacity
+    rejection reads as 'quota/capacity' rather than a generic error, so an
+    overshoot that slips past the concurrency clamp is diagnosable at a glance."""
+    name = type(exc).__name__
+    msg = str(exc)
+    hay = f"{name} {msg}".lower()
+    if any(k in hay for k in ("quota", "no valid host", "over quota", "toomanyrequests")):
+        return f"quota/capacity: {name}: {msg[:100]}"
+    return f"error: {name}: {msg[:100]}"
+
+
+def _fan_out(jobs, run_one, max_workers, on_result=None):
+    """Run run_one(job) across up to max_workers threads (one instance per job);
+    return the results in completion order. A clamped max_workers keeps the live
+    fleet within quota. on_result, if given, is called with each result as it
+    lands (for streaming progress)."""
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(run_one, j) for j in jobs]
+        for fut in as_completed(futures):
+            r = fut.result()
+            if on_result is not None:
+                on_result(r)
+            results.append(r)
+    return results
+
+
 def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
               jobs_file=None, fetch=None, into="cloud-sweep",
               max_parallel=4, max_minutes=30, budget_eur=None, image=None,
@@ -100,7 +166,24 @@ def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
 
     wc = budget_guard(spec.flavor, spec.est_cost_eur_hr, len(jobs), max_minutes, budget_eur)
     tail = f"worst-case ~EUR {wc:.2f}" if wc is not None else "price n/a"
-    print(f"sweep: {len(jobs)} jobs, up to {max_parallel} parallel, "
+
+    # Clamp concurrency to compute-quota headroom for this flavor; --max-parallel
+    # stays the user ceiling. Fails fast if not even one instance fits.
+    lim = conn0.get_compute_limits()
+    gq = lambda k: getattr(lim, k, None)
+    vcpus = _flavor_vcpus(conn0, spec.flavor)
+    cores_free = (gq("max_total_cores") or 0) - (gq("total_cores_used") or 0)
+    inst_free = (gq("max_total_instances") or 0) - (gq("total_instances_used") or 0)
+    effective = clamp_concurrency(
+        max_parallel, vcpus,
+        gq("total_cores_used"), gq("max_total_cores"),
+        gq("total_instances_used"), gq("max_total_instances"),
+    )
+    if effective < max_parallel:
+        print(f"quota clamp: concurrency {max_parallel} -> {effective} "
+              f"(headroom {cores_free} cores / {inst_free} instances; "
+              f"{spec.flavor} = {vcpus} vCPU each)")
+    print(f"sweep: {len(jobs)} jobs, up to {effective} parallel, "
           f"per-job cap {max_minutes} min; {tail}")
 
     if plan_only:
@@ -113,7 +196,7 @@ def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
         label, params = job
         conn = connect(cloud=cloud, region=region)
         try:
-            with _gpu_instance(conn, spec, f"flux-compute-sweep-{uuid.uuid4().hex[:8]}") as (ip, keyfile):
+            with _gpu_instance(conn, spec, f"flux-compute-sweep-{uuid.uuid4().hex[:8]}") as (_server, ip, keyfile):
                 for local in uploads:
                     base = os.path.basename(os.path.abspath(local.rstrip("/")))
                     _rsync_up(local, ip, keyfile, base)
@@ -131,16 +214,13 @@ def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
                 _rsync_down(ip, keyfile, fetch, dest)
                 return (label, res.returncode, "ok" if res.returncode == 0 else "job nonzero")
         except Exception as exc:
-            return (label, -1, f"error: {type(exc).__name__}: {str(exc)[:100]}")
+            return (label, -1, _failure_status(exc))
 
-    results = []
-    with ThreadPoolExecutor(max_workers=max_parallel) as ex:
-        futures = [ex.submit(_one, j) for j in jobs]
-        for fut in as_completed(futures):
-            label, rc, status = fut.result()
-            print(f"  [{label}] rc={rc} {status}")
-            results.append((label, rc, status))
+    def _log(r):
+        label, rc, status = r
+        print(f"  [{label}] rc={rc} {status}")
 
+    results = _fan_out(jobs, _one, effective, on_result=_log)
     ok = sum(1 for _, rc, _ in results if rc == 0)
     print(f"sweep done: {ok}/{len(results)} ok; artifacts under {into}/")
     return 0 if ok == len(results) else 1
