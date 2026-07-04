@@ -39,7 +39,8 @@ def main(argv=None) -> int:
     run.add_argument("--plan", action="store_true",
                      help="Resolve and print the launch spec without launching (dry run).")
     run.add_argument("--smoke", action="store_true",
-                     help="Provision, confirm the GPU is visible (nvidia-smi), and tear down. Billable.")
+                     help="Provision, verify the device (nvidia-smi on a GPU flavor, a boot + "
+                          "remote-exec check on a CPU flavor), and tear down. Billable.")
     run.add_argument("--upload", action="append", default=[], metavar="DIR",
                      help="Local dir to rsync to ~/<name> on the instance (repeatable).")
     run.add_argument("--script", default=None, metavar="FILE",
@@ -51,7 +52,8 @@ def main(argv=None) -> int:
     run.add_argument("--flavor", default=None,
                      help="Override the flavor (else the cheapest fp64-healthy GPU available).")
     run.add_argument("--image", default=None,
-                     help="Boot from this image name instead of the auto-selected NVIDIA image (e.g. a baked image).")
+                     help="Boot from this image name instead of the flavor-aware default "
+                          "(NVIDIA image for a GPU flavor, plain Ubuntu for a CPU flavor; e.g. a baked image).")
 
     sweep = sub.add_parser(
         "sweep",

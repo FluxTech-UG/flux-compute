@@ -1,11 +1,12 @@
 """Provision a GPU instance, run work on it, and always tear it down.
 
-Phase 1 core. `_gpu_instance` is the shared machinery: boot the resolved GPU
-flavor on the NVIDIA-driver image with an ephemeral keypair and an SSH security
+Phase 1 core. `_gpu_instance` is the shared machinery: boot the resolved flavor
+(GPU or CPU) on its resolved image with an ephemeral keypair and an SSH security
 group (ingress locked to the caller's public IP), wait for SSH, and delete every
 created resource in a finally block on success and on failure.
 
-  smoke_test : boot, confirm the GPU (nvidia-smi), tear down.
+  smoke_test : boot, verify the device (nvidia-smi on a GPU, a boot + remote-exec
+               check on a CPU flavor), tear down.
   run_job    : boot, rsync repos up, run an uploaded job script, fetch artifacts
                back, tear down.
 
@@ -36,9 +37,15 @@ _SSH_OPTS = [
     "-o", "ConnectTimeout=10",
     "-o", "LogLevel=ERROR",
 ]
-_DEFAULT_SMOKE = (
+_GPU_SMOKE = (
     "nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader "
     "&& python3 --version"
+)
+# A CPU flavor has no GPU, so nvidia-smi could never pass; verify boot + remote
+# exec instead (host identity, core count, a working python3).
+_CPU_SMOKE = (
+    "python3 -c 'import platform; print(platform.platform())' "
+    "&& echo \"cores: $(nproc)\" && python3 --version"
 )
 _RSYNC_EXCLUDES = (
     ".git", ".jax_cache", ".pche_cache", "outputs", "__pycache__",
@@ -58,7 +65,15 @@ def _name(kind):
 
 def _print_plan(spec):
     cost = f"EUR {spec.est_cost_eur_hr:.2f}/hr" if spec.est_cost_eur_hr is not None else "price n/a"
-    print(f"plan: {spec.flavor} [{spec.gpu_model}] / {spec.image} / {spec.network} / {cost}")
+    print(f"plan: {spec.flavor} [{spec.gpu_model or 'CPU'}] / {spec.image} / {spec.network} / {cost}")
+
+
+def _smoke_command(gpu_model):
+    """Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
+    a boot + remote-exec check. Returns (label, command)."""
+    if gpu_model is not None:
+        return "GPU", _GPU_SMOKE
+    return "CPU", _CPU_SMOKE
 
 
 def _public_ip_cidr():
@@ -196,9 +211,10 @@ def smoke_test(cloud=None, region=None, flavor=None) -> int:
     conn = connect(cloud=cloud, region=region)
     spec = resolve_spec(conn, _region(conn, region), flavor=flavor)
     _print_plan(spec)
+    label, check = _smoke_command(spec.gpu_model)
     with _gpu_instance(conn, spec, _name("smoke")) as (_server, ip, keyfile):
-        print("running GPU check ...")
-        out = _ssh(ip, keyfile, _DEFAULT_SMOKE, timeout=120)
+        print(f"running {label} check ...")
+        out = _ssh(ip, keyfile, check, timeout=120)
         print("----- remote stdout -----")
         print(out.stdout.strip())
         if out.returncode != 0:

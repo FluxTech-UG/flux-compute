@@ -42,11 +42,14 @@ _Bake a reusable GPU image: provision, run a setup script, snapshot, tear down._
 
 ### flux_compute/launch.py
 _Resolve a launch spec for a GPU run, and (for now) plan it without launching._
-- const PUBLIC_NETWORK  ·L16
-- select_gpu_image(image_names) -> str  ·L19 — Pick an NVIDIA-driver Ubuntu image, preferring the newest LTS.
-- @dataclass class LaunchSpec  ·L41
-- resolve_spec(conn, region: str, flavor: str | None=None, keypair: str | None=None, image: str | None=None) -> LaunchSpec  ·L51 — Resolve the concrete launch choices for `region`, or raise (fail-fast).
-- plan(cloud: str | None=None, region: str | None=None, flavor: str | None=None) -> int  ·L93
+- const PUBLIC_NETWORK  ·L17
+- _newest_lts(candidates, prefer='newest') -> str  ·L20 — Return the newest-LTS Ubuntu image name (24.04, then 22.04, else the pick
+- select_gpu_image(image_names) -> str  ·L38 — Pick an NVIDIA-driver Ubuntu image, preferring the newest LTS and driver.
+- select_cpu_image(image_names) -> str  ·L55 — Pick a plain (non-NVIDIA) Ubuntu LTS base image, preferring the newest LTS.
+- select_image(kind: str, image_names) -> str  ·L75 — Dispatch image selection by flavor kind: CPU flavors get a plain Ubuntu
+- @dataclass class LaunchSpec  ·L87
+- resolve_spec(conn, region: str, flavor: str | None=None, keypair: str | None=None, image: str | None=None) -> LaunchSpec  ·L97 — Resolve the concrete launch choices for `region`, or raise (fail-fast).
+- plan(cloud: str | None=None, region: str | None=None, flavor: str | None=None) -> int  ·L139
 
 ### flux_compute/objstore.py
 _Push artifacts to OVH Object Storage (Swift) for durable cloud copies._
@@ -62,24 +65,26 @@ _`flux-compute preflight`: read-only check that a region can actually launch._
 
 ### flux_compute/provision.py
 _Provision a GPU instance, run work on it, and always tear it down._
-- const SSH_USER  ·L32
-- const _SSH_OPTS  ·L33
-- const _DEFAULT_SMOKE  ·L39
-- const _RSYNC_EXCLUDES  ·L43
-- _region(conn, region)  ·L49
-- _name(kind)  ·L55
-- _print_plan(spec)  ·L59
-- _public_ip_cidr()  ·L64
-- _wait_ssh(host, port=22, timeout=180)  ·L73
-- _server_ipv4(server)  ·L84
-- _ssh_cmd(keyfile)  ·L92
-- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L96
-- _scp_up(local, ip, keyfile, remote)  ·L103
-- _rsync_up(local, ip, keyfile, dest)  ·L107
-- _rsync_down(ip, keyfile, remote, local)  ·L117
-- @contextmanager _gpu_instance(conn, spec, name, keep=False)  ·L125
-- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L195
-- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L213
+- const SSH_USER  ·L33
+- const _SSH_OPTS  ·L34
+- const _GPU_SMOKE  ·L40
+- const _CPU_SMOKE  ·L46
+- const _RSYNC_EXCLUDES  ·L50
+- _region(conn, region)  ·L56
+- _name(kind)  ·L62
+- _print_plan(spec)  ·L66
+- _smoke_command(gpu_model)  ·L71 — Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
+- _public_ip_cidr()  ·L79
+- _wait_ssh(host, port=22, timeout=180)  ·L88
+- _server_ipv4(server)  ·L99
+- _ssh_cmd(keyfile)  ·L107
+- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L111
+- _scp_up(local, ip, keyfile, remote)  ·L118
+- _rsync_up(local, ip, keyfile, dest)  ·L122
+- _rsync_down(ip, keyfile, remote, local)  ·L132
+- @contextmanager _gpu_instance(conn, spec, name, keep=False)  ·L140
+- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L210
+- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L229
 
 ### flux_compute/sweep.py
 _Fan out a parameter sweep across GPU instances, with a hard cost ceiling._
@@ -105,15 +110,29 @@ _Pure-logic tests for the flavor policy. No network, no credentials._
 
 ### tests/test_launch.py
 _Pure-logic tests for launch-spec helpers. No network, no credentials._
-- test_prefers_2404_nvidia_driver_image()  ·L7
-- test_falls_back_to_2204_when_no_2404()  ·L16
-- test_ngc_alone_is_not_an_ubuntu_image()  ·L21
-- test_raises_when_no_nvidia_image()  ·L27
+- _fake_conn(flavor_names, image_names, networks=('Ext-Net',))  ·L9 — A minimal stand-in for an openstack connection for resolve_spec tests.
+- const _IMAGES  ·L24
+- test_prefers_2404_nvidia_driver_image()  ·L28
+- test_falls_back_to_2204_when_no_2404()  ·L37
+- test_ngc_alone_is_not_an_ubuntu_image()  ·L42
+- test_raises_when_no_nvidia_image()  ·L48
+- test_cpu_image_prefers_2404_plain_ubuntu()  ·L55
+- test_cpu_image_excludes_nvidia_and_baremetal()  ·L59
+- test_cpu_image_falls_back_to_2204_when_no_2404()  ·L66
+- test_cpu_image_prefers_base_over_uefi_variant()  ·L70
+- test_resolve_spec_cpu_flavor_gets_plain_ubuntu()  ·L78
+- test_resolve_spec_gpu_flavor_gets_nvidia_image()  ·L86
+- test_resolve_spec_image_override_wins_for_cpu()  ·L93
 
 ### tests/test_map_fresh.py
 _Guard: docs/MAP.md stays in sync with the source._
 - const REPO_ROOT  ·L14
 - test_map_is_fresh()  ·L17
+
+### tests/test_provision.py
+_Pure-logic tests for provision helpers. No network, no credentials._
+- test_gpu_smoke_uses_nvidia_smi()  ·L5
+- test_cpu_smoke_verifies_boot_and_exec_without_gpu()  ·L11
 
 ### tests/test_sweep.py
 _Pure-logic tests for the sweep helpers. No network, no credentials._
