@@ -93,8 +93,16 @@ def clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max,
     """
     if vcpus_per_instance <= 0:
         raise RuntimeError(f"flavor vCPU count {vcpus_per_instance!r} is not positive")
-    cores_free = (cores_max or 0) - (cores_used or 0)
-    inst_free = (instances_max or 0) - (instances_used or 0)
+    # OpenStack reports an unlimited quota as -1; treat it as no bound rather
+    # than letting the subtraction go negative and falsely refuse.
+    if (cores_max or 0) < 0:
+        cores_free = float("inf")
+    else:
+        cores_free = (cores_max or 0) - (cores_used or 0)
+    if (instances_max or 0) < 0:
+        inst_free = float("inf")
+    else:
+        inst_free = (instances_max or 0) - (instances_used or 0)
     fit = min(cores_free // vcpus_per_instance, inst_free)
     if fit < 1:
         raise RuntimeError(

@@ -108,6 +108,15 @@ def test_clamp_concurrency_no_instance_headroom_raises():
                           instances_used=5, instances_max=5)
 
 
+def test_clamp_concurrency_unlimited_quota_sentinel_is_no_bound():
+    # OpenStack reports unlimited as -1: must not falsely refuse or go negative.
+    assert clamp_concurrency(6, 4, cores_used=30, cores_max=-1,
+                             instances_used=9, instances_max=-1) == 6
+    # Mixed: cores unlimited, instances still bind.
+    assert clamp_concurrency(10, 4, cores_used=30, cores_max=-1,
+                             instances_used=0, instances_max=3) == 3
+
+
 # --- fan-out respects the clamp and completes every job ----------------------
 
 def test_fan_out_bounds_concurrency_and_runs_every_job():
