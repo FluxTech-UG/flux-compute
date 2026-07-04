@@ -131,12 +131,15 @@ def _flavor_vcpus(conn, flavor_name):
 
 
 def _failure_status(exc):
-    """Label a per-job failure for the job record. A create-time quota/capacity
-    rejection reads as 'quota/capacity' rather than a generic error, so an
-    overshoot that slips past the concurrency clamp is diagnosable at a glance."""
+    """Label a per-job failure for the job record. A teardown strand reads as
+    'STRANDED' (the instance may still be billing) and a create-time
+    quota/capacity rejection as 'quota/capacity', rather than a generic error,
+    so the two costly failure modes are diagnosable at a glance."""
     name = type(exc).__name__
     msg = str(exc)
     hay = f"{name} {msg}".lower()
+    if "strand" in hay:
+        return f"STRANDED: {name}: {msg[:100]}"
     if any(k in hay for k in ("quota", "no valid host", "over quota", "toomanyrequests")):
         return f"quota/capacity: {name}: {msg[:100]}"
     return f"error: {name}: {msg[:100]}"

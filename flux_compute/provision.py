@@ -3,7 +3,10 @@
 Phase 1 core. `_gpu_instance` is the shared machinery: boot the resolved flavor
 (GPU or CPU) on its resolved image with an ephemeral keypair and an SSH security
 group (ingress locked to the caller's public IP), wait for SSH, and delete every
-created resource in a finally block on success and on failure.
+created resource in a finally block on success and on failure. The server delete
+is retried and verified (`_delete_server_verified`); a delete that cannot be
+verified prints a stranded-instance banner with the exact cleanup commands and
+raises TeardownStrandError so the CLI exits nonzero.
 
   smoke_test : boot, verify the device (nvidia-smi on a GPU, a boot + remote-exec
                check on a CPU flavor), tear down.
@@ -21,6 +24,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -53,10 +57,69 @@ _RSYNC_EXCLUDES = (
 )
 
 
+class TeardownStrandError(RuntimeError):
+    """Teardown could not verifiably delete a created server; it may still be
+    running and billing. Subclasses RuntimeError so every CLI path that hits a
+    strand exits nonzero via the standard handler in cli.py."""
+
+
 def _region(conn, region):
     return (region
             or getattr(getattr(conn, "config", None), "region_name", None)
             or os.environ.get("OS_REGION_NAME") or "(unknown)")
+
+
+def _cloud_name(conn):
+    return getattr(getattr(conn, "config", None), "name", None) or "<cloud>"
+
+
+def _delete_server_verified(conn, server, retries=3, wait=300, retry_delay=10):
+    """Delete `server` and verify it is actually gone, retrying on failure.
+
+    `wait_for_delete` is the verification: it returns only once the server has
+    disappeared from the compute API. Any failure after all retries raises
+    TeardownStrandError; a live billing instance is never reduced to a quiet
+    log line.
+    """
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            conn.compute.delete_server(server.id, force=True)
+            conn.compute.wait_for_delete(server, wait=wait)
+            return
+        except Exception as exc:
+            last = exc
+            if attempt < retries:
+                print(f"  server delete attempt {attempt}/{retries} failed "
+                      f"({type(exc).__name__}: {str(exc)[:80]}); retrying ...")
+                time.sleep(retry_delay)
+    raise TeardownStrandError(
+        f"stranded: server {server.id} could not be verifiably deleted after "
+        f"{retries} attempts (last: {type(last).__name__}: {str(last)[:120]})"
+    ) from last
+
+
+def _stranded_banner(cloud, name, server_id, reason):
+    """Print an unmissable multi-line stranded-instance banner to stderr with
+    the exact cleanup commands. Printed in addition to (never instead of) the
+    TeardownStrandError that makes the CLI exit nonzero."""
+    bar = "!" * 76
+    print("\n".join([
+        "",
+        bar,
+        "!!  STRANDED INSTANCE : TEARDOWN FAILED",
+        f"!!  server  : {server_id}",
+        f"!!  name    : {name}",
+        f"!!  reason  : {reason}",
+        "!!  This instance may still be RUNNING and BILLING. Clean up NOW:",
+        f"!!    openstack --os-cloud {cloud} server delete {server_id}",
+        f"!!    openstack --os-cloud {cloud} keypair delete {name}",
+        f"!!    openstack --os-cloud {cloud} security group delete {name}",
+        "!!  Then verify nothing is left:",
+        f"!!    openstack --os-cloud {cloud} server list",
+        bar,
+        "",
+    ]), file=sys.stderr)
 
 
 def _name(kind):
@@ -178,13 +241,14 @@ def _gpu_instance(conn, spec, name, keep=False):
             print(f"  server={server.id}  keypair={name}  sg={name}")
             return
         print("----- teardown -----")
+        strand = None
         if server is not None:
             try:
-                conn.compute.delete_server(server.id, force=True)
-                conn.compute.wait_for_delete(server, wait=300)
-                print("  deleted server")
-            except Exception as exc:
-                print(f"  server: {type(exc).__name__}: {str(exc)[:120]}")
+                _delete_server_verified(conn, server)
+                print("  deleted server (verified gone)")
+            except TeardownStrandError as exc:
+                strand = exc
+                _stranded_banner(_cloud_name(conn), name, server.id, str(exc))
         if keypair is not None:
             try:
                 conn.compute.delete_keypair(name, ignore_missing=True)
@@ -205,6 +269,11 @@ def _gpu_instance(conn, spec, name, keep=False):
                     else:
                         time.sleep(10)
         shutil.rmtree(tmp, ignore_errors=True)
+        if strand is not None:
+            # Propagate after the rest of the cleanup ran: the banner above has
+            # the commands; this raise makes every CLI path exit nonzero. If the
+            # with-body also raised, that exception rides along as __context__.
+            raise strand
 
 
 def smoke_test(cloud=None, region=None, flavor=None) -> int:

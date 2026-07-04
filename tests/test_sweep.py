@@ -148,3 +148,9 @@ def test_failure_status_flags_quota_and_capacity():
 
 def test_failure_status_generic_error_stays_generic():
     assert _failure_status(RuntimeError("SSH never opened within timeout")).startswith("error")
+
+
+def test_failure_status_flags_teardown_strand():
+    from flux_compute.provision import TeardownStrandError
+    exc = TeardownStrandError("stranded: server srv-1 could not be verifiably deleted")
+    assert _failure_status(exc).startswith("STRANDED")
