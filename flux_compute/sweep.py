@@ -13,16 +13,28 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from . import detach
 from .auth import connect
 from .launch import resolve_spec
 from .provision import (
-    _gpu_instance, _print_plan, _region, _rsync_down, _rsync_up, _scp_up, _ssh,
-    ttl_minutes_for,
+    LOCAL_GRACE_S, POLL_INTERVAL_SWEEP_S, RESUME_MIN_DEADLINE_S,
+    _gpu_instance, _launch_detached, _print_plan, _region, _rsync_down,
+    _rsync_up, _scp_up, _server_by_name_or_id, follow_detached_job, pull_job_log,
+    teardown_by_name, ttl_minutes_for,
 )
 from .reap import warn_strays
+
+# Per-label attach state, persisted under <into>/<label>/.flux_attach/ so a hard
+# kill of the orchestrator can re-attach to the still-running VM. The dir's
+# presence marks a job as not-yet-finalized; it is removed on clean teardown.
+ATTACH_DIR = ".flux_attach"
+ATTACH_RECORD = "record.json"
+ATTACH_KEY = "id_key"
 
 
 def parse_jobs(text):
@@ -163,10 +175,129 @@ def _fan_out(jobs, run_one, max_workers, on_result=None):
     return results
 
 
+def _attach_dir(dest):
+    return os.path.join(dest, ATTACH_DIR)
+
+
+def _write_attach_record(dest, *, label, cloud, region, name, server_id, ip,
+                         keyfile, remote_script, fetch, into, cap_seconds):
+    """Persist the attach record plus a durable copy of the ephemeral private key
+    under <dest>/.flux_attach/, so a hard kill of this process can re-attach to
+    the still-running VM. The key copy is 0600 and is removed with the record on
+    clean teardown."""
+    adir = _attach_dir(dest)
+    os.makedirs(adir, exist_ok=True)
+    key_copy = os.path.join(adir, ATTACH_KEY)
+    shutil.copyfile(keyfile, key_copy)
+    os.chmod(key_copy, 0o600)
+    rec = detach.AttachRecord(
+        label=label, cloud=cloud, region=region, name=name, server_id=server_id,
+        ip=ip, keyfile=key_copy, remote_script=remote_script, fetch=fetch,
+        into=into, cap_seconds=cap_seconds, launch_epoch=time.time())
+    with open(os.path.join(adir, ATTACH_RECORD), "w") as fh:
+        fh.write(rec.to_json())
+    return rec
+
+
+def _clear_attach_record(dest):
+    """Drop the attach dir (record + key copy) after a clean finalize + teardown;
+    its absence means the job is done."""
+    shutil.rmtree(_attach_dir(dest), ignore_errors=True)
+
+
+def _load_attach_records(into):
+    """Every persisted attach record under <into> (in-flight or interrupted jobs)."""
+    recs = []
+    if not os.path.isdir(into):
+        return recs
+    for label in sorted(os.listdir(into)):
+        path = os.path.join(into, label, ATTACH_DIR, ATTACH_RECORD)
+        if os.path.isfile(path):
+            with open(path) as fh:
+                recs.append(detach.AttachRecord.from_json(fh.read()))
+    return recs
+
+
+def _status_for_outcome(outcome):
+    """Map a follow outcome to the sweep's (rc, status) record fields."""
+    if outcome.reason == "deadline":
+        return -1, "LOCAL DEADLINE (job unfinished; server torn down)"
+    rc = outcome.rc
+    if rc == 0:
+        return 0, "ok"
+    if rc in (124, 137):
+        return rc, "job timed out (remote cap)"
+    return rc, "job nonzero"
+
+
+def _finalize(ip, keyfile, dest, fetch, outcome):
+    """Collect a followed job: pull the authoritative job.log always, and the
+    artifact dir on completion. Returns (rc, status). Teardown is the caller's."""
+    pull_job_log(ip, keyfile, os.path.join(dest, "job.log"))
+    if outcome.reason == "done":
+        _rsync_down(ip, keyfile, fetch, dest)
+    return _status_for_outcome(outcome)
+
+
+def resume_sweep(cloud=None, region=None, into="cloud-sweep", max_parallel=4) -> int:
+    """Re-attach to still-running detached jobs after a full orchestrator restart.
+
+    Scans <into>/*/.flux_attach/ for in-flight jobs, re-establishes the poll loop
+    against each recorded VM, and on completion pulls the log + artifacts and tears
+    the VM down -- the recovery the sleep incident actually needed. A VM already
+    gone (reaped/torn down) is recorded as lost and its record cleared.
+    """
+    records = _load_attach_records(into)
+    if not records:
+        print(f"resume: no in-flight jobs found under {into}/ (nothing to re-attach).")
+        return 0
+    print(f"resume: {len(records)} in-flight job(s) under {into}/; "
+          f"re-attaching (up to {max_parallel} at once).")
+    try:
+        warn_strays(connect(cloud=cloud, region=region))
+    except Exception as exc:
+        print(f"note: stray check skipped ({type(exc).__name__}: {str(exc)[:80]})")
+
+    def _resume_one(rec):
+        dest = os.path.join(rec.into, rec.label)
+        try:
+            conn = connect(cloud=rec.cloud or cloud, region=rec.region or region)
+            server = _server_by_name_or_id(conn, rec.name, rec.server_id)
+            if server is None:
+                _clear_attach_record(dest)
+                return (rec.label, -1, "lost: VM gone (reaped?); cannot re-attach")
+            # The original deadline may already have elapsed while the orchestrator
+            # was down, yet the job (or its remote-cap kill) may have finished and
+            # just needs collecting -- so floor the follow at RESUME_MIN_DEADLINE_S.
+            remaining = rec.launch_epoch + rec.cap_seconds + LOCAL_GRACE_S - time.time()
+            deadline = max(remaining, RESUME_MIN_DEADLINE_S)
+            outcome = follow_detached_job(
+                rec.ip, rec.keyfile, rec.cap_seconds,
+                deadline_s=deadline, poll_interval=POLL_INTERVAL_SWEEP_S)
+            rc, status = _finalize(rec.ip, rec.keyfile, dest, rec.fetch, outcome)
+            teardown_by_name(conn, rec.name, rec.server_id)
+            _clear_attach_record(dest)
+            return (rec.label, rc, status)
+        except Exception as exc:
+            return (rec.label, -1, _failure_status(exc))
+
+    def _log(r):
+        label, rc, status = r
+        print(f"  [{label}] rc={rc} {status}")
+
+    results = _fan_out(records, _resume_one, max(1, max_parallel), on_result=_log)
+    ok = sum(1 for _, rc, _ in results if rc == 0)
+    print(f"resume done: {ok}/{len(results)} ok; artifacts under {into}/")
+    return 0 if ok == len(results) else 1
+
+
 def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
               jobs_file=None, fetch=None, into="cloud-sweep",
               max_parallel=4, max_minutes=30, budget_eur=None, image=None,
-              plan_only=False) -> int:
+              plan_only=False, resume=False) -> int:
+    if resume:
+        return resume_sweep(cloud=cloud, region=region, into=into,
+                            max_parallel=max_parallel)
     if not jobs_file:
         raise RuntimeError("sweep needs --jobs (a jobs file)")
     if not plan_only:
@@ -214,25 +345,41 @@ def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
     def _one(job):
         label, params = job
         conn = connect(cloud=cloud, region=region)
+        name = f"flux-compute-sweep-{uuid.uuid4().hex[:8]}"
         try:
-            with _gpu_instance(conn, spec, f"flux-compute-sweep-{uuid.uuid4().hex[:8]}",
-                               ttl_minutes=ttl_minutes_for(max_minutes)) as (_server, ip, keyfile):
+            with _gpu_instance(conn, spec, name,
+                               ttl_minutes=ttl_minutes_for(max_minutes)) as (server, ip, keyfile):
                 for local in uploads:
                     base = os.path.basename(os.path.abspath(local.rstrip("/")))
                     _rsync_up(local, ip, keyfile, base)
                 remote = os.path.basename(script)
                 _scp_up(script, ip, keyfile, remote)
-                env = f"FLUX_LABEL={shlex.quote(label)} FLUX_JOB={shlex.quote(params)}"
-                res = _ssh(ip, keyfile, f"chmod +x ~/{remote} && {env} bash -lc '~/{remote}'",
-                           timeout=max_minutes * 60, capture=True)
+
                 dest = os.path.join(into, label)
                 os.makedirs(dest, exist_ok=True)
-                with open(os.path.join(dest, "job.log"), "w") as lf:
-                    lf.write(res.stdout or "")
-                    if res.stderr:
-                        lf.write("\n--- stderr ---\n" + res.stderr)
-                _rsync_down(ip, keyfile, fetch, dest)
-                return (label, res.returncode, "ok" if res.returncode == 0 else "job nonzero")
+                cap_seconds = max_minutes * 60
+                env = f"FLUX_LABEL={shlex.quote(label)} FLUX_JOB={shlex.quote(params)}"
+
+                # Launch the job detached so a laptop sleep cannot HUP it, then
+                # persist an attach record so even a hard kill of THIS process can
+                # re-attach to the still-running VM (`flux-compute sweep --resume`).
+                _launch_detached(ip, keyfile, remote, cap_seconds, env_prefix=env)
+                _write_attach_record(
+                    dest, label=label, cloud=cloud, region=region, name=name,
+                    server_id=server.id, ip=ip, keyfile=keyfile, remote_script=remote,
+                    fetch=fetch, into=into, cap_seconds=cap_seconds)
+
+                # Follow to completion, tolerant of reconnection (sleep/wake): a
+                # failed poll is retried with backoff, only the local deadline
+                # (remote cap + grace) aborts.
+                outcome = follow_detached_job(
+                    ip, keyfile, cap_seconds,
+                    deadline_s=cap_seconds + LOCAL_GRACE_S,
+                    poll_interval=POLL_INTERVAL_SWEEP_S)
+
+                rc, status = _finalize(ip, keyfile, dest, fetch, outcome)
+                _clear_attach_record(dest)   # clean finalize: drop record + key
+                return (label, rc, status)
         except Exception as exc:
             return (label, -1, _failure_status(exc))
 

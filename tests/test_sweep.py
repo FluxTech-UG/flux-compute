@@ -1,12 +1,20 @@
 """Pure-logic tests for the sweep helpers. No network, no credentials."""
+import os
 import threading
 import time
 
 import pytest
 
+from flux_compute import sweep
+from flux_compute.detach import PollOutcome
 from flux_compute.sweep import (
+    _clear_attach_record,
     _failure_status,
     _fan_out,
+    _finalize,
+    _load_attach_records,
+    _status_for_outcome,
+    _write_attach_record,
     budget_guard,
     clamp_concurrency,
     parse_jobs,
@@ -154,3 +162,80 @@ def test_failure_status_flags_teardown_strand():
     from flux_compute.provision import TeardownStrandError
     exc = TeardownStrandError("stranded: server srv-1 could not be verifiably deleted")
     assert _failure_status(exc).startswith("STRANDED")
+
+
+# --- follow-outcome -> (rc, status) ------------------------------------------
+
+def test_status_ok_on_clean_exit():
+    assert _status_for_outcome(PollOutcome(rc=0, reason="done", output_size=10)) == (0, "ok")
+
+
+def test_status_nonzero_job():
+    rc, status = _status_for_outcome(PollOutcome(rc=3, reason="done", output_size=10))
+    assert rc == 3 and "nonzero" in status
+
+
+def test_status_remote_cap_kill_reads_as_timed_out():
+    for cap_rc in (124, 137):
+        rc, status = _status_for_outcome(PollOutcome(rc=cap_rc, reason="done", output_size=10))
+        assert rc == cap_rc and "timed out" in status
+
+
+def test_status_local_deadline_is_a_failure_record():
+    rc, status = _status_for_outcome(PollOutcome(rc=None, reason="deadline", output_size=10))
+    assert rc == -1 and "DEADLINE" in status
+
+
+# --- attach-record persistence (the sweep --resume handoff) -------------------
+
+def _make_keyfile(tmp_path):
+    kf = tmp_path / "id_ed25519"
+    kf.write_text("PRIVATE KEY MATERIAL")
+    return str(kf)
+
+
+def test_attach_record_write_load_clear_round_trip(tmp_path):
+    into = str(tmp_path / "cloud-sweep")
+    dest = os.path.join(into, "alpha")
+    os.makedirs(dest, exist_ok=True)
+    keyfile = _make_keyfile(tmp_path)
+
+    rec = _write_attach_record(
+        dest, label="alpha", cloud="flux-ovh", region="GRA11",
+        name="flux-compute-sweep-abcd1234", server_id="srv-1", ip="1.2.3.4",
+        keyfile=keyfile, remote_script="job.sh", fetch="out", into=into,
+        cap_seconds=1800)
+
+    # The key is copied durably (0600) into the attach dir, not left in temp.
+    assert os.path.isfile(rec.keyfile)
+    assert rec.keyfile.startswith(dest)
+    assert (os.stat(rec.keyfile).st_mode & 0o777) == 0o600
+
+    loaded = _load_attach_records(into)
+    assert [r.label for r in loaded] == ["alpha"]
+    assert loaded[0].server_id == "srv-1" and loaded[0].cap_seconds == 1800
+
+    _clear_attach_record(dest)
+    assert _load_attach_records(into) == []      # gone: job finalized
+
+
+def test_load_attach_records_empty_when_no_into_dir(tmp_path):
+    assert _load_attach_records(str(tmp_path / "nope")) == []
+
+
+def test_finalize_pulls_log_always_and_artifacts_only_on_done(tmp_path, monkeypatch):
+    dest = str(tmp_path / "alpha")
+    os.makedirs(dest, exist_ok=True)
+    calls = {"log": 0, "fetch": 0}
+    monkeypatch.setattr(sweep, "pull_job_log", lambda ip, kf, path: calls.__setitem__("log", calls["log"] + 1))
+    monkeypatch.setattr(sweep, "_rsync_down", lambda ip, kf, remote, local: calls.__setitem__("fetch", calls["fetch"] + 1))
+
+    # Completed job: log + artifacts fetched.
+    rc, status = _finalize("ip", "kf", dest, "out", PollOutcome(rc=0, reason="done", output_size=5))
+    assert rc == 0 and status == "ok"
+    assert calls == {"log": 1, "fetch": 1}
+
+    # Local-deadline abort: log pulled best-effort, artifacts NOT fetched (partial).
+    rc, status = _finalize("ip", "kf", dest, "out", PollOutcome(rc=None, reason="deadline", output_size=5))
+    assert rc == -1 and "DEADLINE" in status
+    assert calls == {"log": 2, "fetch": 1}       # fetch not called again

@@ -83,6 +83,10 @@ def main(argv=None) -> int:
                        help="Resolve the spec and print the cost/budget (and quota) preview without launching (dry run).")
     sweep.add_argument("--image", default=None,
                        help="Boot from this image name instead of the auto-selected image.")
+    sweep.add_argument("--resume", action="store_true",
+                       help="Re-attach to still-running detached jobs from an interrupted sweep "
+                            "(reads <into>/*/.flux_attach/); collect + tear down. Needs only --into "
+                            "(and --cloud/--region); --jobs/--script/--fetch come from the records.")
 
     bake = sub.add_parser(
         "bake",
@@ -153,7 +157,7 @@ def main(argv=None) -> int:
                              uploads=args.upload, script=args.script, jobs_file=args.jobs,
                              fetch=args.fetch, into=args.into, max_parallel=args.max_parallel,
                              max_minutes=args.max_minutes, budget_eur=args.budget, image=args.image,
-                             plan_only=args.plan)
+                             plan_only=args.plan, resume=args.resume)
 
         if args.command == "bake":
             from .image import bake

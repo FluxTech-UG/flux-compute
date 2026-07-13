@@ -93,11 +93,55 @@ end-to-end "is the API working?" check.
 - **`run --upload --script --fetch`** — provision a V100S, upload repos, run a job
   script, fetch artifacts, tear down (`--smoke` for a GPU check; `--plan` for a dry run).
 - **`sweep --jobs FILE --max-parallel K --budget EUR`** — fan out one instance per
-  job, with a pre-flight worst-case cost guard and a per-job wall-clock cap.
+  job, with a pre-flight worst-case cost guard and a per-job wall-clock cap. Each
+  job runs **detached** on its VM and is followed by a reconnect-tolerant poll
+  loop, so a laptop sleep does not kill it; `sweep --resume` re-attaches to an
+  interrupted run (see *Surviving laptop sleep* below).
 - **`reap [--yes] [--all]`** — list every flux-compute instance with age, hourly
   price and accrued cost; delete the ones past their stamped TTL (see Cost
   guardrails below).
 - **`push DIR CONTAINER`** — durable artifact copies to OVH Object Storage (Swift).
+
+### Surviving laptop sleep (detached jobs + resume)
+
+A foreground `ssh host 'job'` binds the remote job to that one TCP session: when
+the operator's laptop sleeps (a closed-lid commute), the session dies and sshd
+HUPs the remote job minutes later, killing the in-flight run. `run` and `sweep`
+avoid this in two halves (`flux_compute/detach.py`):
+
+1. **The job runs detached.** A generated launcher starts it under `setsid` in a
+   new session with every descriptor redirected to files on the VM, so sshd
+   closes the launching channel immediately and a later disconnect cannot HUP the
+   job. `nohup`/`setsid` is chosen over `tmux` (not guaranteed installed) and
+   `systemd-run` (needs a user D-Bus session or root over SSH): it depends on
+   nothing beyond coreutils, needs no privilege, and leaves plain pollable files
+   (`~/job.out`, `~/job.pid`, `~/job.rc`). A `timeout` wrapper on the VM is the
+   laptop-independent runaway backstop; the integer return code lands in
+   `~/job.rc` only when the job finishes.
+
+2. **A reconnect-tolerant poll loop follows it.** A fresh short SSH every ~15 s
+   reads `~/job.rc` (done?) and incrementally tails `~/job.out` (live log). A
+   failed poll — the laptop just woke, a network flap — is retried with
+   exponential backoff (5 s → 60 s cap) and is **never fatal**; only the local
+   wall-clock deadline (the remote cap + a 2-minute grace) aborts. On the rc
+   appearing, the full `~/job.out` is pulled into `<into>/<label>/job.log`, the
+   artifacts are fetched, and the VM is torn down — the same success path as
+   before.
+
+For the harder case — the process is fully killed (a sleep long enough to be
+terminated, a closed terminal) — each sweep job persists an **attach record** and
+a copy of its ephemeral key under `<into>/<label>/.flux_attach/`. Re-attach and
+finish with:
+
+```bash
+flux-compute sweep --resume --into cloud-sweep --cloud flux-ovh
+```
+
+`--resume` scans `<into>` for in-flight jobs, re-establishes the poll loop against
+each still-running VM, and on completion collects the log + artifacts and tears
+the VM down. A VM already gone (reaped past its TTL, or torn down) is recorded as
+lost. The `.flux_attach/` dir is removed on clean teardown, so its presence is
+exactly the set of jobs still needing collection.
 
 ### Tested and rejected on OVH: baked images
 
@@ -113,8 +157,9 @@ the stock image + per-job install.
 - **Hard spend cap**: `sweep --budget EUR` refuses to start when worst-case
   spend (jobs x price x wall cap) exceeds the cap, and refuses outright when the
   flavor has no known price. Concurrency is clamped to compute-quota headroom.
-- **Wall caps**: every remote exec is killed at its cap, so a hung job cannot
-  run up the bill.
+- **Wall caps**: the remote job runs under a `timeout` wrapper on the VM, so a
+  hung job is killed at its cap independently of the laptop (the local poll loop
+  and `flux-compute reap`'s TTL stamp are the two further backstops).
 - **Verified teardown**: the per-run server delete is retried and verified gone
   (`wait_for_delete`); a delete that cannot be verified prints a multi-line
   STRANDED INSTANCE banner with the exact cleanup commands and exits nonzero.

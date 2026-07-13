@@ -32,6 +32,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
+from . import detach
 from .auth import connect
 from .launch import resolve_spec
 
@@ -47,6 +48,23 @@ FLUX_NAME_PREFIX = "flux-compute-"
 # Minimum TTL margin (minutes) beyond a run's wall cap, for boot + upload +
 # fetch + teardown overhead; ttl_minutes_for widens it to 25% of long caps.
 TTL_MARGIN_MIN = 30
+
+# Detach-and-poll parameters (see detach.py). Each poll is a fresh short SSH, so
+# the interval trades local log latency against SSH churn across a wide fan-out.
+# The local deadline is the remote runaway cap plus a grace covering the
+# timeout -> SIGKILL -> rc-write tail and one poll interval, so a job killed by
+# its own remote cap resolves via job.rc (rc 124/137) rather than tripping the
+# local abort. The remote cap and `flux-compute reap`'s TTL stamp remain the two
+# laptop-independent backstops.
+POLL_INTERVAL_SWEEP_S = 15
+POLL_INTERVAL_RUN_S = 5
+CONNECT_TIMEOUT_S = 30
+LOCAL_GRACE_S = 120
+BACKOFF_BASE_S = 5.0
+BACKOFF_MAX_S = 60.0
+# A resume after a full restart gets at least this long to reach a job whose
+# original deadline may already have passed while the orchestrator was down.
+RESUME_MIN_DEADLINE_S = 300
 
 
 def ttl_minutes_for(cap_minutes):
@@ -237,6 +255,14 @@ def _scp_up(local, ip, keyfile, remote):
     subprocess.run(["scp", *_SSH_OPTS, "-i", keyfile, local, f"{SSH_USER}@{ip}:{remote}"], check=True)
 
 
+def _scp_down(ip, keyfile, remote, local, timeout=120):
+    """Copy a single home-relative remote file down to a local path. Used for the
+    authoritative final pull of ~/job.out into the local job.log."""
+    return subprocess.run(
+        ["scp", *_SSH_OPTS, "-i", keyfile, f"{SSH_USER}@{ip}:{remote}", local],
+        capture_output=True, text=True, timeout=timeout)
+
+
 def _rsync_up(local, ip, keyfile, dest):
     excludes = []
     for e in _RSYNC_EXCLUDES:
@@ -329,6 +355,132 @@ def _gpu_instance(conn, spec, name, ttl_minutes, keep=False):
                 raise strand
 
 
+# --- detach-and-poll: survive the launching SSH dropping (laptop sleep) --------
+
+def _make_poll_runner(ip, keyfile, connect_timeout=CONNECT_TIMEOUT_S, _ssh=_ssh):
+    """Build the SSH-backed poll runner the detach loop calls each iteration.
+
+    A fresh, short SSH per poll. An ssh transport failure (exit 255: connection
+    refused/reset/timed out -- the laptop asleep or a network flap) or a subprocess
+    timeout is surfaced as a retryable `PollAttempt.failed`, never raised; any
+    connected read (even if the remote poll command itself exited nonzero) still
+    carries the status trailer and is handed to the parser.
+    """
+    def run_poll(next_byte):
+        cmd = detach.poll_command(next_byte)
+        try:
+            res = _ssh(ip, keyfile, cmd, timeout=connect_timeout, capture=True)
+        except subprocess.TimeoutExpired:
+            return detach.PollAttempt.failed(f"ssh timed out after {connect_timeout}s")
+        except Exception as exc:
+            return detach.PollAttempt.failed(f"{type(exc).__name__}: {str(exc)[:80]}")
+        if res.returncode == 255:
+            return detach.PollAttempt.failed(
+                f"ssh transport error: {(res.stderr or '').strip()[:80]}")
+        return detach.PollAttempt.connected(res.stdout)
+    return run_poll
+
+
+def _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix="",
+                     launch_timeout=90, _ssh=_ssh):
+    """Upload the generated launcher and run it to start the job detached.
+
+    Short and non-blocking: the launcher spawns the setsid'd job (all descriptors
+    off the SSH channel) and returns at once, so this SSH closes cleanly and the
+    job keeps running through any later disconnect. env_prefix carries the caller's
+    `$FLUX_LABEL=... $FLUX_JOB=...` assignments into the job's environment. Returns
+    the launcher's stdout; raises on a nonzero launch.
+    """
+    script_text = detach.launcher_script(remote_script, cap_seconds)
+    tmp = tempfile.mkdtemp(prefix="flux-launch-")
+    try:
+        path = os.path.join(tmp, detach.REMOTE_LAUNCHER)
+        with open(path, "w") as fh:
+            fh.write(script_text)
+        _scp_up(path, ip, keyfile, detach.REMOTE_LAUNCHER)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    prefix = (env_prefix + " ") if env_prefix else ""
+    res = _ssh(ip, keyfile,
+               f"chmod +x ~/{detach.REMOTE_LAUNCHER} && {prefix}bash ~/{detach.REMOTE_LAUNCHER}",
+               timeout=launch_timeout, capture=True)
+    if res.returncode != 0:
+        raise RuntimeError(
+            "detached launch failed "
+            f"(rc={res.returncode}): {(res.stderr or res.stdout or '').strip()[:200]}")
+    return res.stdout
+
+
+def follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval,
+                        on_chunk=None, on_status=None, _ssh=_ssh):
+    """Poll an already-launched detached job to completion (or a local abort).
+
+    Returns the `PollOutcome`. Reconnection-tolerant: a failed poll is retried with
+    backoff and never fatal; only `deadline_s` (measured from the first poll)
+    aborts. `on_chunk` receives new job.out fragments for a live log/stream.
+    """
+    run_poll = _make_poll_runner(ip, keyfile, _ssh=_ssh)
+    return detach.poll_until_done(
+        run_poll, poll_interval=poll_interval, deadline_s=deadline_s,
+        backoff_base=BACKOFF_BASE_S, backoff_max=BACKOFF_MAX_S,
+        on_chunk=on_chunk, on_status=on_status)
+
+
+def pull_job_log(ip, keyfile, log_path, _ssh=_ssh):
+    """Pull the full remote ~/job.out down to log_path (the authoritative final
+    job log). Best-effort: returns True on success, False if the file could not be
+    fetched (e.g. the job never wrote it). Never raises -- a missing log must not
+    mask the job's own return code or block teardown."""
+    try:
+        res = _scp_down(ip, keyfile, detach.REMOTE_OUT, log_path)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def _server_by_name_or_id(conn, name, server_id=None):
+    """Find a server by id (preferred) or name, or None if it is already gone."""
+    for lookup in (
+        lambda: conn.compute.get_server(server_id) if server_id else None,
+        lambda: conn.compute.find_server(name, ignore_missing=True),
+    ):
+        try:
+            server = lookup()
+        except Exception:
+            server = None
+        if server is not None:
+            return server
+    return None
+
+
+def teardown_by_name(conn, name, server_id=None):
+    """Delete a flux-compute instance and its same-named keypair + security group
+    by name -- the standalone teardown used on resume, where the `_gpu_instance`
+    context manager that normally owns teardown is gone (a fresh process). Verified
+    and retried exactly like the in-context path; prints the stranded-instance
+    banner and raises `TeardownStrandError` if the server cannot be confirmed gone.
+    """
+    print("----- teardown (resume) -----")
+    server = _server_by_name_or_id(conn, name, server_id)
+    if server is not None:
+        try:
+            _delete_server_verified(conn, server)
+            print("  deleted server (verified gone)")
+        except TeardownStrandError as exc:
+            _stranded_banner(_cloud_name(conn), name, getattr(server, "id", server_id), str(exc))
+            raise
+    else:
+        print(f"  server {name} already gone")
+    try:
+        conn.compute.delete_keypair(name, ignore_missing=True)
+        print("  deleted keypair")
+    except Exception as exc:
+        print(f"  keypair: {type(exc).__name__}: {str(exc)[:120]}")
+    sg = conn.network.find_security_group(name)
+    if sg is not None:
+        _delete_sg_with_retry(conn, sg.id)
+
+
 def smoke_test(cloud=None, region=None, flavor=None) -> int:
     from .reap import warn_strays  # function-level: reap imports this module
 
@@ -371,11 +523,25 @@ def run_job(cloud=None, region=None, flavor=None, uploads=(), script=None,
         if script:
             remote = os.path.basename(script)
             _scp_up(script, ip, keyfile, remote)
-            print(f"running ~/{remote} (streaming; up to {exec_timeout}s) ...")
-            res = _ssh(ip, keyfile, f"chmod +x ~/{remote} && bash -lc '~/{remote}'",
-                       timeout=exec_timeout, capture=False)
-            rc = res.returncode
-            print(f"job exited {rc}")
+            cap = exec_timeout
+            print(f"running ~/{remote} detached (remote cap {cap}s); "
+                  "streaming output as it lands, surviving local disconnection ...")
+            _launch_detached(ip, keyfile, remote, cap)
+
+            def _emit(chunk):
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+
+            outcome = follow_detached_job(
+                ip, keyfile, cap,
+                deadline_s=cap + LOCAL_GRACE_S, poll_interval=POLL_INTERVAL_RUN_S,
+                on_chunk=_emit)
+            if outcome.reason == "deadline":
+                raise RuntimeError(
+                    f"local deadline reached without the job finishing (remote cap {cap}s "
+                    "+ grace); ~/job.rc never appeared -- the VM may be wedged (torn down now)")
+            rc = outcome.rc
+            print(f"\njob exited {rc}" + (" (killed by remote cap)" if rc in (124, 137) else ""))
 
         for spec_f in fetch:
             if ":" not in spec_f:
