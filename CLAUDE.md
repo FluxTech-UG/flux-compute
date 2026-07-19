@@ -35,6 +35,14 @@ plain V100 (`t1-le`) is BHS5-only, so `recommended_for_sim` picks the cheapest
 fp64-healthy GPU actually present in the region. When in doubt, validate a card
 with 1DSim3's `scripts/gpu_check.py` before committing to it.
 
+### Account quota (planning fact, not enforcement).
+The OVH project quota is **50 instances / 64 vCPUs / 496 GB RAM** (granted
+2026-07-19 on request). A V100S (`t2-le-45`) is 15 vCPU, so **4 concurrent GPU
+instances** is the fleet-width ceiling — size `sweep --max-parallel` to 4 for
+GPU fleets. The code never trusts this number: preflight and sweep read live
+quota from the API and clamp to real headroom; this doc line exists so sessions
+plan fleet width without a lookup. If a quota change lands, update this line.
+
 ### Fail fast on missing credentials or no healthy GPU.
 No silent defaults. Missing credentials raise with the remedy; a region exposing
 no credit-eligible, fp64-healthy GPU raises rather than falling back to RTX5000 or

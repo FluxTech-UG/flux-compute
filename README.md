@@ -156,7 +156,9 @@ the stock image + per-job install.
 
 - **Hard spend cap**: `sweep --budget EUR` refuses to start when worst-case
   spend (jobs x price x wall cap) exceeds the cap, and refuses outright when the
-  flavor has no known price. Concurrency is clamped to compute-quota headroom.
+  flavor has no known price. Concurrency is clamped to compute-quota headroom
+  (project quota: 50 instances / 64 vCPUs / 496 GB as of 2026-07-19 — four
+  concurrent V100S at 15 vCPU each).
 - **Wall caps**: the remote job runs under a `timeout` wrapper on the VM, so a
   hung job is killed at its cap independently of the laptop (the local poll loop
   and `flux-compute reap`'s TTL stamp are the two further backstops).
