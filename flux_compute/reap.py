@@ -26,7 +26,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .auth import connect
+from .auth import configured_regions, connect
 from .flavors import classify
 from .provision import (
     FLUX_CREATED_BY,
@@ -214,7 +214,43 @@ def _reap_one(conn, c: Candidate) -> bool:
     return True
 
 
-def run_reap(cloud=None, region=None, yes=False, take_all=False) -> int:
+def run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False) -> int:
+    """Hunt strays across regions, because servers and quota are BOTH per region.
+
+    With no --region/--regions, every region the cloud entry is configured for is
+    scanned: a multi-region sweep leaves instances in several regions, and a reap
+    that looked only at the default one would print "no strays" while an instance
+    billed elsewhere. A region that cannot be scanned is reported and the exit
+    code is nonzero, but the remaining regions are still swept -- one unreachable
+    region must never mask strays in the others.
+    """
+    if regions:
+        targets = [s.strip() for s in str(regions).split(",") if s.strip()]
+        if not targets:
+            raise RuntimeError("--regions was given but named no region")
+    elif region:
+        targets = [region]
+    else:
+        targets = configured_regions(cloud)
+
+    if len(targets) == 1:
+        return _reap_region(cloud, targets[0], yes, take_all)
+
+    print(f"reap: scanning {len(targets)} configured region(s): {', '.join(targets)}\n")
+    rc = 0
+    for r in targets:
+        print(f"--- region {r}")
+        try:
+            rc |= _reap_region(cloud, r, yes, take_all)
+        except Exception as exc:
+            print(f"reap: region {r} could not be scanned: "
+                  f"{type(exc).__name__}: {str(exc)[:160]}", file=sys.stderr)
+            rc = 1
+        print()
+    return rc
+
+
+def _reap_region(cloud, region, yes, take_all) -> int:
     conn = connect(cloud=cloud, region=region)
     now = datetime.now(timezone.utc)
     servers = list(conn.compute.servers(details=True))

@@ -276,3 +276,59 @@ def test_run_reap_exit_zero_when_only_keep_flagged_remains(monkeypatch):
     rc = run_reap(yes=True)
     assert conn.deleted == []
     assert rc == 0                                   # kept instance is deliberate, not a stray
+
+
+# --- multi-region stray hunt --------------------------------------------------
+
+def test_run_reap_scans_every_configured_region_by_default(monkeypatch):
+    """With no --region/--regions, reap must sweep ALL configured regions: a
+    multi-region sweep strands instances per region, and scanning only the
+    default one would report 'no strays' while another region billed."""
+    from flux_compute import reap as reap_mod
+
+    seen = []
+    monkeypatch.setattr(reap_mod, "configured_regions",
+                        lambda cloud: ["GRA11", "DE1", "UK1"])
+    monkeypatch.setattr(reap_mod, "_reap_region",
+                        lambda cloud, region, yes, take_all: seen.append(region) or 0)
+
+    rc = reap_mod.run_reap(cloud="flux-ovh")
+    assert rc == 0
+    assert seen == ["GRA11", "DE1", "UK1"]
+
+
+def test_run_reap_explicit_region_scans_only_that_one(monkeypatch):
+    from flux_compute import reap as reap_mod
+    seen = []
+    monkeypatch.setattr(reap_mod, "_reap_region",
+                        lambda cloud, region, yes, take_all: seen.append(region) or 0)
+    reap_mod.run_reap(cloud="flux-ovh", region="DE1")
+    assert seen == ["DE1"]
+
+
+def test_run_reap_unscannable_region_does_not_mask_the_others(monkeypatch):
+    """One dead region must not abort the sweep -- the remaining regions are
+    still scanned, and the exit code still reports the failure."""
+    from flux_compute import reap as reap_mod
+    seen = []
+
+    def _fake(cloud, region, yes, take_all):
+        seen.append(region)
+        if region == "DE1":
+            raise RuntimeError("no compute endpoint")
+        return 0
+
+    monkeypatch.setattr(reap_mod, "configured_regions",
+                        lambda cloud: ["GRA11", "DE1", "UK1"])
+    monkeypatch.setattr(reap_mod, "_reap_region", _fake)
+
+    rc = reap_mod.run_reap(cloud="flux-ovh")
+    assert seen == ["GRA11", "DE1", "UK1"]    # UK1 still scanned after DE1 failed
+    assert rc == 1                            # and the failure is surfaced
+
+
+def test_run_reap_empty_regions_string_raises():
+    import pytest
+    from flux_compute.reap import run_reap
+    with pytest.raises(RuntimeError, match="named no region"):
+        run_reap(cloud="flux-ovh", regions=" , ")

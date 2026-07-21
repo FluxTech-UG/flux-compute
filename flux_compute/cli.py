@@ -114,6 +114,10 @@ def main(argv=None) -> int:
              "their stamped TTL, with their keypair and security group.",
     )
     _add_target_args(reap)
+    reap.add_argument("--regions", default=None, metavar="A,B,C",
+                      help="Scan these regions (comma-separated). Default: EVERY region the "
+                           "cloud entry is configured for, since servers and quota are both "
+                           "per region and a multi-region sweep strands them per region.")
     reap.add_argument("--yes", action="store_true",
                       help="Skip confirmation for expired-stamped instances (non-interactive reap).")
     reap.add_argument("--all", action="store_true", dest="take_all",
@@ -174,7 +178,7 @@ def main(argv=None) -> int:
 
         if args.command == "reap":
             from .reap import run_reap
-            return run_reap(cloud=args.cloud, region=args.region,
+            return run_reap(cloud=args.cloud, region=args.region, regions=args.regions,
                             yes=args.yes, take_all=args.take_all)
 
         if args.command == "push":

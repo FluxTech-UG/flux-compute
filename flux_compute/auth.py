@@ -37,6 +37,28 @@ _REGION_PIN_REMEDY = (
 )
 
 
+def configured_regions(cloud: str | None = None):
+    """Every region this cloud entry is configured for, or [None] if it names one.
+
+    A clouds.yaml `regions:` list expands to one config per region, which is what
+    makes a project-wide stray hunt possible: OVH quota, servers and therefore
+    STRAYS are per region, so a reap that looked only at the default region would
+    report "no strays" while an instance billed in another. Returns [None] (the
+    default region) when the cloud names a single region or when the config
+    cannot be read -- callers then behave exactly as they did single-region.
+    """
+    if cloud is None:
+        return [None]
+    try:
+        import openstack.config
+        cfg = openstack.config.OpenStackConfig()
+        names = [r.region_name for r in cfg.get_all()
+                 if r.name == cloud and r.region_name]
+    except Exception:
+        return [None]
+    return names or [None]
+
+
 def connect(cloud: str | None = None, region: str | None = None):
     """Open an authenticated connection to the OVH project, or raise the remedy.
 

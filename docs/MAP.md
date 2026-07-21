@@ -12,7 +12,8 @@ _flux-compute: run FluxTech simulations on OVH Public Cloud GPU instances._
 _Authenticated OpenStack connection to the OVH Public Cloud project._
 - const _REMEDY  ·L12
 - const _REGION_PIN_REMEDY  ·L22
-- connect(cloud: str | None=None, region: str | None=None)  ·L40 — Open an authenticated connection to the OVH project, or raise the remedy.
+- configured_regions(cloud: str | None=None)  ·L40 — Every region this cloud entry is configured for, or [None] if it names one.
+- connect(cloud: str | None=None, region: str | None=None)  ·L62 — Open an authenticated connection to the OVH project, or raise the remedy.
 
 ### flux_compute/cli.py
 _flux-compute command-line entry point._
@@ -150,7 +151,8 @@ _`flux-compute reap`: find flux-compute instances and delete the expired ones._
 - warn_strays(conn, full=False, now=None)  ·L154 — Advisory stray check run at the start of every CLI command that
 - _confirm(prompt) -> bool  ·L188
 - _reap_one(conn, c: Candidate) -> bool  ·L196 — Delete one candidate's server (verified) plus its same-named keypair and
-- run_reap(cloud=None, region=None, yes=False, take_all=False) -> int  ·L217
+- run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False) -> int  ·L217 — Hunt strays across regions, because servers and quota are BOTH per region.
+- _reap_region(cloud, region, yes, take_all) -> int  ·L253
 
 ### flux_compute/sweep.py
 _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling._
@@ -325,6 +327,10 @@ _Pure-logic tests for reap selection: expiry math, positive identification,_
 - test_run_reap_all_confirmed_takes_extra_buckets_but_never_foreign(monkeypatch)  ·L252
 - test_run_reap_non_interactive_without_yes_deletes_nothing(monkeypatch)  ·L261
 - test_run_reap_exit_zero_when_only_keep_flagged_remains(monkeypatch)  ·L273
+- test_run_reap_scans_every_configured_region_by_default(monkeypatch)  ·L283 — With no --region/--regions, reap must sweep ALL configured regions: a
+- test_run_reap_explicit_region_scans_only_that_one(monkeypatch)  ·L300
+- test_run_reap_unscannable_region_does_not_mask_the_others(monkeypatch)  ·L309 — One dead region must not abort the sweep -- the remaining regions are
+- test_run_reap_empty_regions_string_raises()  ·L330
 
 ### tests/test_sweep.py
 _Pure-logic tests for the sweep helpers. No network, no credentials._
