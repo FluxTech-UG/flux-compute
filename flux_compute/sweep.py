@@ -8,6 +8,12 @@ refuses to start above the budget; the effective concurrency is clamped to the
 compute-quota headroom for the flavor, so the fleet cannot outrun the quota into
 create failures; and each job's remote exec is killed at --max-minutes so a hung
 job cannot run up the bill. Teardown is per-job and unconditional.
+
+**Compute quota is per region, so regions multiply the fleet.** `--regions A,B,C`
+shards one sweep across several regions at once: each region is resolved, quota-
+clamped and priced on its own (flavor availability differs by region), and the
+per-region fleets run concurrently under one global `--max-parallel` ceiling and
+one `--budget`. A single `--region` is the one-shard case of the same path.
 """
 from __future__ import annotations
 
@@ -17,6 +23,7 @@ import shutil
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 
 from . import detach
 from .auth import connect
@@ -71,28 +78,40 @@ def worst_case_eur(n_jobs, price_eur_hr, max_minutes):
     return n_jobs * price_eur_hr * (max_minutes / 60.0)
 
 
-def budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur):
-    """Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
+def budget_guard_shards(entries, max_minutes, budget_eur):
+    """Enforce --budget against the worst-case spend of every shard, or raise.
 
-    Returns the worst-case EUR (None when the flavor has no known price and no
-    budget is set). With a budget set, an unpriced flavor is refused rather than
-    silently skipping the guard: a money cap that cannot see the price is not a
-    cap. Add the flavor's price to _KNOWN_PRICE_EUR_HR (flavors.py) to price it.
+    `entries` is [(flavor, price_eur_hr, n_jobs), ...] -- one per region shard,
+    since flavor and therefore price can differ by region. The budget is a single
+    cap on the whole sweep, so the shards' worst cases are summed.
+
+    Returns the total worst-case EUR (None when any flavor has no known price and
+    no budget is set). With a budget set, an unpriced flavor is refused rather
+    than silently skipping the guard: a money cap that cannot see the price is
+    not a cap. Add the flavor's price to _KNOWN_PRICE_EUR_HR (flavors.py).
     """
-    wc = worst_case_eur(n_jobs, price_eur_hr, max_minutes)
-    if budget_eur is not None:
-        if price_eur_hr is None:
+    unpriced = sorted({str(f) for f, price, _ in entries if price is None})
+    if unpriced:
+        if budget_eur is not None:
             raise RuntimeError(
-                f"--budget EUR {budget_eur:.2f} was set, but flavor {flavor!r} has no "
-                f"known price, so worst-case spend cannot be bounded. Add its price to "
+                f"--budget EUR {budget_eur:.2f} was set, but flavor(s) "
+                f"{', '.join(repr(f) for f in unpriced)} have no known price, so "
+                f"worst-case spend cannot be bounded. Add the price to "
                 f"_KNOWN_PRICE_EUR_HR in flavors.py, or drop --budget to run unguarded."
             )
-        if wc > budget_eur:
-            raise RuntimeError(
-                f"worst-case ~EUR {wc:.2f} exceeds budget EUR {budget_eur:.2f}; "
-                "lower --max-minutes, run fewer jobs, or raise --budget."
-            )
-    return wc
+        return None
+    total = sum(worst_case_eur(n, price, max_minutes) for _, price, n in entries)
+    if budget_eur is not None and total > budget_eur:
+        raise RuntimeError(
+            f"worst-case ~EUR {total:.2f} exceeds budget EUR {budget_eur:.2f}; "
+            "lower --max-minutes, run fewer jobs, or raise --budget."
+        )
+    return total
+
+
+def budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur):
+    """Single-shard budget guard: the one-region case of budget_guard_shards."""
+    return budget_guard_shards([(flavor, price_eur_hr, n_jobs)], max_minutes, budget_eur)
 
 
 def clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max,
@@ -131,6 +150,139 @@ def clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max,
             f"increase, or switch region."
         )
     return min(max_parallel, fit)
+
+
+def parse_regions(text):
+    """Parse `--regions A,B,C` into an ordered, de-duplicated region list.
+
+    Fails fast on an empty or blank-only value rather than silently falling back
+    to the single-region path: `--regions ''` is a mistake, not a default.
+    """
+    names = [s.strip() for s in str(text).split(",")]
+    names = [n for n in names if n]
+    if not names:
+        raise RuntimeError("--regions was given but named no region")
+    seen, out = set(), []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def allocate_concurrency(caps, max_parallel):
+    """Split a global live-instance ceiling across regions, never past each cap.
+
+    `caps[i]` is what region i's own quota headroom allows. `--max-parallel`
+    stays what it has always been -- the total number of instances alive at once
+    across the whole sweep -- so adding regions widens the fleet only up to that
+    one number, and the blast radius and budget intuition carry over unchanged.
+
+    Filled breadth-first (one slot per region per pass), so a ceiling smaller
+    than the region count spreads across distinct regions rather than saturating
+    the first. Returns per-region allocations summing to min(max_parallel, sum(caps)).
+    """
+    if max_parallel < 1:
+        raise RuntimeError(f"--max-parallel must be at least 1, got {max_parallel}")
+    alloc = [0] * len(caps)
+    remaining = min(max_parallel, sum(caps))
+    while remaining > 0:
+        progressed = False
+        for i, cap in enumerate(caps):
+            if remaining == 0:
+                break
+            if alloc[i] < cap:
+                alloc[i] += 1
+                remaining -= 1
+                progressed = True
+        if not progressed:      # every region is at its cap
+            break
+    return alloc
+
+
+def shard_jobs(jobs, weights):
+    """Deal jobs to regions in proportion to each region's allocated concurrency.
+
+    A region that may run 4 instances at once should carry ~4x the jobs of a
+    region allowed 1, so the shards finish together instead of one region idling
+    while another drains. Dealt round-robin over a weight-expanded region cycle,
+    which both proportions the load and keeps consecutive jobs spread across
+    regions. Zero-weight regions (no allocation) get nothing.
+    """
+    cycle = [i for i, w in enumerate(weights) for _ in range(max(0, w))]
+    if not cycle:
+        raise RuntimeError("no region has any concurrency allocation")
+    shards = [[] for _ in weights]
+    for n, job in enumerate(jobs):
+        shards[cycle[n % len(cycle)]].append(job)
+    return shards
+
+
+@dataclass(frozen=True)
+class Shard:
+    """One region's slice of a sweep: where to launch, how wide, and which jobs."""
+    region: str
+    spec: object            # LaunchSpec, resolved in this region
+    vcpus: int
+    cap: int                # what this region's quota headroom allows
+    concurrency: int = 0    # what the global ceiling actually granted it
+    jobs: tuple = ()
+
+    def with_plan(self, concurrency, jobs):
+        return Shard(region=self.region, spec=self.spec, vcpus=self.vcpus,
+                     cap=self.cap, concurrency=concurrency, jobs=tuple(jobs))
+
+
+def _prepare_shard(cloud, region, flavor, image, max_parallel):
+    """Resolve one region: connect, pick the flavor/image, read its own quota.
+
+    Every region is resolved independently because availability genuinely differs
+    -- V100S exists in some OVH regions and not others, and the cheapest healthy
+    GPU (and its price) is a per-region answer.
+    """
+    conn = connect(cloud=cloud, region=region)
+    warn_strays(conn)
+    reg = _region(conn, region)
+    spec = resolve_spec(conn, reg, flavor=flavor, image=image)
+    lim = conn.get_compute_limits()
+    gq = lambda k: getattr(lim, k, None)
+    vcpus = _flavor_vcpus(conn, spec.flavor)
+    cap = clamp_concurrency(
+        max_parallel, vcpus,
+        gq("total_cores_used"), gq("max_total_cores"),
+        gq("total_instances_used"), gq("max_total_instances"),
+    )
+    return Shard(region=reg, spec=spec, vcpus=vcpus, cap=cap)
+
+
+def _prepare_shards(cloud, regions, flavor, image, max_parallel):
+    """Resolve every requested region, reporting ALL failures together.
+
+    A region that cannot run the sweep (no healthy GPU, no quota headroom, no
+    compute endpoint) raises rather than being skipped: silently dropping a
+    region the operator explicitly asked for would quietly halve a fleet they
+    believe is running. Collecting every failure first means one fix-up round,
+    not one per region.
+    """
+    shards, failures = [], []
+    for region in regions:
+        try:
+            shards.append(_prepare_shard(cloud, region, flavor, image, max_parallel))
+        except Exception as exc:
+            # A clouds.yaml region pin is one global config fault, not a per-region
+            # one -- fixing it fixes every region -- so it surfaces whole and at
+            # once rather than truncated into a per-region failure list.
+            if "refused by the local clouds.yaml" in str(exc):
+                raise
+            failures.append(f"  {region}: {type(exc).__name__}: {str(exc)[:160]}")
+    if failures:
+        raise RuntimeError(
+            "these requested regions cannot run this sweep:\n" + "\n".join(failures) +
+            "\n\nDrop them from --regions, or fix the cause above (a region with no "
+            "credit-eligible fp64-healthy GPU cannot host a sim; check `flux-compute "
+            "doctor --region <name>`)."
+        )
+    return shards
 
 
 def _flavor_vcpus(conn, flavor_name):
@@ -291,56 +443,10 @@ def resume_sweep(cloud=None, region=None, into="cloud-sweep", max_parallel=4) ->
     return 0 if ok == len(results) else 1
 
 
-def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
-              jobs_file=None, fetch=None, into="cloud-sweep",
-              max_parallel=4, max_minutes=30, budget_eur=None, image=None,
-              plan_only=False, resume=False) -> int:
-    if resume:
-        return resume_sweep(cloud=cloud, region=region, into=into,
-                            max_parallel=max_parallel)
-    if not jobs_file:
-        raise RuntimeError("sweep needs --jobs (a jobs file)")
-    if not plan_only:
-        if not script:
-            raise RuntimeError("sweep needs --script (the per-job job script)")
-        if not fetch:
-            raise RuntimeError("sweep needs --fetch (home-relative artifact dir per job)")
-
-    with open(jobs_file) as fh:
-        jobs = parse_jobs(fh.read())
-
-    conn0 = connect(cloud=cloud, region=region)
-    warn_strays(conn0)
-    spec = resolve_spec(conn0, _region(conn0, region), flavor=flavor, image=image)
-    _print_plan(spec)
-
-    wc = budget_guard(spec.flavor, spec.est_cost_eur_hr, len(jobs), max_minutes, budget_eur)
-    tail = f"worst-case ~EUR {wc:.2f}" if wc is not None else "price n/a"
-
-    # Clamp concurrency to compute-quota headroom for this flavor; --max-parallel
-    # stays the user ceiling. Fails fast if not even one instance fits.
-    lim = conn0.get_compute_limits()
-    gq = lambda k: getattr(lim, k, None)
-    vcpus = _flavor_vcpus(conn0, spec.flavor)
-    cores_free = (gq("max_total_cores") or 0) - (gq("total_cores_used") or 0)
-    inst_free = (gq("max_total_instances") or 0) - (gq("total_instances_used") or 0)
-    effective = clamp_concurrency(
-        max_parallel, vcpus,
-        gq("total_cores_used"), gq("max_total_cores"),
-        gq("total_instances_used"), gq("max_total_instances"),
-    )
-    if effective < max_parallel:
-        print(f"quota clamp: concurrency {max_parallel} -> {effective} "
-              f"(headroom {cores_free} cores / {inst_free} instances; "
-              f"{spec.flavor} = {vcpus} vCPU each)")
-    print(f"sweep: {len(jobs)} jobs, up to {effective} parallel, "
-          f"per-job cap {max_minutes} min; {tail}")
-
-    if plan_only:
-        print("plan only: no instances launched.")
-        return 0
-
-    os.makedirs(into, exist_ok=True)
+def _make_run_one(cloud, shard, uploads, script, fetch, into, max_minutes):
+    """Build the per-job runner bound to one region shard (provision -> upload ->
+    detached run -> follow -> fetch -> teardown)."""
+    spec, region = shard.spec, shard.region
 
     def _one(job):
         label, params = job
@@ -363,6 +469,8 @@ def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
                 # Launch the job detached so a laptop sleep cannot HUP it, then
                 # persist an attach record so even a hard kill of THIS process can
                 # re-attach to the still-running VM (`flux-compute sweep --resume`).
+                # The record carries THIS shard's region, so --resume reconnects
+                # to the right one in a multi-region sweep.
                 _launch_detached(ip, keyfile, remote, cap_seconds, env_prefix=env)
                 _write_attach_record(
                     dest, label=label, cloud=cloud, region=region, name=name,
@@ -383,11 +491,99 @@ def run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None,
         except Exception as exc:
             return (label, -1, _failure_status(exc))
 
-    def _log(r):
-        label, rc, status = r
-        print(f"  [{label}] rc={rc} {status}")
+    return _one
 
-    results = _fan_out(jobs, _one, effective, on_result=_log)
+
+def run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None,
+              jobs_file=None, fetch=None, into="cloud-sweep",
+              max_parallel=4, max_minutes=30, budget_eur=None, image=None,
+              plan_only=False, resume=False) -> int:
+    if resume:
+        return resume_sweep(cloud=cloud, region=region, into=into,
+                            max_parallel=max_parallel)
+    if not jobs_file:
+        raise RuntimeError("sweep needs --jobs (a jobs file)")
+    if not plan_only:
+        if not script:
+            raise RuntimeError("sweep needs --script (the per-job job script)")
+        if not fetch:
+            raise RuntimeError("sweep needs --fetch (home-relative artifact dir per job)")
+    if regions and region:
+        raise RuntimeError(
+            "pass either --region (one region) or --regions (several), not both")
+
+    with open(jobs_file) as fh:
+        jobs = parse_jobs(fh.read())
+
+    # One shard per region; a lone --region (or the clouds.yaml default) is the
+    # single-shard case of the same path.
+    targets = parse_regions(regions) if regions else [region]
+    shards = _prepare_shards(cloud, targets, flavor, image, max_parallel)
+
+    # --max-parallel is the GLOBAL live-instance ceiling; each region is
+    # additionally bounded by its own quota headroom.
+    alloc = allocate_concurrency([s.cap for s in shards], max_parallel)
+    live = [s.with_plan(a, []) for s, a in zip(shards, alloc) if a > 0]
+    if not live:
+        raise RuntimeError("no region has any quota headroom for this sweep")
+    dealt = shard_jobs(jobs, [s.concurrency for s in live])
+    live = [s.with_plan(s.concurrency, j) for s, j in zip(live, dealt)]
+
+    total_conc = sum(s.concurrency for s in live)
+    wc = budget_guard_shards(
+        [(s.spec.flavor, s.spec.est_cost_eur_hr, len(s.jobs)) for s in live],
+        max_minutes, budget_eur)
+    tail = f"worst-case ~EUR {wc:.2f}" if wc is not None else "price n/a"
+
+    if len(live) == 1 and len(shards) == 1:
+        _print_plan(live[0].spec)
+        s = live[0]
+        if s.concurrency < max_parallel:
+            print(f"quota clamp: concurrency {max_parallel} -> {s.concurrency} "
+                  f"({s.spec.flavor} = {s.vcpus} vCPU each)")
+    else:
+        print(f"multi-region sweep across {len(live)} of {len(shards)} region(s) "
+              f"(quota is per region, so regions widen the fleet):")
+        for s in live:
+            cost = (f"EUR {s.spec.est_cost_eur_hr:.2f}/hr"
+                    if s.spec.est_cost_eur_hr is not None else "price n/a")
+            print(f"  {s.region:<14} {s.spec.flavor:<12} ({s.vcpus} vCPU, {cost})  "
+                  f"{s.concurrency} parallel (cap {s.cap})  {len(s.jobs)} jobs")
+        idle = [s.region for s in shards if s.region not in {l.region for l in live}]
+        if idle:
+            print(f"  unused (global --max-parallel {max_parallel} reached): {', '.join(idle)}")
+
+    print(f"sweep: {len(jobs)} jobs, up to {total_conc} parallel, "
+          f"per-job cap {max_minutes} min; {tail}")
+
+    if plan_only:
+        print("plan only: no instances launched.")
+        return 0
+
+    os.makedirs(into, exist_ok=True)
+
+    def _log_for(region):
+        def _log(r):
+            label, rc, status = r
+            tag = f"{region}/" if len(live) > 1 else ""
+            print(f"  [{tag}{label}] rc={rc} {status}")
+        return _log
+
+    def _run_shard(s):
+        return _fan_out(list(s.jobs),
+                        _make_run_one(cloud, s, uploads, script, fetch, into, max_minutes),
+                        s.concurrency, on_result=_log_for(s.region))
+
+    # Shards run concurrently; each stays within its own region's allocation, so
+    # the live fleet never exceeds the global ceiling.
+    if len(live) == 1:
+        results = _run_shard(live[0])
+    else:
+        results = []
+        with ThreadPoolExecutor(max_workers=len(live)) as ex:
+            for fut in as_completed([ex.submit(_run_shard, s) for s in live]):
+                results.extend(fut.result())
+
     ok = sum(1 for _, rc, _ in results if rc == 0)
     print(f"sweep done: {ok}/{len(results)} ok; artifacts under {into}/")
     return 0 if ok == len(results) else 1

@@ -11,7 +11,8 @@ _flux-compute: run FluxTech simulations on OVH Public Cloud GPU instances._
 ### flux_compute/auth.py
 _Authenticated OpenStack connection to the OVH Public Cloud project._
 - const _REMEDY  ·L12
-- connect(cloud: str | None=None, region: str | None=None)  ·L22 — Open an authenticated connection to the OVH project, or raise the remedy.
+- const _REGION_PIN_REMEDY  ·L22
+- connect(cloud: str | None=None, region: str | None=None)  ·L40 — Open an authenticated connection to the OVH project, or raise the remedy.
 
 ### flux_compute/cli.py
 _flux-compute command-line entry point._
@@ -153,24 +154,33 @@ _`flux-compute reap`: find flux-compute instances and delete the expired ones._
 
 ### flux_compute/sweep.py
 _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling._
-- const ATTACH_DIR  ·L35
-- const ATTACH_RECORD  ·L36
-- const ATTACH_KEY  ·L37
-- parse_jobs(text)  ·L40 — Parse a jobs file: each non-blank, non-# line is 'LABEL = PARAMS'.
-- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L66 — Total worst-case cost: every job runs to its wall cap. Concurrency does
-- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L74 — Enforce --budget against the worst-case sweep spend, or raise (fail-fast).
-- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L98 — Clamp requested parallelism to what compute-quota headroom allows.
-- _flavor_vcpus(conn, flavor_name)  ·L136 — Read the vCPU count for a flavor from the compute API, or raise.
-- _failure_status(exc)  ·L147 — Label a per-job failure for the job record. A teardown strand reads as
-- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L162 — Run run_one(job) across up to max_workers threads (one instance per job);
-- _attach_dir(dest)  ·L178
-- _write_attach_record(dest, *, label, cloud, region, name, server_id, ip, keyfile, remote_script, fetch, into, cap_seconds)  ·L182 — Persist the attach record plus a durable copy of the ephemeral private key
-- _clear_attach_record(dest)  ·L202 — Drop the attach dir (record + key copy) after a clean finalize + teardown;
-- _load_attach_records(into)  ·L208 — Every persisted attach record under <into> (in-flight or interrupted jobs).
-- _status_for_outcome(outcome)  ·L221 — Map a follow outcome to the sweep's (rc, status) record fields.
-- _finalize(ip, keyfile, dest, fetch, outcome)  ·L233 — Collect a followed job: pull the authoritative job.log always, and the
-- resume_sweep(cloud=None, region=None, into='cloud-sweep', max_parallel=4) -> int  ·L242 — Re-attach to still-running detached jobs after a full orchestrator restart.
-- run_sweep(cloud=None, region=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, plan_only=False, …  ·L294
+- const ATTACH_DIR  ·L42
+- const ATTACH_RECORD  ·L43
+- const ATTACH_KEY  ·L44
+- parse_jobs(text)  ·L47 — Parse a jobs file: each non-blank, non-# line is 'LABEL = PARAMS'.
+- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L73 — Total worst-case cost: every job runs to its wall cap. Concurrency does
+- budget_guard_shards(entries, max_minutes, budget_eur)  ·L81 — Enforce --budget against the worst-case spend of every shard, or raise.
+- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L112 — Single-shard budget guard: the one-region case of budget_guard_shards.
+- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L117 — Clamp requested parallelism to what compute-quota headroom allows.
+- parse_regions(text)  ·L155 — Parse `--regions A,B,C` into an ordered, de-duplicated region list.
+- allocate_concurrency(caps, max_parallel)  ·L173 — Split a global live-instance ceiling across regions, never past each cap.
+- shard_jobs(jobs, weights)  ·L203 — Deal jobs to regions in proportion to each region's allocated concurrency.
+- @dataclass class Shard  ·L222 — One region's slice of a sweep: where to launch, how wide, and which jobs.
+  - with_plan(self, concurrency, jobs)  ·L231
+- _prepare_shard(cloud, region, flavor, image, max_parallel)  ·L236 — Resolve one region: connect, pick the flavor/image, read its own quota.
+- _prepare_shards(cloud, regions, flavor, image, max_parallel)  ·L258 — Resolve every requested region, reporting ALL failures together.
+- _flavor_vcpus(conn, flavor_name)  ·L288 — Read the vCPU count for a flavor from the compute API, or raise.
+- _failure_status(exc)  ·L299 — Label a per-job failure for the job record. A teardown strand reads as
+- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L314 — Run run_one(job) across up to max_workers threads (one instance per job);
+- _attach_dir(dest)  ·L330
+- _write_attach_record(dest, *, label, cloud, region, name, server_id, ip, keyfile, remote_script, fetch, into, cap_seconds)  ·L334 — Persist the attach record plus a durable copy of the ephemeral private key
+- _clear_attach_record(dest)  ·L354 — Drop the attach dir (record + key copy) after a clean finalize + teardown;
+- _load_attach_records(into)  ·L360 — Every persisted attach record under <into> (in-flight or interrupted jobs).
+- _status_for_outcome(outcome)  ·L373 — Map a follow outcome to the sweep's (rc, status) record fields.
+- _finalize(ip, keyfile, dest, fetch, outcome)  ·L385 — Collect a followed job: pull the authoritative job.log always, and the
+- resume_sweep(cloud=None, region=None, into='cloud-sweep', max_parallel=4) -> int  ·L394 — Re-attach to still-running detached jobs after a full orchestrator restart.
+- _make_run_one(cloud, shard, uploads, script, fetch, into, max_minutes)  ·L446 — Build the per-job runner bound to one region shard (provision -> upload ->
+- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L497
 
 ### tests/test_detach.py
 _Pure-logic tests for the detach-and-poll machinery. No network, no credentials._
@@ -318,36 +328,49 @@ _Pure-logic tests for reap selection: expiry math, positive identification,_
 
 ### tests/test_sweep.py
 _Pure-logic tests for the sweep helpers. No network, no credentials._
-- test_parse_label_equals_params()  ·L25
-- test_parse_skips_blanks_and_comments()  ·L30
-- test_parse_line_without_equals_is_label_and_params()  ·L35
-- test_duplicate_label_raises()  ·L39
-- test_label_with_slash_raises()  ·L44
-- test_empty_jobs_raises()  ·L49
-- test_worst_case_cost()  ·L54
-- test_worst_case_price_unknown_is_none()  ·L59
-- test_budget_guard_priced_under_budget_returns_worst_case()  ·L63
-- test_budget_guard_priced_over_budget_raises()  ·L69
-- test_budget_guard_unpriced_with_budget_refuses_and_names_flavor()  ·L74
-- test_budget_guard_unpriced_without_budget_returns_none()  ·L82
-- test_clamp_concurrency_bounded_by_core_quota()  ·L89
-- test_clamp_concurrency_bounded_by_instance_quota()  ·L95
-- test_clamp_concurrency_user_ceiling_wins_when_quota_is_ample()  ·L101
-- test_clamp_concurrency_no_core_headroom_raises()  ·L106
-- test_clamp_concurrency_no_instance_headroom_raises()  ·L113
-- test_clamp_concurrency_unlimited_quota_sentinel_is_no_bound()  ·L119
-- test_fan_out_bounds_concurrency_and_runs_every_job()  ·L130
-- test_failure_status_flags_quota_and_capacity()  ·L152
-- test_failure_status_generic_error_stays_generic()  ·L157
-- test_failure_status_flags_teardown_strand()  ·L161
-- test_status_ok_on_clean_exit()  ·L169
-- test_status_nonzero_job()  ·L173
-- test_status_remote_cap_kill_reads_as_timed_out()  ·L178
-- test_status_local_deadline_is_a_failure_record()  ·L184
-- _make_keyfile(tmp_path)  ·L191
-- test_attach_record_write_load_clear_round_trip(tmp_path)  ·L197
-- test_load_attach_records_empty_when_no_into_dir(tmp_path)  ·L222
-- test_finalize_pulls_log_always_and_artifacts_only_on_done(tmp_path, monkeypatch)  ·L226
+- test_parse_label_equals_params()  ·L29
+- test_parse_skips_blanks_and_comments()  ·L34
+- test_parse_line_without_equals_is_label_and_params()  ·L39
+- test_duplicate_label_raises()  ·L43
+- test_label_with_slash_raises()  ·L48
+- test_empty_jobs_raises()  ·L53
+- test_worst_case_cost()  ·L58
+- test_worst_case_price_unknown_is_none()  ·L63
+- test_budget_guard_priced_under_budget_returns_worst_case()  ·L67
+- test_budget_guard_priced_over_budget_raises()  ·L73
+- test_budget_guard_unpriced_with_budget_refuses_and_names_flavor()  ·L78
+- test_budget_guard_unpriced_without_budget_returns_none()  ·L86
+- test_clamp_concurrency_bounded_by_core_quota()  ·L93
+- test_clamp_concurrency_bounded_by_instance_quota()  ·L99
+- test_clamp_concurrency_user_ceiling_wins_when_quota_is_ample()  ·L105
+- test_clamp_concurrency_no_core_headroom_raises()  ·L110
+- test_clamp_concurrency_no_instance_headroom_raises()  ·L117
+- test_clamp_concurrency_unlimited_quota_sentinel_is_no_bound()  ·L123
+- test_fan_out_bounds_concurrency_and_runs_every_job()  ·L134
+- test_failure_status_flags_quota_and_capacity()  ·L156
+- test_failure_status_generic_error_stays_generic()  ·L161
+- test_failure_status_flags_teardown_strand()  ·L165
+- test_status_ok_on_clean_exit()  ·L173
+- test_status_nonzero_job()  ·L177
+- test_status_remote_cap_kill_reads_as_timed_out()  ·L182
+- test_status_local_deadline_is_a_failure_record()  ·L188
+- _make_keyfile(tmp_path)  ·L195
+- test_attach_record_write_load_clear_round_trip(tmp_path)  ·L201
+- test_load_attach_records_empty_when_no_into_dir(tmp_path)  ·L226
+- test_finalize_pulls_log_always_and_artifacts_only_on_done(tmp_path, monkeypatch)  ·L230
+- test_parse_regions_orders_and_dedupes()  ·L250
+- test_parse_regions_empty_raises()  ·L255
+- test_allocate_concurrency_spreads_across_regions_before_stacking()  ·L261
+- test_allocate_concurrency_never_exceeds_a_regions_cap()  ·L268
+- test_allocate_concurrency_five_gpu_regions_at_two_each()  ·L274
+- test_allocate_concurrency_rejects_nonpositive_ceiling()  ·L279
+- test_shard_jobs_deals_in_proportion_to_concurrency()  ·L284
+- test_shard_jobs_skips_zero_weight_regions()  ·L291
+- test_shard_jobs_fewer_jobs_than_regions_spreads_out()  ·L298
+- test_shard_jobs_no_allocation_raises()  ·L303
+- test_budget_guard_shards_sums_across_regions()  ·L308
+- test_budget_guard_shards_over_budget_raises_on_the_total()  ·L315
+- test_budget_guard_shards_unpriced_region_named_when_budget_set()  ·L322
 
 ## Other source files
 

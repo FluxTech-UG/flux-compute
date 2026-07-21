@@ -11,6 +11,16 @@ clouds:
       auth_url: https://auth.cloud.ovh.net/v3
       application_credential_id: REPLACE_WITH_APP_CRED_ID
       application_credential_secret: REPLACE_WITH_APP_CRED_SECRET
-    region_name: GRA11        # a GPU-enabled region (GRA9, GRA11, BHS5)
+    # Compute quota is PER REGION, so listing every region you use is what lets
+    # `sweep --regions A,B,C` widen a fleet past one region's headroom. A single
+    # `region_name:` instead pins this cloud to one region, and --region /
+    # --regions for any other then fails locally, before a request is sent.
+    # These five carry V100S (t2-le-*); OVH's other regions are CPU-only.
+    regions:
+      - GRA11                 # Gravelines
+      - DE1                   # Frankfurt
+      - UK1                   # London
+      - WAW1                  # Warsaw
+      - BHS5                  # Beauharnois (also the only plain-V100 t1-le region)
     interface: public
     identity_api_version: 3

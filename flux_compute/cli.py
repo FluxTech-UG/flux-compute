@@ -72,8 +72,14 @@ def main(argv=None) -> int:
                        help="Local base dir for fetched artifacts (default: cloud-sweep).")
     sweep.add_argument("--flavor", default=None,
                        help="Override the flavor (else the cheapest fp64-healthy GPU available).")
+    sweep.add_argument("--regions", default=None, metavar="A,B,C",
+                       help="Shard the sweep across several regions at once (comma-separated). "
+                            "Compute quota is PER REGION, so this is how a fleet grows past one "
+                            "region's headroom. Mutually exclusive with --region. Needs a "
+                            "clouds.yaml that is not pinned to one region (use `regions:`).")
     sweep.add_argument("--max-parallel", type=int, default=4,
-                       help="Max instances alive at once (default 4).")
+                       help="Max instances alive at once ACROSS ALL regions (default 4). "
+                            "Each region is additionally clamped to its own quota headroom.")
     sweep.add_argument("--max-minutes", type=int, default=30,
                        help="Per-job remote wall-clock cap; kills a hung job (default 30).")
     sweep.add_argument("--budget", type=float, default=None, metavar="EUR",
@@ -153,7 +159,8 @@ def main(argv=None) -> int:
 
         if args.command == "sweep":
             from .sweep import run_sweep
-            return run_sweep(cloud=args.cloud, region=args.region, flavor=args.flavor,
+            return run_sweep(cloud=args.cloud, region=args.region, regions=args.regions,
+                             flavor=args.flavor,
                              uploads=args.upload, script=args.script, jobs_file=args.jobs,
                              fetch=args.fetch, into=args.into, max_parallel=args.max_parallel,
                              max_minutes=args.max_minutes, budget_eur=args.budget, image=args.image,

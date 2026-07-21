@@ -15,9 +15,13 @@ from flux_compute.sweep import (
     _load_attach_records,
     _status_for_outcome,
     _write_attach_record,
+    allocate_concurrency,
     budget_guard,
+    budget_guard_shards,
     clamp_concurrency,
     parse_jobs,
+    parse_regions,
+    shard_jobs,
     worst_case_eur,
 )
 
@@ -239,3 +243,85 @@ def test_finalize_pulls_log_always_and_artifacts_only_on_done(tmp_path, monkeypa
     rc, status = _finalize("ip", "kf", dest, "out", PollOutcome(rc=None, reason="deadline", output_size=5))
     assert rc == -1 and "DEADLINE" in status
     assert calls == {"log": 2, "fetch": 1}       # fetch not called again
+
+
+# --- multi-region sharding ----------------------------------------------------
+
+def test_parse_regions_orders_and_dedupes():
+    assert parse_regions("GRA11, DE1 ,UK1") == ["GRA11", "DE1", "UK1"]
+    assert parse_regions("DE1,DE1,GRA11") == ["DE1", "GRA11"]
+
+
+def test_parse_regions_empty_raises():
+    # An empty --regions is a mistake, not a silent fallback to one region.
+    with pytest.raises(RuntimeError, match="named no region"):
+        parse_regions(" , ")
+
+
+def test_allocate_concurrency_spreads_across_regions_before_stacking():
+    # Ceiling below the region count: distinct regions first, not one saturated.
+    assert allocate_concurrency([2, 2, 2], 2) == [1, 1, 0]
+    assert allocate_concurrency([2, 2, 2], 3) == [1, 1, 1]
+    assert allocate_concurrency([2, 2, 2], 5) == [2, 2, 1]
+
+
+def test_allocate_concurrency_never_exceeds_a_regions_cap():
+    alloc = allocate_concurrency([1, 4], 10)
+    assert alloc == [1, 4]                    # capped per region
+    assert sum(alloc) == 5                    # and by the sum of caps
+
+
+def test_allocate_concurrency_five_gpu_regions_at_two_each():
+    # The live OVH shape: 34 vCPU/region / 15 vCPU per V100S = 2 per region.
+    assert allocate_concurrency([2, 2, 2, 2, 2], 10) == [2, 2, 2, 2, 2]
+
+
+def test_allocate_concurrency_rejects_nonpositive_ceiling():
+    with pytest.raises(RuntimeError, match="at least 1"):
+        allocate_concurrency([2, 2], 0)
+
+
+def test_shard_jobs_deals_in_proportion_to_concurrency():
+    jobs = [(f"j{i}", "p") for i in range(12)]
+    shards = shard_jobs(jobs, [2, 1])
+    assert len(shards[0]) == 8 and len(shards[1]) == 4      # 2:1 split
+    assert sum(len(s) for s in shards) == len(jobs)         # nothing dropped
+
+
+def test_shard_jobs_skips_zero_weight_regions():
+    jobs = [(f"j{i}", "p") for i in range(4)]
+    shards = shard_jobs(jobs, [2, 0, 2])
+    assert shards[1] == []
+    assert len(shards[0]) == 2 and len(shards[2]) == 2
+
+
+def test_shard_jobs_fewer_jobs_than_regions_spreads_out():
+    shards = shard_jobs([("a", "p"), ("b", "p")], [1, 1, 1])
+    assert [len(s) for s in shards] == [1, 1, 0]
+
+
+def test_shard_jobs_no_allocation_raises():
+    with pytest.raises(RuntimeError, match="no region has any concurrency"):
+        shard_jobs([("a", "p")], [0, 0])
+
+
+def test_budget_guard_shards_sums_across_regions():
+    # Same flavor in two regions: the cap is on the whole sweep, not per region.
+    entries = [("b3-8", 0.0512, 100), ("b3-8", 0.0512, 100)]
+    total = budget_guard_shards(entries, 30, budget_eur=10.0)
+    assert total == pytest.approx(200 * 0.0512 * 0.5)
+
+
+def test_budget_guard_shards_over_budget_raises_on_the_total():
+    # Each shard alone is under the cap; together they exceed it.
+    entries = [("b3-8", 0.0512, 100), ("b3-8", 0.0512, 100)]
+    with pytest.raises(RuntimeError, match="exceeds budget"):
+        budget_guard_shards(entries, 30, budget_eur=3.0)
+
+
+def test_budget_guard_shards_unpriced_region_named_when_budget_set():
+    entries = [("b3-8", 0.0512, 10), ("t2-le-45-flex", None, 10)]
+    with pytest.raises(RuntimeError) as exc:
+        budget_guard_shards(entries, 30, budget_eur=10.0)
+    assert "t2-le-45-flex" in str(exc.value)
+    assert "no known price" in str(exc.value)

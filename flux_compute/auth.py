@@ -19,6 +19,24 @@ _REMEDY = (
 )
 
 
+_REGION_PIN_REMEDY = (
+    "Region {region!r} was refused by the local clouds.yaml, not by OVH:\n"
+    "  {exc}\n\n"
+    "A clouds.yaml entry with a single `region_name:` pins that cloud to ONE region,\n"
+    "so --region / --regions for any other is rejected before a request is sent.\n"
+    "Compute quota at OVH is per region, so that pin also caps how wide a sweep can\n"
+    "run. Replace the single pin with the list of regions you use:\n\n"
+    "    regions:\n"
+    "      - GRA11\n"
+    "      - DE1\n"
+    "      - UK1\n"
+    "      - WAW1\n"
+    "      - BHS5\n\n"
+    "(or drop `region_name:` entirely and always pass --region). See\n"
+    "examples/clouds.yaml.example."
+)
+
+
 def connect(cloud: str | None = None, region: str | None = None):
     """Open an authenticated connection to the OVH project, or raise the remedy.
 
@@ -39,6 +57,8 @@ def connect(cloud: str | None = None, region: str | None = None):
     try:
         return openstack.connect(**kwargs)
     except Exception as exc:
+        if "is not a valid region name" in str(exc):
+            raise RuntimeError(_REGION_PIN_REMEDY.format(region=region, exc=exc)) from exc
         raise RuntimeError(
             f"Could not initialise the OVH OpenStack connection: {exc}\n\n{_REMEDY}"
         ) from exc

@@ -96,11 +96,61 @@ end-to-end "is the API working?" check.
   job, with a pre-flight worst-case cost guard and a per-job wall-clock cap. Each
   job runs **detached** on its VM and is followed by a reconnect-tolerant poll
   loop, so a laptop sleep does not kill it; `sweep --resume` re-attaches to an
-  interrupted run (see *Surviving laptop sleep* below).
+  interrupted run (see *Surviving laptop sleep* below). Add
+  **`--regions A,B,C`** to shard one sweep across several regions at once (see
+  *Multi-region sweeps* below) — the way to run a fleet wider than one region's
+  quota.
 - **`reap [--yes] [--all]`** — list every flux-compute instance with age, hourly
   price and accrued cost; delete the ones past their stamped TTL (see Cost
   guardrails below).
 - **`push DIR CONTAINER`** — durable artifact copies to OVH Object Storage (Swift).
+
+### Multi-region sweeps (the fleet-width lever)
+
+**OVH compute quota is per region, not per project.** Every region carries its
+own 34 vCPUs / 10 instances / 420 GiB (measured live 2026-07-21, identical in all
+nine). A V100S (`t2-le-45`, 15 vCPU) therefore fits **2 per region** — so a
+single-region sweep tops out at 2 GPUs no matter how high `--max-parallel` goes.
+Spreading the same sweep across regions is what widens the fleet:
+
+| Region | GPU flavor chosen | vCPU | Concurrent |
+|---|---|---|---|
+| GRA11, DE1, UK1, WAW1 | `t2-le-45` (V100S 32GB) | 15 | 2 each |
+| BHS5 | `t1-le-45` (V100 16GB, cheaper) | 8 | 4 |
+| SBG5, RBX-A, EU-WEST-PAR, EU-SOUTH-MIL | CPU only | — | — |
+
+**12 concurrent GPU instances** across the five GPU regions, versus 2 in one.
+For CPU fan-out the nine regions total ~306 vCPUs.
+
+```bash
+flux-compute sweep --cloud flux-ovh \
+    --regions GRA11,DE1,UK1,WAW1,BHS5 \
+    --jobs jobs.txt --script job.sh --fetch out \
+    --max-parallel 12 --budget 40
+```
+
+`--max-parallel` stays what it always was — the total instances alive at once
+**across the whole sweep** — and each region is additionally clamped to its own
+quota headroom, so the fleet can never outrun either bound. Jobs are dealt to
+regions in proportion to the concurrency each was granted, so the shards finish
+together rather than one region idling while another drains. Flavor and price are
+resolved **per region** (BHS5 picking the cheaper V100 above is that at work), and
+the budget guard sums the shards' worst cases against the one `--budget`.
+`--plan` prints the whole allocation table without launching anything.
+
+A region that cannot run the sweep — no credit-eligible fp64-healthy GPU, no
+quota headroom, no compute endpoint — raises rather than being skipped: silently
+dropping a region you asked for would quietly halve a fleet you believe is
+running. All failing regions are reported together, so it is one fix-up round.
+
+**Your `clouds.yaml` must not pin one region.** An entry with a single
+`region_name:` makes every other region fail *locally*, before any request is
+sent — and so silently caps fleet width at one region. Use a `regions:` list
+instead (see `examples/clouds.yaml.example`); `connect` detects the pin and
+prints this fix.
+
+`sweep --resume` works across regions unchanged: each job's attach record stores
+its own region, so re-attach reconnects to the right one.
 
 ### Surviving laptop sleep (detached jobs + resume)
 
@@ -156,9 +206,10 @@ the stock image + per-job install.
 
 - **Hard spend cap**: `sweep --budget EUR` refuses to start when worst-case
   spend (jobs x price x wall cap) exceeds the cap, and refuses outright when the
-  flavor has no known price. Concurrency is clamped to compute-quota headroom
-  (project quota: 50 instances / 64 vCPUs / 496 GB as of 2026-07-19 — four
-  concurrent V100S at 15 vCPU each).
+  flavor has no known price. With `--regions`, the shards' worst cases are summed
+  against the one budget. Concurrency is clamped to compute-quota headroom, read
+  live from the API **per region** (34 vCPUs / 10 instances each as measured
+  2026-07-21 — 2 concurrent V100S, or 4 of BHS5's 8-vCPU V100).
 - **Wall caps**: the remote job runs under a `timeout` wrapper on the VM, so a
   hung job is killed at its cap independently of the laptop (the local poll loop
   and `flux-compute reap`'s TTL stamp are the two further backstops).
