@@ -120,6 +120,21 @@ def test_static_gpu_spec_from_catalog_table(name, vcpus, ram_gb):
     assert spec.vcpus == vcpus and spec.ram_gb == ram_gb
 
 
+@pytest.mark.parametrize("name,vram_gb", [
+    ("t2-le-45", 32.0), ("t2-le-90", 64.0), ("t2-le-180", 128.0),
+    ("t1-le-45", 16.0), ("t1-le-180", 64.0),
+])
+def test_static_gpu_spec_carries_vram(name, vram_gb):
+    # VRAM is the device-memory axis; V100S = 32 GB/card, V100 = 16 GB/card,
+    # scaled by card count on the multi-GPU flavors.
+    assert static_flavor_spec(name).vram_gb == vram_gb
+
+
+def test_static_cpu_spec_has_no_vram():
+    assert static_flavor_spec("c3-4").vram_gb is None
+    assert static_flavor_spec("b3-16").vram_gb is None
+
+
 def test_static_spec_carries_price_and_usability():
     v100s = static_flavor_spec("t2-le-45")
     assert v100s.price_eur_hr == pytest.approx(0.80) and v100s.usable_for_sim
@@ -166,6 +181,12 @@ def test_live_flavor_spec_reads_vcpus_and_ram():
     assert spec.kind == "gpu" and spec.vcpus == 15
     assert spec.ram_gb == pytest.approx(45.0)
     assert spec.price_eur_hr == pytest.approx(0.80)  # price still from the policy
+    assert spec.vram_gb == 32.0                      # tabulated device memory
+
+
+def test_live_cpu_flavor_spec_has_no_vram():
+    spec = live_flavor_spec(SimpleNamespace(name="c3-8", vcpus=4, ram=8192))
+    assert spec.kind == "cpu" and spec.vram_gb is None
 
 
 def test_live_flavor_spec_missing_vcpus_fails_fast():

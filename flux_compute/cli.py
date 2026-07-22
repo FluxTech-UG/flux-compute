@@ -29,6 +29,9 @@ def _add_requirement_args(p, *, with_count):
                    help="Many jobs collapse into one device invocation (GPU vmap-style).")
     p.add_argument("--batch-width", type=int, default=None, metavar="B",
                    help="Preferred members per batched invocation (only with --batchable).")
+    p.add_argument("--vram-gb", type=float, default=None, metavar="GB",
+                   help="GPU device memory one batched member needs (only with --batchable). "
+                        "Omitted, the planner assumes it equals --ram-gb.")
     p.add_argument("--requirements", default=None, metavar="FILE",
                    help="JSON file of requirement fields; explicit flags override it.")
 
@@ -52,7 +55,7 @@ def _build_requirements(args, *, default_count=None):
         # "batch_width") would otherwise fall back to a default and mis-size a
         # paid fleet with no warning.
         allowed = {"job_count", "ram_gb_per_job", "device", "minutes_per_job",
-                   "batchable", "batch_width"}
+                   "batchable", "batch_width", "vram_gb_per_member"}
         unknown = sorted(set(data) - allowed)
         if unknown:
             raise SystemExit(
@@ -81,6 +84,7 @@ def _build_requirements(args, *, default_count=None):
         minutes_per_job=float(pick("minutes", "minutes_per_job", 30.0)),
         batchable=batchable,
         batch_width=pick("batch_width", "batch_width"),
+        vram_gb_per_member=pick("vram_gb", "vram_gb_per_member"),
     )
 
 

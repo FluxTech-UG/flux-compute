@@ -53,8 +53,12 @@ restricted family** ("only V100, V100S and RTX5000 are available with
 credits"). Corroborated by OVH's public docs, which scope the voucher exclusions
 to specific GPU models only (A100/H100/L4/L40S):
 <https://docs.ovhcloud.com/en/guides/account-and-service-management/startup-program/available-products>.
-The guide's per-flavor prices (e.g. b3-8 at EUR 0.0512/hr) match the
-`_KNOWN_PRICE_EUR_HR` table, confirming both draw from the same catalog.
+The guide's `b3-8`..`b3-64` prices match the `_KNOWN_PRICE_EUR_HR` table exactly
+(e.g. b3-8 at EUR 0.0512/hr); its `c3-*` and `b3-128+` rows run ~10% lower than
+the table's 2026-07-04 DE order-catalog reads. The DE order catalog is the
+account's billing basis, and the gap is conservative for budgeting (worst-case
+spend is over-, never under-, estimated) — see the cross-check note in
+`flavors.py`.
 
 ## Install
 
@@ -128,16 +132,27 @@ flux-compute plan --requirements jobreq.json --regions GRA11,DE1,UK1
 The plan is **structured data** (`flux_compute.fleet.plan_fleet` returns a
 `FleetPlan`; the CLI renders it). Consumers call `plan_fleet(JobRequirements(...))`
 directly. `JobRequirements` fields: `job_count`, `ram_gb_per_job`, `device`
-(`cpu` / `gpu` / `either`), `minutes_per_job`, `batchable`, `batch_width`.
+(`cpu` / `gpu` / `either`), `minutes_per_job`, `batchable`, `batch_width`,
+`vram_gb_per_member` (GPU device memory per batched member; batchable-only).
 `device: either` lets the planner pick — batched work amortizes on a GPU,
 unbatched work fans out cheapest on CPU; pass `cpu`/`gpu` to force it.
 
-Packing K (jobs per VM) is clamped by **both** the VM's vCPUs and its RAM
-(`K × ram_gb_per_job ≤ host RAM × headroom`), so a RAM-hungry job packs fewer per
-VM than a lean one regardless of core count. The plan reports the **spare slots**
+Packing K (jobs per VM) is clamped by **every binding axis**: host RAM
+(`K × ram_gb_per_job ≤ host RAM × headroom`) and vCPUs for CPU fan-out, and — for a
+**batched GPU** invocation — the card's **VRAM** (`K × vram_gb_per_member ≤ VRAM ×
+headroom`), since the batched members co-reside on the accelerator (host RAM does
+not bound them). Pass `vram_gb_per_member` for batched GPU work; omitted, the
+planner conservatively assumes a member's VRAM footprint equals its host
+`ram_gb_per_job` and says so in a plan note. The plan reports the **spare slots**
 left in the fleet — the sizing doctrine in action: round the job count up to fill
 them, because the marginal slot is close to free (a wave runs whether or not it is
 full).
+
+The plan shows **two worst-case costs**: `plan --budget` guards the **requested
+jobs** cost (the N jobs dealt across the fleet, exactly as `sweep --budget` bills
+one instance per job), and the **fill-the-fleet** cost (every spare slot used) is
+reported beside it — so both the cost of your jobs and the cost if you round up to
+fill are visible.
 
 Offline plans (the default) use catalog values — the per-region quota (34 vCPU /
 10 instances / 420 GB, measured 2026-07-21) and the catalog flavor shapes.

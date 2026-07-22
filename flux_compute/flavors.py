@@ -42,6 +42,15 @@ DEFAULT_SIM_FLAVOR = "t2-le-45"
 # GPU, and to bound worst-case sweep spend. Re-verify against the account catalog
 # when prices move; an unpriced flavor is refused under a sweep --budget rather
 # than silently skipping the guard.
+#
+# Cross-check with the archived eligibility guide
+# (docs/product-eligibility-startup-program-2026-03.html): its b3-8..b3-64 rows
+# match these prices exactly, but its c3-* and b3-128+ rows run ~1.10x LOWER
+# (e.g. guide c3-4 EUR 0.0415 vs 0.0457 here; guide b3-128 EUR 0.7439 vs 0.8190).
+# The DE order catalog above is the account's billing basis and the authority;
+# the ~10% gap is conservative for budgeting (worst-case spend is over-, never
+# under-, estimated) and does not change flavor ranking (the factor is uniform).
+# Reconcile against the live catalog when a network is available.
 _KNOWN_PRICE_EUR_HR = {
     # GPU (credit-eligible cards)
     "t1-le-45": 0.70, "t1-le-90": 1.40, "t1-le-180": 2.80,
@@ -95,14 +104,28 @@ _CPU_RAM_PER_VCPU_GB = {"b3-": 4.0, "c3-": 2.0}
 
 # GPU flavor -> (vCPUs, host RAM GB), from the OVH catalog (same archived source,
 # cross-checked against README "Multi-region sweeps"). Host RAM, not GPU VRAM:
-# the planner's RAM model bounds how many job processes/members a VM's *host*
-# memory can hold. The suffix is the RAM in GB but vCPUs do not follow a single
-# ratio across the GPU families (t2-le-45 is 15 vCPU, t1-le-45 is 8), so the GPU
-# rows are tabulated rather than derived. Unknown GPU flavor -> fail fast.
+# this bounds how many job processes a VM's *host* memory can hold. The suffix is
+# the RAM in GB but vCPUs do not follow a single ratio across the GPU families
+# (t2-le-45 is 15 vCPU, t1-le-45 is 8), so the GPU rows are tabulated rather than
+# derived. Unknown GPU flavor -> fail fast.
 _GPU_SPECS_VCPU_RAM = {
     "t1-le-45": (8, 45),   "t1-le-90": (16, 90),  "t1-le-180": (32, 180),
     "t2-le-45": (15, 45),  "t2-le-90": (30, 90),  "t2-le-180": (60, 180),
     "rtx5000-28": (4, 28), "rtx5000-56": (8, 56), "rtx5000-84": (16, 84),
+}
+
+# GPU flavor -> total device memory (VRAM) in GB. The card's per-GPU VRAM is
+# named in its model string (V100 = 16 GB, V100S = 32 GB, RTX5000 = 16 GB); the
+# multi-card flavors carry that many times the card count (t2-le-90 is 2 x V100S
+# = 64 GB, t2-le-180 is 4 x = 128 GB). Tabulated explicitly rather than parsed
+# from the model string. VRAM — not host RAM — bounds a *batched* device
+# invocation (the members co-resident on the accelerator), so the fleet planner
+# clamps a batch by both. Every flavor in _GPU_SPECS_VCPU_RAM has a row here;
+# an out-of-sync GPU flavor is a fail-fast in static_flavor_spec.
+_GPU_VRAM_GB = {
+    "t1-le-45": 16.0,   "t1-le-90": 32.0,   "t1-le-180": 64.0,
+    "t2-le-45": 32.0,   "t2-le-90": 64.0,   "t2-le-180": 128.0,
+    "rtx5000-28": 16.0, "rtx5000-56": 32.0, "rtx5000-84": 48.0,
 }
 
 
@@ -156,8 +179,8 @@ def recommended_for_sim(available_names) -> str:
     """Return the cheapest credit-eligible, fp64-healthy GPU among those available.
 
     Raises if none qualify (for example, a region that exposes no covered GPU).
-    The caller should switch to a GPU-enabled region (GRA9, GRA11, BHS5) rather
-    than silently fall back to a crippled or uncovered card.
+    The caller should switch to a GPU-enabled region (GRA11, DE1, UK1, WAW1, BHS5)
+    rather than silently fall back to a crippled or uncovered card.
     """
     gpus = [v for v in (classify(n) for n in available_names)
             if v.kind == "gpu" and v.usable_for_sim]
@@ -165,7 +188,7 @@ def recommended_for_sim(available_names) -> str:
         raise RuntimeError(
             "No credit-eligible, fp64-healthy GPU flavor is available here. "
             "Covered fp64-healthy GPUs are V100 (t1-le-*) and V100S (t2-le-*); "
-            "RTX5000 is covered but fp64-crippled. Try a GPU region: GRA9, GRA11, BHS5."
+            "RTX5000 is covered but fp64-crippled. Try a GPU region: GRA11, DE1, UK1, WAW1, BHS5."
         )
     gpus.sort(key=lambda v: (v.price_eur_hr if v.price_eur_hr is not None else float("inf"), v.name))
     return gpus[0].name
@@ -175,11 +198,12 @@ def recommended_for_sim(available_names) -> str:
 class FlavorSpec:
     """A flavor's resource shape: the fields the fleet planner sizes against.
 
-    `vcpus` and `ram_gb` are the two capacity axes a VM offers; `price_eur_hr`
-    bounds spend (None when the flavor is unpriced, which the budget guard
-    refuses). `kind`/`gpu_model` come straight from the policy `classify`, so a
-    spec of a non-usable flavor still describes it — the planner filters on
-    `usable_for_sim` itself.
+    `vcpus` and `ram_gb` are the two host-capacity axes a VM offers; `vram_gb` is
+    the GPU device memory (None for CPU flavors), the axis that bounds a batched
+    device invocation; `price_eur_hr` bounds spend (None when the flavor is
+    unpriced, which the budget guard refuses). `kind`/`gpu_model` come straight
+    from the policy `classify`, so a spec of a non-usable flavor still describes
+    it — the planner filters on `usable_for_sim` itself.
     """
 
     name: str
@@ -189,6 +213,7 @@ class FlavorSpec:
     ram_gb: float
     price_eur_hr: float | None
     usable_for_sim: bool
+    vram_gb: float | None = None   # GPU device memory (GB); None for CPU flavors
 
 
 def _parse_cpu_suffix(name: str):
@@ -236,8 +261,13 @@ def static_flavor_spec(name: str) -> FlavorSpec:
                 f"Add it to _GPU_SPECS_VCPU_RAM, or resolve it live."
             )
         vcpus, ram_gb = _GPU_SPECS_VCPU_RAM[key]
+        if key not in _GPU_VRAM_GB:
+            raise RuntimeError(
+                f"GPU flavor {name!r} is in _GPU_SPECS_VCPU_RAM but has no VRAM row "
+                f"in _GPU_VRAM_GB — the two tables are out of sync.")
         return FlavorSpec(name, "gpu", verdict.gpu_model, vcpus, float(ram_gb),
-                          verdict.price_eur_hr, verdict.usable_for_sim)
+                          verdict.price_eur_hr, verdict.usable_for_sim,
+                          vram_gb=_GPU_VRAM_GB[key])
     if verdict.kind == "cpu":
         prefix, ratio, ram_gb = _parse_cpu_suffix(name)
         vcpus = int(round(ram_gb / ratio))
@@ -279,5 +309,10 @@ def live_flavor_spec(flavor_obj) -> FlavorSpec:
     if vcpus is None:
         raise RuntimeError(f"could not read the vCPU count for flavor {name!r} from the compute API")
     verdict = classify(name)
+    # VRAM is not reliably exposed on the OpenStack flavor object; take the
+    # tabulated device-memory figure for the card (None if this GPU flavor is not
+    # cataloged, which disables the VRAM clamp rather than guessing).
+    vram_gb = _GPU_VRAM_GB.get(name.strip().lower()) if verdict.kind == "gpu" else None
     return FlavorSpec(name, verdict.kind, verdict.gpu_model, int(vcpus),
-                      flavor_ram_gb(flavor_obj), verdict.price_eur_hr, verdict.usable_for_sim)
+                      flavor_ram_gb(flavor_obj), verdict.price_eur_hr,
+                      verdict.usable_for_sim, vram_gb=vram_gb)

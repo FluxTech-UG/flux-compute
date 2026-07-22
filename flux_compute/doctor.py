@@ -57,7 +57,7 @@ def run_doctor(cloud: str | None = None, region: str | None = None) -> int:
         return 0
 
     print("API reachable, but this region exposes no credit-eligible, fp64-healthy GPU.")
-    print("Switch to a GPU region (GRA9, GRA11, BHS5) via --region or clouds.yaml.")
+    print("Switch to a GPU region (GRA11, DE1, UK1, WAW1, BHS5) via --region or clouds.yaml.")
     return 1
 
 

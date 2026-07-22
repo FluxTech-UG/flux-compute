@@ -6,6 +6,7 @@ import pytest
 from flux_compute.flavors import static_flavor_spec
 from flux_compute.fleet import (
     ALL_REGIONS,
+    CATALOG_QUOTA_RAM_GB,
     GPU_REGIONS,
     FleetPlan,
     JobRequirements,
@@ -15,6 +16,8 @@ from flux_compute.fleet import (
     jobs_per_vm,
     plan_fleet,
     plan_fleet_core,
+    _deal_counts,
+    _region_cap,
     _resolve_device,
 )
 
@@ -107,25 +110,145 @@ def test_pack_unbatched_is_vcpu_bound_when_ram_ample():
     assert K == 8
 
 
-def test_pack_batched_uses_preferred_width_clamped_by_ram():
-    spec = static_flavor_spec("t2-le-45")   # 45 GB
-    # 0.2 GB/member -> RAM holds 180; preferred width 128 wins (< RAM).
+def test_pack_batched_clamped_by_vram_then_width():
+    spec = static_flavor_spec("t2-le-45")   # 45 GB host, 32 GB VRAM (25.6 usable)
+    # 0.2 GB/member -> VRAM holds 128 (25.6/0.2); preferred width 128 fits.
     wide = jobs_per_vm(JobRequirements(500, 0.2, "gpu", batchable=True, batch_width=128), spec)
     assert wide == 128
-    # 1.5 GB/member -> RAM holds 24; the 128 request is clamped down.
+    # 1.5 GB/member -> VRAM holds 17 (< host RAM's 24); the 128 request is clamped
+    # down to the VRAM bound, the binding device axis for a batch.
     tight = jobs_per_vm(JobRequirements(500, 1.5, "gpu", batchable=True, batch_width=128), spec)
-    assert tight == 24
+    assert tight == 17
 
 
-def test_pack_batched_without_width_is_ram_filled():
-    spec = static_flavor_spec("t2-le-45")
+def test_pack_batched_without_width_is_vram_filled():
+    spec = static_flavor_spec("t2-le-45")   # 32 GB VRAM binds before 45 GB host RAM
     K = jobs_per_vm(JobRequirements(500, 3.0, "gpu", batchable=True), spec)
-    assert K == int(45 * 0.8 // 3.0)      # 12
+    assert K == int(32 * 0.8 // 3.0)      # 8 (VRAM-bound, not host-RAM's 12)
 
 
 def test_pack_not_even_one_fits_fails_fast():
     with pytest.raises(RuntimeError, match="not even one fits"):
         jobs_per_vm(JobRequirements(1, 40.0, "cpu"), static_flavor_spec("c3-4"))
+
+
+# --- VRAM clamp on batched GPU packing (finding #1) ---------------------------
+
+def test_batched_gpu_is_vram_bounded_not_host_ram():
+    # Example 2 re-derived: t2-le-45 has 32 GB VRAM (25.6 usable) and 45 GB host
+    # RAM (36 usable). At 2 GB/member the batch is VRAM-bound at 12, NOT host-RAM
+    # -bound at 18 — a naive host-RAM pack (18*2=36 GB) would OOM the 32 GB card.
+    spec = static_flavor_spec("t2-le-45")
+    assert spec.vram_gb == 32.0
+    K = jobs_per_vm(JobRequirements(8, 2.0, "gpu", batchable=True, batch_width=128), spec)
+    assert K == 12                                   # floor(32*0.8 / 2)
+
+
+def test_explicit_vram_per_member_binds_the_batch():
+    spec = static_flavor_spec("t2-le-45")            # 45 GB host, 32 GB VRAM
+    # A member that is lean in host RAM (1 GB) but heavy in VRAM (4 GB): VRAM
+    # holds 6, host RAM holds 36 -> the batch is VRAM-bound at 6.
+    K = jobs_per_vm(
+        JobRequirements(50, 1.0, "gpu", batchable=True, vram_gb_per_member=4.0), spec)
+    assert K == 6                                    # floor(32*0.8 / 4)
+
+
+def test_member_vram_above_card_fails_fast():
+    spec = static_flavor_spec("t2-le-45")            # 32 GB VRAM, 25.6 usable
+    with pytest.raises(RuntimeError, match="not even one member fits on the device"):
+        jobs_per_vm(
+            JobRequirements(1, 2.0, "gpu", batchable=True, vram_gb_per_member=40.0), spec)
+
+
+def test_vram_per_member_requires_batchable():
+    with pytest.raises(RuntimeError, match="only means something for batchable"):
+        JobRequirements(1, 2.0, "gpu", vram_gb_per_member=4.0)
+
+
+def test_batched_cpu_ignores_vram_axis():
+    # CPU specs carry no VRAM, so the VRAM clamp never applies; the batch is
+    # bound by host RAM as before (c3-8: 8 GB * 0.8 = 6.4 -> 6 at 1 GB/member).
+    spec = static_flavor_spec("c3-8")
+    assert spec.vram_gb is None
+    K = jobs_per_vm(JobRequirements(50, 1.0, "cpu", batchable=True, batch_width=100), spec)
+    assert K == 6
+
+
+def test_plan_notes_the_conservative_vram_assumption():
+    # Batched GPU with no vram_gb_per_member -> the plan says it used host RAM as
+    # the VRAM footprint, so the caller knows to pass a tighter figure.
+    plan = plan_fleet(JobRequirements(8, 2.0, "gpu", batchable=True, batch_width=128))
+    assert any("VRAM per member not given" in n for n in plan.notes)
+    # Given explicitly, no such note.
+    plan2 = plan_fleet(
+        JobRequirements(8, 2.0, "gpu", batchable=True, batch_width=128, vram_gb_per_member=2.0))
+    assert not any("VRAM per member not given" in n for n in plan2.notes)
+
+
+# --- wider GPU candidate ladder (finding #6) ----------------------------------
+
+def test_bigger_host_ram_gpu_job_steps_up_the_family():
+    # 50 GB host RAM/member no longer fits t2-le-45 (36 usable); it resolves to
+    # t2-le-90 (72 usable) instead of being refused.
+    spec = choose_flavor(JobRequirements(4, 50.0, "gpu"))
+    assert spec.name == "t2-le-90"
+
+
+def test_ram_above_largest_gpu_names_t2_le_180():
+    with pytest.raises(RuntimeError, match="exceeds the largest gpu flavor: t2-le-180"):
+        choose_flavor(JobRequirements(1, 200.0, "gpu"))
+
+
+def test_bigger_gpu_size_propagates_to_every_region():
+    # A 50 GB/member GPU job resolves end-to-end: EU regions lift to t2-le-90 and
+    # BHS5 to the matching t1-le-90, not the too-small t2-le-45/t1-le-45 default.
+    plan = plan_fleet(JobRequirements(4, 50.0, "gpu"))
+    by_region = {ra.region: ra.flavor for ra in plan.region_allocation}
+    assert by_region["DE1"] == "t2-le-90"
+    assert by_region["BHS5"] == "t1-le-90"
+    assert plan.flavor == "t2-le-90"
+
+
+# --- region cap over RAM axis: 0, not an optimistic 1 (finding #7) ------------
+
+def test_region_cap_is_zero_when_ram_starved():
+    spec = static_flavor_spec("t2-le-45")            # 45 GB host RAM
+    # RAM quota fully used -> zero VMs fit, even though cores/instances would.
+    cap = _region_cap(spec, ram_used_gb=CATALOG_QUOTA_RAM_GB, ram_max_gb=CATALOG_QUOTA_RAM_GB)
+    assert cap == 0
+    # With headroom it is the RAM-or-core-bound positive cap (unchanged behavior).
+    assert _region_cap(static_flavor_spec("c3-4")) == 10
+
+
+def test_core_all_regions_zero_cap_fails_fast():
+    req = JobRequirements(job_count=5, ram_gb_per_job=2.0, device="cpu")
+    units = [RegionUnit(region="GRA11", spec=static_flavor_spec("c3-4"), cap=0),
+             RegionUnit(region="DE1", spec=static_flavor_spec("c3-4"), cap=0)]
+    with pytest.raises(RuntimeError, match="fits zero"):
+        plan_fleet_core(req, units, device="cpu", primary=static_flavor_spec("c3-4"))
+
+
+# --- budget guards the requested jobs, not the fill envelope (finding #2) ------
+
+def test_deal_counts_sums_to_total_proportional_to_weights():
+    assert _deal_counts(8, [2, 4]) == [3, 5]
+    assert sum(_deal_counts(100, [10, 10, 10])) == 100
+    assert _deal_counts(0, [1, 2]) == [0, 0]
+
+
+def test_plan_budget_guards_jobs_not_fill():
+    # 12 jobs on a fleet whose FILLED capacity would cost more than the budget,
+    # but whose 12-job cost fits: the plan is allowed (matches sweep --budget).
+    req = JobRequirements(job_count=12, ram_gb_per_job=1.0, device="cpu", minutes_per_job=60)
+    primary = static_flavor_spec("c3-4")             # K=2 for 1 GB jobs
+    units = _units([("GRA11", "c3-4", 10)])          # 10 VM, 20 slots/wave
+    # cost_jobs = 12 * 0.0457 * 1h = 0.548; cost_filled = 10 VM * 1 wave * 0.0457 = 0.457.
+    plan = plan_fleet_core(req, units, device="cpu", primary=primary, budget=0.60)
+    assert plan.cost_jobs_eur == pytest.approx(12 * 0.0457)
+    assert plan.cost_jobs_eur > plan.cost_filled_eur     # 12 jobs > 10-VM single wave
+    # A budget below the jobs cost is refused.
+    with pytest.raises(RuntimeError, match="exceeds budget"):
+        plan_fleet_core(req, units, device="cpu", primary=primary, budget=0.50)
 
 
 # --- pure core ----------------------------------------------------------------
@@ -155,7 +278,7 @@ def test_core_spare_slots_reports_room_to_fill():
     assert plan.waves == 5 and plan.capacity == 100 and plan.spare_slots == 10
 
 
-def test_core_worst_case_cost_sums_regions_at_their_price():
+def test_core_two_worst_case_costs_jobs_and_filled():
     req = JobRequirements(job_count=8, ram_gb_per_job=4.0, device="gpu",
                           minutes_per_job=60)
     primary = static_flavor_spec("t2-le-45")
@@ -163,9 +286,13 @@ def test_core_worst_case_cost_sums_regions_at_their_price():
     units = _units([("DE1", "t2-le-45", 2), ("BHS5", "t1-le-45", 4)])
     plan = plan_fleet_core(req, units, device="gpu", primary=primary)
     assert plan.vm_count == 6
-    # K=1, 6 slots/wave, 8 jobs -> 2 waves. Every VM busy both waves:
-    # DE1: 2 VM * 2 waves * 0.80 * 1h ; BHS5: 4 * 2 * 0.70 * 1h.
-    assert plan.worst_case_eur == pytest.approx(2 * 2 * 0.80 + 4 * 2 * 0.70)
+    # cost_filled: every VM busy both waves (K=1, 6 slots/wave, 8 jobs -> 2 waves).
+    # DE1: 2 VM * 2 waves * 0.80 ; BHS5: 4 * 2 * 0.70.
+    assert plan.cost_filled_eur == pytest.approx(2 * 2 * 0.80 + 4 * 2 * 0.70)
+    # cost_jobs: the 8 requested jobs dealt across the fleet ~ vms (2:4 -> 3:5),
+    # each billed one instance-hour, matching `sweep`.
+    assert plan.cost_jobs_eur == pytest.approx(3 * 0.80 + 5 * 0.70)
+    assert plan.cost_jobs_eur < plan.cost_filled_eur
 
 
 def test_core_budget_exceeded_raises():
