@@ -143,8 +143,13 @@ Offline plans (the default) use catalog values — the per-region quota (34 vCPU
 10 instances / 420 GB, measured 2026-07-21) and the catalog flavor shapes.
 `flux-compute plan --live` reads the real per-region quota and flavor availability
 from the API instead; a live **launch** always re-verifies and clamps to real
-headroom per region. The planner composes the same per-region sharding the sweep
-uses, so a plan's allocation is exactly what the corresponding sweep would run.
+headroom per region. The planner reuses the sweep's per-region sharding
+(`allocate_concurrency`), so the region spread it shows mirrors how a sweep fans
+across the same regions. The plan is a **sizing envelope**, not a literal sweep
+transcript: it reports the full quota fleet and a packing K, while `sweep` itself
+launches one instance per job — it does not pack K, and runs only as many VMs as
+the jobs need. Use the plan to pick the flavor and size the batch; the K figure is
+the target for a consumer's own batched launcher, not something `sweep` enforces.
 
 `run` and `sweep` accept the same requirement flags: give `--ram-gb`/`--device`
 (and optionally `--batchable`/`--batch-width`/`--requirements`) and omit

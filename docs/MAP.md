@@ -20,8 +20,8 @@ _flux-compute command-line entry point._
 - _add_target_args(p)  ·L9
 - _add_requirement_args(p, *, with_count)  ·L16 — Generic fleet-requirement flags. `with_count` adds --count (the `plan`
 - _build_requirements(args, *, default_count=None)  ·L36 — Assemble JobRequirements from --requirements JSON overlaid by flags.
-- _flavor_from_requirements(args, *, default_count)  ·L76 — Resolve the flavor for a run/sweep: an explicit --flavor always wins;
-- main(argv=None) -> int  ·L92
+- _flavor_from_requirements(args, *, default_count)  ·L87 — Resolve the flavor for a run/sweep: an explicit --flavor always wins;
+- main(argv=None) -> int  ·L103
 
 ### flux_compute/detach.py
 _Detach-and-poll: run a remote job so it survives the launching SSH session_

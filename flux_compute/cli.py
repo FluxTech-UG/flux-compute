@@ -47,6 +47,17 @@ def _build_requirements(args, *, default_count=None):
             data = json.load(fh)
         if not isinstance(data, dict):
             raise SystemExit("--requirements JSON must be an object of fields")
+        # Fail fast on an unrecognized key rather than silently ignoring it: a
+        # typo'd field (e.g. "minutes" for "minutes_per_job", "batch" for
+        # "batch_width") would otherwise fall back to a default and mis-size a
+        # paid fleet with no warning.
+        allowed = {"job_count", "ram_gb_per_job", "device", "minutes_per_job",
+                   "batchable", "batch_width"}
+        unknown = sorted(set(data) - allowed)
+        if unknown:
+            raise SystemExit(
+                f"--requirements JSON has unrecognized field(s): {', '.join(unknown)}. "
+                f"Valid fields: {', '.join(sorted(allowed))}.")
 
     def pick(flag, key, default=None):
         val = getattr(args, flag, None)
