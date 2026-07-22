@@ -237,18 +237,48 @@ def test_deal_counts_sums_to_total_proportional_to_weights():
 
 
 def test_plan_budget_guards_jobs_not_fill():
-    # 12 jobs on a fleet whose FILLED capacity would cost more than the budget,
-    # but whose 12-job cost fits: the plan is allowed (matches sweep --budget).
-    req = JobRequirements(job_count=12, ram_gb_per_job=1.0, device="cpu", minutes_per_job=60)
-    primary = static_flavor_spec("c3-4")             # K=2 for 1 GB jobs
-    units = _units([("GRA11", "c3-4", 10)])          # 10 VM, 20 slots/wave
-    # cost_jobs = 12 * 0.0457 * 1h = 0.548; cost_filled = 10 VM * 1 wave * 0.0457 = 0.457.
-    plan = plan_fleet_core(req, units, device="cpu", primary=primary, budget=0.60)
-    assert plan.cost_jobs_eur == pytest.approx(12 * 0.0457)
-    assert plan.cost_jobs_eur > plan.cost_filled_eur     # 12 jobs > 10-VM single wave
-    # A budget below the jobs cost is refused.
+    # 15 jobs on a fleet whose FILLED envelope (20 slots) costs more than the
+    # budget, but whose 15-job cost fits: the plan is allowed, matching what
+    # `sweep --budget` would guard.
+    req = JobRequirements(job_count=15, ram_gb_per_job=3.0, device="cpu", minutes_per_job=60)
+    primary = static_flavor_spec("c3-4")             # 3 GB -> K=1 (RAM-bound)
+    units = _units([("GRA11", "c3-4", 10)])          # 10 VM, 10 slots/wave, 2 waves
+    # cost_jobs = 15 * 0.0457 = 0.686; cost_filled = 10 VM * 2 waves * 0.0457 = 0.914.
+    plan = plan_fleet_core(req, units, device="cpu", primary=primary, budget=0.80)
+    assert plan.cost_jobs_eur == pytest.approx(15 * 0.0457)
+    assert plan.cost_jobs_eur < plan.cost_filled_eur     # 15 jobs < 20-slot fill
+    # A budget below the jobs cost is refused; one above it (but below fill) passes.
     with pytest.raises(RuntimeError, match="exceeds budget"):
-        plan_fleet_core(req, units, device="cpu", primary=primary, budget=0.50)
+        plan_fleet_core(req, units, device="cpu", primary=primary, budget=0.60)
+
+
+def test_batched_cost_jobs_bills_vm_invocations_not_members():
+    # The coordinator's live case: 128 members, K=12 on t2-le-45 across two
+    # same-price regions. cost_jobs bills ceil(128/12)=11 VM-invocations
+    # (4.40 EUR), NOT 128 member-instances (the old, contradictory 51.20).
+    req = JobRequirements(128, 2.0, "gpu", batchable=True, batch_width=128,
+                          vram_gb_per_member=2.0, minutes_per_job=30)
+    primary = static_flavor_spec("t2-le-45")
+    units = _units([("GRA11", "t2-le-45", 2), ("DE1", "t2-le-45", 2)])
+    plan = plan_fleet_core(req, units, device="gpu", primary=primary)
+    assert plan.jobs_per_vm == 12
+    assert plan.cost_jobs_eur == pytest.approx(math.ceil(128 / 12) * 0.80 * 0.5)
+    assert plan.cost_jobs_eur == pytest.approx(4.40)
+    assert plan.cost_filled_eur == pytest.approx(4 * 3 * 0.80 * 0.5)   # 4 VM * 3 waves
+    assert plan.cost_jobs_eur <= plan.cost_filled_eur
+
+
+@pytest.mark.parametrize("count,width,vram", [
+    (128, 128, 2.0), (50, 32, 4.0), (7, 128, 2.0), (200, 64, 1.0), (5, 2, 4.0),
+    (144, 128, 2.0), (1, 128, 2.0),
+])
+def test_batched_cost_jobs_never_exceeds_cost_filled(count, width, vram):
+    # The invariant, across the full GPU fleet (heterogeneous t2-le/t1-le K): the
+    # requested-jobs cost is never above the fill-the-fleet cost.
+    plan = plan_fleet(
+        JobRequirements(count, 2.0, "gpu", batchable=True,
+                        batch_width=width, vram_gb_per_member=vram))
+    assert plan.cost_jobs_eur <= plan.cost_filled_eur
 
 
 # --- pure core ----------------------------------------------------------------

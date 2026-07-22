@@ -99,10 +99,10 @@ _Resource-aware fleet planner: turn a generic job description into a launch plan
 - _flavor_reason(req, device, primary, K) -> str  ·L327 — A one-line 'why this flavor/device' for the plan.
 - _deal_counts(total: int, weights) -> list  ·L351 — Deal `total` items across positive weights, summing to exactly `total`
 - plan_fleet_core(req: JobRequirements, region_units, *, device: str, primary: FlavorSpec, budget=None, max_parallel=None, ram_headroom: float=RAM_HEADROOM, notes=()) -> FleetPlan  ·L369 — Pure planner: region caps + flavor specs -> FleetPlan. No network.
-- _target_regions(device: str, regions) -> list  ·L457 — The regions to plan across: the caller's list, or the device default.
-- plan_fleet(requirements: JobRequirements, budget=None, regions=None, max_parallel=None, *, ram_headroom: float=RAM_HEADROOM) -> FleetPlan  ·L469 — Offline fleet plan from the catalog tables. No credentials, no network.
-- plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None, regions=None, max_parallel=None, ram_headroom: float=RAM_HEADROOM) -> FleetPlan  ·L515 — Live fleet plan: gather real per-region quota and flavor availability.
-- format_plan(req: JobRequirements, plan: FleetPlan) -> str  ·L577 — Render a FleetPlan as human-readable text. Pure: returns a string, never
+- _target_regions(device: str, regions) -> list  ·L466 — The regions to plan across: the caller's list, or the device default.
+- plan_fleet(requirements: JobRequirements, budget=None, regions=None, max_parallel=None, *, ram_headroom: float=RAM_HEADROOM) -> FleetPlan  ·L478 — Offline fleet plan from the catalog tables. No credentials, no network.
+- plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None, regions=None, max_parallel=None, ram_headroom: float=RAM_HEADROOM) -> FleetPlan  ·L524 — Live fleet plan: gather real per-region quota and flavor availability.
+- format_plan(req: JobRequirements, plan: FleetPlan) -> str  ·L586 — Render a FleetPlan as human-readable text. Pure: returns a string, never
 
 ### flux_compute/image.py
 _Bake a reusable GPU image: provision, run a setup script, snapshot, tear down._
@@ -329,19 +329,21 @@ _Pure-logic tests for the fleet planner. No network, no credentials._
 - test_core_all_regions_zero_cap_fails_fast()  ·L223
 - test_deal_counts_sums_to_total_proportional_to_weights()  ·L233
 - test_plan_budget_guards_jobs_not_fill()  ·L239
-- _units(names_caps)  ·L256
-- test_core_single_region_waves_and_spare()  ·L261
-- test_core_spare_slots_reports_room_to_fill()  ·L273
-- test_core_two_worst_case_costs_jobs_and_filled()  ·L281
-- test_core_budget_exceeded_raises()  ·L298
-- test_core_no_regions_fails_fast()  ·L306
-- test_core_max_parallel_caps_fleet_and_spreads()  ·L312
-- test_plan_fleet_cpu_spreads_across_all_nine_regions()  ·L324
-- test_plan_fleet_gpu_uses_gpu_regions_and_bhs5_v100()  ·L332
-- test_plan_fleet_gpu_with_only_cpu_regions_fails_fast()  ·L342
-- test_plan_fleet_regions_override_is_honored()  ·L347
-- test_plan_fleet_budget_guard_raises_offline()  ·L353
-- test_format_plan_returns_text()  ·L358
+- test_batched_cost_jobs_bills_vm_invocations_not_members()  ·L255
+- @pytest.mark.parametrize test_batched_cost_jobs_never_exceeds_cost_filled(count, width, vram)  ·L275
+- _units(names_caps)  ·L286
+- test_core_single_region_waves_and_spare()  ·L291
+- test_core_spare_slots_reports_room_to_fill()  ·L303
+- test_core_two_worst_case_costs_jobs_and_filled()  ·L311
+- test_core_budget_exceeded_raises()  ·L328
+- test_core_no_regions_fails_fast()  ·L336
+- test_core_max_parallel_caps_fleet_and_spreads()  ·L342
+- test_plan_fleet_cpu_spreads_across_all_nine_regions()  ·L354
+- test_plan_fleet_gpu_uses_gpu_regions_and_bhs5_v100()  ·L362
+- test_plan_fleet_gpu_with_only_cpu_regions_fails_fast()  ·L372
+- test_plan_fleet_regions_override_is_honored()  ·L377
+- test_plan_fleet_budget_guard_raises_offline()  ·L383
+- test_format_plan_returns_text()  ·L388
 
 ### tests/test_launch.py
 _Pure-logic tests for launch-spec helpers. No network, no credentials._

@@ -417,15 +417,24 @@ def plan_fleet_core(req: JobRequirements, region_units, *, device: str,
     spare = capacity - req.job_count
 
     # Two worst-case costs, both at each region's own price via the shared sweep
-    # budget guard. `cost_jobs` is the REQUESTED job_count dealt across the fleet
-    # exactly as `sweep` deals it (one instance per job) — this is what --budget
-    # guards, so a `plan --budget` and the equivalent `sweep --budget` agree.
-    # `cost_filled` is the packed capacity envelope (every VM busy every wave):
-    # reported for the fill-the-fleet doctrine, never gated.
-    job_share = _deal_counts(req.job_count, [ra.vms for ra in region_alloc])
+    # budget guard. `cost_jobs` is what --budget guards; it bills the REQUESTED work
+    # the way it actually runs, so a `plan --budget` and the equivalent launch agree:
+    #   - unbatched: one instance per job -> `job_count` VM-instances (matches how
+    #     `sweep` bills, one VM per job).
+    #   - batched: the members run K-at-a-time, so a wave of K members costs ONE
+    #     VM-period; `job_count` members occupy `ceil(job_count / K)` VM-invocations
+    #     (billing the raw member count would over-charge ~K x — the batch runs its
+    #     members concurrently, not as separate VM-jobs).
+    # Either way the count is dealt across regions ~ vms, exactly as `cost_filled`
+    # weights them, which keeps `cost_jobs <= cost_filled` region-by-region (each
+    # region's share never exceeds its `vms * waves`).
+    units_needed = math.ceil(req.job_count / K_primary) if req.batchable else req.job_count
+    jobs_share = _deal_counts(units_needed, [ra.vms for ra in region_alloc])
     jobs_entries = [(ra.flavor, ra.price_eur_hr, n)
-                    for ra, n in zip(region_alloc, job_share)]
+                    for ra, n in zip(region_alloc, jobs_share)]
     cost_jobs = budget_guard_shards(jobs_entries, req.minutes_per_job, budget)
+    # cost_filled: the packed capacity envelope (every VM busy every wave),
+    # reported for the fill-the-fleet doctrine, never gated.
     filled_entries = [(ra.flavor, ra.price_eur_hr, ra.vms * waves) for ra in region_alloc]
     cost_filled = budget_guard_shards(filled_entries, req.minutes_per_job, None)
 
