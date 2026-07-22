@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 
@@ -10,6 +11,82 @@ def _add_target_args(p):
                    help="clouds.yaml entry name (else OS_* env vars are used).")
     p.add_argument("--region", default=None,
                    help="Region override (else OS_REGION_NAME / clouds.yaml).")
+
+
+def _add_requirement_args(p, *, with_count):
+    """Generic fleet-requirement flags. `with_count` adds --count (the `plan`
+    command needs a job count; sweep gets it from the jobs file)."""
+    if with_count:
+        p.add_argument("--count", type=int, default=None, metavar="N",
+                       help="Number of independent jobs.")
+    p.add_argument("--ram-gb", type=float, default=None, metavar="GB",
+                   help="Peak host RAM one job (or one batched member) needs.")
+    p.add_argument("--device", default=None, choices=("cpu", "gpu", "either"),
+                   help="Device requirement: cpu, gpu, or either (default either).")
+    p.add_argument("--minutes", type=float, default=None, metavar="MIN",
+                   help="Wall-clock estimate per job (default 30).")
+    p.add_argument("--batchable", action="store_true",
+                   help="Many jobs collapse into one device invocation (GPU vmap-style).")
+    p.add_argument("--batch-width", type=int, default=None, metavar="B",
+                   help="Preferred members per batched invocation (only with --batchable).")
+    p.add_argument("--requirements", default=None, metavar="FILE",
+                   help="JSON file of requirement fields; explicit flags override it.")
+
+
+def _build_requirements(args, *, default_count=None):
+    """Assemble JobRequirements from --requirements JSON overlaid by flags.
+
+    Returns None when the caller supplied no requirement at all (so sweep/run keep
+    their current behavior). `default_count` fills job_count when the command has
+    no --count flag (sweep counts its jobs file separately)."""
+    from .fleet import JobRequirements
+
+    data = {}
+    if getattr(args, "requirements", None):
+        with open(args.requirements) as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise SystemExit("--requirements JSON must be an object of fields")
+
+    def pick(flag, key, default=None):
+        val = getattr(args, flag, None)
+        if val is not None:
+            return val
+        return data.get(key, default)
+
+    ram = pick("ram_gb", "ram_gb_per_job")
+    raw_count = pick("count", "job_count")   # no default: it must not mask "nothing requested"
+    batchable = bool(getattr(args, "batchable", False) or data.get("batchable", False))
+    # Nothing requested at all -> no requirement (current behavior).
+    if ram is None and raw_count is None and not data:
+        return None
+    if ram is None:
+        raise SystemExit("a fleet requirement needs --ram-gb (or ram_gb_per_job in --requirements)")
+    count = raw_count if raw_count is not None else default_count
+    return JobRequirements(
+        job_count=int(count) if count is not None else 1,
+        ram_gb_per_job=float(ram),
+        device=pick("device", "device", "either"),
+        minutes_per_job=float(pick("minutes", "minutes_per_job", 30.0)),
+        batchable=batchable,
+        batch_width=pick("batch_width", "batch_width"),
+    )
+
+
+def _flavor_from_requirements(args, *, default_count):
+    """Resolve the flavor for a run/sweep: an explicit --flavor always wins;
+    otherwise, if a fleet requirement was given, the planner chooses it. Returns
+    None (current behavior) when neither is present."""
+    if getattr(args, "flavor", None):
+        return args.flavor
+    req = _build_requirements(args, default_count=default_count)
+    if req is None:
+        return None
+    from .fleet import choose_flavor
+    chosen = choose_flavor(req)
+    print(f"flux-compute: requirement -> flavor {chosen.name} "
+          f"({chosen.kind}, {chosen.vcpus} vCPU, {chosen.ram_gb:g} GB); override with --flavor.")
+    return chosen.name
 
 
 def main(argv=None) -> int:
@@ -36,6 +113,7 @@ def main(argv=None) -> int:
         help="Provision a GPU instance, run a job, fetch artifacts, tear down.",
     )
     _add_target_args(run)
+    _add_requirement_args(run, with_count=False)
     run.add_argument("--plan", action="store_true",
                      help="Resolve and print the launch spec without launching (dry run).")
     run.add_argument("--smoke", action="store_true",
@@ -55,11 +133,29 @@ def main(argv=None) -> int:
                      help="Boot from this image name instead of the flavor-aware default "
                           "(NVIDIA image for a GPU flavor, plain Ubuntu for a CPU flavor; e.g. a baked image).")
 
+    plan = sub.add_parser(
+        "plan",
+        help="Size a fleet for a generic job requirement (RAM/device/count) and print "
+             "the flavor, region spread, packing and worst-case cost. No launch.",
+    )
+    _add_target_args(plan)
+    _add_requirement_args(plan, with_count=True)
+    plan.add_argument("--regions", default=None, metavar="A,B,C",
+                      help="Plan across these regions (default: the device's eligible regions).")
+    plan.add_argument("--max-parallel", type=int, default=None, metavar="N",
+                      help="Global cap on concurrent VMs (default: the full quota fleet).")
+    plan.add_argument("--budget", type=float, default=None, metavar="EUR",
+                      help="Refuse the plan if worst-case spend exceeds this.")
+    plan.add_argument("--live", action="store_true",
+                      help="Read real per-region quota and availability from the API "
+                           "(needs credentials) instead of the offline catalog tables.")
+
     sweep = sub.add_parser(
         "sweep",
         help="Fan out a parameter sweep across GPU instances with a hard cost cap.",
     )
     _add_target_args(sweep)
+    _add_requirement_args(sweep, with_count=False)
     sweep.add_argument("--upload", action="append", default=[], metavar="DIR",
                        help="Local dir to rsync to ~/<name> on each instance (repeatable).")
     sweep.add_argument("--script", default=None, metavar="FILE",
@@ -144,16 +240,32 @@ def main(argv=None) -> int:
             from .preflight import run_preflight
             return run_preflight(cloud=args.cloud, region=args.region)
 
+        if args.command == "plan":
+            from .fleet import format_plan, plan_fleet, plan_fleet_live
+            req = _build_requirements(args)
+            if req is None:
+                raise SystemExit(
+                    "plan needs a requirement: --count and --ram-gb (or a --requirements JSON file).")
+            if args.live:
+                fleet = plan_fleet_live(req, cloud=args.cloud, budget=args.budget,
+                                        regions=args.regions, max_parallel=args.max_parallel)
+            else:
+                fleet = plan_fleet(req, budget=args.budget, regions=args.regions,
+                                   max_parallel=args.max_parallel)
+            print(format_plan(req, fleet))
+            return 0
+
         if args.command == "run":
+            flavor = _flavor_from_requirements(args, default_count=1)
             if args.plan:
                 from .launch import plan
-                return plan(cloud=args.cloud, region=args.region, flavor=args.flavor)
+                return plan(cloud=args.cloud, region=args.region, flavor=flavor)
             if args.smoke:
                 from .provision import smoke_test
-                return smoke_test(cloud=args.cloud, region=args.region, flavor=args.flavor)
+                return smoke_test(cloud=args.cloud, region=args.region, flavor=flavor)
             if args.script or args.upload:
                 from .provision import run_job
-                return run_job(cloud=args.cloud, region=args.region, flavor=args.flavor,
+                return run_job(cloud=args.cloud, region=args.region, flavor=flavor,
                                uploads=args.upload, script=args.script, fetch=args.fetch,
                                keep=args.keep, image=args.image)
             raise SystemExit(
@@ -163,8 +275,9 @@ def main(argv=None) -> int:
 
         if args.command == "sweep":
             from .sweep import run_sweep
+            flavor = _flavor_from_requirements(args, default_count=1)
             return run_sweep(cloud=args.cloud, region=args.region, regions=args.regions,
-                             flavor=args.flavor,
+                             flavor=flavor,
                              uploads=args.upload, script=args.script, jobs_file=args.jobs,
                              fetch=args.fetch, into=args.into, max_parallel=args.max_parallel,
                              max_minutes=args.max_minutes, budget_eur=args.budget, image=args.image,

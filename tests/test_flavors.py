@@ -1,7 +1,16 @@
 """Pure-logic tests for the flavor policy. No network, no credentials."""
+from types import SimpleNamespace
+
 import pytest
 
-from flux_compute.flavors import DEFAULT_SIM_FLAVOR, classify, recommended_for_sim
+from flux_compute.flavors import (
+    DEFAULT_SIM_FLAVOR,
+    classify,
+    flavor_ram_gb,
+    live_flavor_spec,
+    recommended_for_sim,
+    static_flavor_spec,
+)
 
 
 def test_v100_is_eligible_and_fp64_healthy():
@@ -83,3 +92,82 @@ def test_recommended_picks_cheapest_healthy_gpu():
 def test_recommended_raises_when_no_healthy_gpu():
     with pytest.raises(RuntimeError):
         recommended_for_sim(["rtx5000-28", "h100-380", "c3-8"])
+
+
+# --- RAM model: static (offline) derivation -----------------------------------
+
+@pytest.mark.parametrize("name,vcpus,ram_gb", [
+    ("c3-4", 2, 4), ("c3-8", 4, 8), ("c3-16", 8, 16), ("c3-256", 128, 256),
+    ("b3-8", 2, 8), ("b3-16", 4, 16), ("b3-32", 8, 32), ("b3-512", 128, 512),
+])
+def test_static_cpu_spec_from_ratio_and_suffix(name, vcpus, ram_gb):
+    # b3 = 4 GB/vCPU, c3 = 2 GB/vCPU; the suffix is the total RAM in GB.
+    spec = static_flavor_spec(name)
+    assert spec.kind == "cpu"
+    assert spec.vcpus == vcpus
+    assert spec.ram_gb == ram_gb
+    assert spec.usable_for_sim
+
+
+@pytest.mark.parametrize("name,vcpus,ram_gb", [
+    ("t2-le-45", 15, 45), ("t2-le-90", 30, 90), ("t2-le-180", 60, 180),
+    ("t1-le-45", 8, 45), ("t1-le-180", 32, 180),
+    ("rtx5000-28", 4, 28), ("rtx5000-84", 16, 84),
+])
+def test_static_gpu_spec_from_catalog_table(name, vcpus, ram_gb):
+    spec = static_flavor_spec(name)
+    assert spec.kind == "gpu"
+    assert spec.vcpus == vcpus and spec.ram_gb == ram_gb
+
+
+def test_static_spec_carries_price_and_usability():
+    v100s = static_flavor_spec("t2-le-45")
+    assert v100s.price_eur_hr == pytest.approx(0.80) and v100s.usable_for_sim
+    rtx = static_flavor_spec("rtx5000-28")
+    assert not rtx.usable_for_sim              # fp64-crippled, still describable
+
+
+def test_static_spec_unknown_gpu_name_fails_fast():
+    # A GPU family we recognize but a size not in the catalog table -> no guess.
+    with pytest.raises(RuntimeError, match="no catalog RAM/vCPU"):
+        static_flavor_spec("t2-le-999")
+
+
+def test_static_spec_unsourced_cpu_family_fails_fast():
+    with pytest.raises(RuntimeError, match="no sourced RAM-per-vCPU"):
+        static_flavor_spec("d2-4")
+
+
+def test_static_spec_nonnumeric_cpu_suffix_fails_fast():
+    with pytest.raises(RuntimeError, match="not\n?.*integer|bare integer"):
+        static_flavor_spec("b3-8-flex")
+
+
+def test_static_spec_unknown_family_fails_fast():
+    with pytest.raises(RuntimeError, match="cannot size unknown flavor"):
+        static_flavor_spec("zz-9000")
+
+
+# --- RAM model: live read off an OpenStack flavor object ----------------------
+
+def test_flavor_ram_gb_converts_mib_to_gib():
+    # OpenStack reports .ram in MiB; 46080 MiB = 45 GB.
+    assert flavor_ram_gb(SimpleNamespace(name="t2-le-45", ram=46080)) == pytest.approx(45.0)
+
+
+def test_flavor_ram_gb_missing_ram_fails_fast():
+    with pytest.raises(RuntimeError, match="could not read RAM"):
+        flavor_ram_gb(SimpleNamespace(name="t2-le-45"))
+
+
+def test_live_flavor_spec_reads_vcpus_and_ram():
+    obj = SimpleNamespace(name="t2-le-45", vcpus=15, ram=46080)
+    spec = live_flavor_spec(obj)
+    assert spec.kind == "gpu" and spec.vcpus == 15
+    assert spec.ram_gb == pytest.approx(45.0)
+    assert spec.price_eur_hr == pytest.approx(0.80)  # price still from the policy
+
+
+def test_live_flavor_spec_missing_vcpus_fails_fast():
+    with pytest.raises(RuntimeError, match="could not read the vCPU count"):
+        live_flavor_spec(SimpleNamespace(name="c3-8", ram=8192))

@@ -83,6 +83,28 @@ _GPU_RULES = (
 # instance "Covered"; only GPU instances are restricted — module docstring).
 _CPU_PREFIXES = ("b3-", "b2-", "c3-", "c2-", "r3-", "r2-", "d2-", "i1-", "bm-")
 
+# Host RAM per vCPU by CPU family, from the OVH catalog (docs/product-eligibility-
+# startup-program-2026-03.html): b3 (General Purpose) is 4 GB/vCPU, c3 (Compute
+# Optimized) is 2 GB/vCPU. For those two families the flavor's numeric suffix is
+# also its total host RAM in GB (b3-8 = 8 GB / 2 vCPU, c3-4 = 4 GB / 2 vCPU), so
+# the offline path derives both vCPU and RAM from the name and these ratios with
+# no live lookup. Only the families whose ratio is sourced appear here; a CPU
+# family that is not listed has no static RAM and is a fail-fast in the pure path
+# (the live path reads .ram off the flavor object instead).
+_CPU_RAM_PER_VCPU_GB = {"b3-": 4.0, "c3-": 2.0}
+
+# GPU flavor -> (vCPUs, host RAM GB), from the OVH catalog (same archived source,
+# cross-checked against README "Multi-region sweeps"). Host RAM, not GPU VRAM:
+# the planner's RAM model bounds how many job processes/members a VM's *host*
+# memory can hold. The suffix is the RAM in GB but vCPUs do not follow a single
+# ratio across the GPU families (t2-le-45 is 15 vCPU, t1-le-45 is 8), so the GPU
+# rows are tabulated rather than derived. Unknown GPU flavor -> fail fast.
+_GPU_SPECS_VCPU_RAM = {
+    "t1-le-45": (8, 45),   "t1-le-90": (16, 90),  "t1-le-180": (32, 180),
+    "t2-le-45": (15, 45),  "t2-le-90": (30, 90),  "t2-le-180": (60, 180),
+    "rtx5000-28": (4, 28), "rtx5000-56": (8, 56), "rtx5000-84": (16, 84),
+}
+
 
 @dataclass(frozen=True)
 class FlavorVerdict:
@@ -147,3 +169,115 @@ def recommended_for_sim(available_names) -> str:
         )
     gpus.sort(key=lambda v: (v.price_eur_hr if v.price_eur_hr is not None else float("inf"), v.name))
     return gpus[0].name
+
+
+@dataclass(frozen=True)
+class FlavorSpec:
+    """A flavor's resource shape: the fields the fleet planner sizes against.
+
+    `vcpus` and `ram_gb` are the two capacity axes a VM offers; `price_eur_hr`
+    bounds spend (None when the flavor is unpriced, which the budget guard
+    refuses). `kind`/`gpu_model` come straight from the policy `classify`, so a
+    spec of a non-usable flavor still describes it — the planner filters on
+    `usable_for_sim` itself.
+    """
+
+    name: str
+    kind: str                 # "gpu", "cpu", or "unknown"
+    gpu_model: str | None
+    vcpus: int
+    ram_gb: float
+    price_eur_hr: float | None
+    usable_for_sim: bool
+
+
+def _parse_cpu_suffix(name: str):
+    """(family_prefix, numeric suffix) for a b3-*/c3-* flavor, or raise.
+
+    The suffix is the flavor's host RAM in GB (b3-8 = 8 GB); the family prefix
+    keys the RAM-per-vCPU ratio. Raises for a CPU family whose ratio is not
+    sourced, or a suffix that is not a bare integer (e.g. a `-flex` variant),
+    rather than guessing — the offline path is fail-fast, the live path reads
+    `.ram`/`.vcpus` off the flavor object.
+    """
+    n = name.strip().lower()
+    for prefix, ratio in _CPU_RAM_PER_VCPU_GB.items():
+        if n.startswith(prefix):
+            suffix = n[len(prefix):]
+            if not suffix.isdigit():
+                raise RuntimeError(
+                    f"cannot size CPU flavor {name!r} offline: its RAM/vCPU are read "
+                    f"from the '{prefix}N' suffix (N = GB of RAM), but {suffix!r} is not "
+                    f"a bare integer. Pass a catalog flavor, or resolve it live."
+                )
+            return prefix, ratio, int(suffix)
+    raise RuntimeError(
+        f"no sourced RAM-per-vCPU ratio for CPU flavor {name!r} "
+        f"(known families: {', '.join(sorted(_CPU_RAM_PER_VCPU_GB))}). "
+        f"Add its catalog ratio to _CPU_RAM_PER_VCPU_GB, or resolve it live."
+    )
+
+
+def static_flavor_spec(name: str) -> FlavorSpec:
+    """Resolve a flavor's (vCPU, RAM, price) shape offline from the catalog tables.
+
+    The pure/offline counterpart to reading a live OpenStack flavor object. GPU
+    flavors come from the tabulated `_GPU_SPECS_VCPU_RAM`; CPU flavors are derived
+    from the family ratio and the name's GB suffix. An unknown flavor family, or a
+    GPU name not in the catalog table, raises (fail fast — never a guessed shape).
+    """
+    verdict = classify(name)
+    if verdict.kind == "gpu":
+        key = name.strip().lower()
+        if key not in _GPU_SPECS_VCPU_RAM:
+            raise RuntimeError(
+                f"no catalog RAM/vCPU for GPU flavor {name!r} "
+                f"(known: {', '.join(sorted(_GPU_SPECS_VCPU_RAM))}). "
+                f"Add it to _GPU_SPECS_VCPU_RAM, or resolve it live."
+            )
+        vcpus, ram_gb = _GPU_SPECS_VCPU_RAM[key]
+        return FlavorSpec(name, "gpu", verdict.gpu_model, vcpus, float(ram_gb),
+                          verdict.price_eur_hr, verdict.usable_for_sim)
+    if verdict.kind == "cpu":
+        prefix, ratio, ram_gb = _parse_cpu_suffix(name)
+        vcpus = int(round(ram_gb / ratio))
+        return FlavorSpec(name, "cpu", None, vcpus, float(ram_gb),
+                          verdict.price_eur_hr, verdict.usable_for_sim)
+    raise RuntimeError(
+        f"cannot size unknown flavor {name!r} offline: {verdict.reason}"
+    )
+
+
+def flavor_ram_gb(flavor_obj) -> float:
+    """Host RAM in GB read from a live OpenStack flavor object.
+
+    Mirrors `sweep._flavor_vcpus`: the compute API reports `.ram` in **MiB**, so
+    this divides by 1024. Raises if the object exposes no readable RAM rather than
+    defaulting to a fabricated size.
+    """
+    ram_mib = getattr(flavor_obj, "ram", None)
+    if ram_mib is None:
+        raise RuntimeError(
+            f"could not read RAM for flavor {getattr(flavor_obj, 'name', flavor_obj)!r} "
+            f"from the compute API"
+        )
+    return float(ram_mib) / 1024.0
+
+
+def live_flavor_spec(flavor_obj) -> FlavorSpec:
+    """Resolve a FlavorSpec from a live OpenStack flavor object.
+
+    Reads `.vcpus` and `.ram` off the object (the authoritative live shape) and
+    takes kind/model/price from the policy `classify`. The live counterpart to
+    `static_flavor_spec`; used by the fleet planner's live wrapper so a launch
+    sizes against the region's actual flavor, not the catalog snapshot.
+    """
+    name = getattr(flavor_obj, "name", None)
+    if not name:
+        raise RuntimeError("flavor object has no name")
+    vcpus = getattr(flavor_obj, "vcpus", None)
+    if vcpus is None:
+        raise RuntimeError(f"could not read the vCPU count for flavor {name!r} from the compute API")
+    verdict = classify(name)
+    return FlavorSpec(name, verdict.kind, verdict.gpu_model, int(vcpus),
+                      flavor_ram_gb(flavor_obj), verdict.price_eur_hr, verdict.usable_for_sim)

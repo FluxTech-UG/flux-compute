@@ -76,7 +76,21 @@ verified teardown.
 
 ## Layout
 
-- `flux_compute/flavors.py`: the credit + fp64 flavor policy (pure logic, tested).
+- `flux_compute/flavors.py`: the credit + fp64 flavor policy, plus the RAM model
+  (pure logic, tested). Each flavor's (vCPU, RAM, price) shape resolves two ways,
+  mirroring how vCPUs are read: `static_flavor_spec(name)` derives it offline from
+  the catalog (b3 = 4 GB/vCPU, c3 = 2 GB/vCPU, GPU RAM tabulated), and
+  `live_flavor_spec(obj)` reads `.vcpus`/`.ram` off a live OpenStack flavor object.
+  An unknown flavor is a fail-fast, never a guessed shape.
+- `flux_compute/fleet.py`: the resource-aware fleet planner. A consumer states a
+  generic `JobRequirements` (per-job RAM, device cpu/gpu/either, batchable +
+  optional batch width, minutes/job, job count) and `plan_fleet(...)` returns a
+  structured `FleetPlan` (flavor + why, device, per-region VM allocation, packing
+  K, wave count, worst-case EUR, spare slots). Split like the rest of the package:
+  `plan_fleet_core` is pure (region caps + specs -> plan, unit-tested), `plan_fleet`
+  is the offline facade over the catalog tables, `plan_fleet_live` gathers real
+  per-region quota/availability. **It contains zero simulation concepts** — it
+  routes on generic resource fields only, per the family package invariant.
 - `flux_compute/auth.py`: `connect()` to the OVH project from clouds.yaml / OS_* env.
   A clouds.yaml pinned to a single `region_name:` refuses every other region
   *locally*, before any request — `connect` detects that and raises the
@@ -87,7 +101,12 @@ verified teardown.
   is additionally clamped to its own headroom.
 - `flux_compute/doctor.py`: `flux-compute doctor`, the API health check.
 - `flux_compute/cli.py`: argparse entry point (`doctor`, `preflight`, `run`,
-  `sweep`, `reap`, `bake`, `push`).
+  `plan`, `sweep`, `reap`, `bake`, `push`). `plan` prints a fleet plan for a
+  generic requirement (offline from catalog tables, or `--live`). `run`/`sweep`
+  take the same requirement flags (`--ram-gb`, `--device`, `--batchable`,
+  `--batch-width`, `--requirements FILE`): when given and `--flavor` is absent, the
+  planner chooses the flavor; an explicit `--flavor` always overrides, and with no
+  requirement the behavior is unchanged.
 - `examples/clouds.yaml.example`: OVH application-credential template.
 
 ## Tests

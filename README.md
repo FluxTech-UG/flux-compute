@@ -90,6 +90,9 @@ end-to-end "is the API working?" check.
 ## Commands (all verified live on OVH)
 
 - **`doctor` / `preflight`** — API health and launch-readiness.
+- **`plan --ram-gb GB --device D --count N`** — size a fleet for a generic job
+  requirement and print the flavor, per-region VM spread, jobs-per-VM packing,
+  wave count and worst-case cost, without launching (see *Fleet planning* below).
 - **`run --upload --script --fetch`** — provision a V100S, upload repos, run a job
   script, fetch artifacts, tear down (`--smoke` for a GPU check; `--plan` for a dry run).
 - **`sweep --jobs FILE --max-parallel K --budget EUR`** — fan out one instance per
@@ -104,6 +107,49 @@ end-to-end "is the API working?" check.
   price and accrued cost; delete the ones past their stamped TTL (see Cost
   guardrails below).
 - **`push DIR CONTAINER`** — durable artifact copies to OVH Object Storage (Swift).
+
+### Fleet planning (size the experiment to the machine)
+
+A consumer describes a batch of jobs generically — RAM per job, whether it wants
+a CPU or a GPU, whether the jobs batch onto one device, minutes per job, and how
+many — and the planner returns which flavor, how wide a fleet across which
+regions, how many jobs pack onto a VM, how many waves it takes, the worst-case
+spend, and how much spare capacity is left to fill. The package knows nothing
+about what the jobs compute: it routes on those generic resource fields alone.
+
+```bash
+# 100 batched GPU jobs, 2 GB each, capped at EUR 50 worst-case:
+flux-compute plan --count 100 --ram-gb 2 --device gpu --batchable --batch-width 128 --budget 50
+
+# A wide CPU fan-out from a requirements file (flags override the file):
+flux-compute plan --requirements jobreq.json --regions GRA11,DE1,UK1
+```
+
+The plan is **structured data** (`flux_compute.fleet.plan_fleet` returns a
+`FleetPlan`; the CLI renders it). Consumers call `plan_fleet(JobRequirements(...))`
+directly. `JobRequirements` fields: `job_count`, `ram_gb_per_job`, `device`
+(`cpu` / `gpu` / `either`), `minutes_per_job`, `batchable`, `batch_width`.
+`device: either` lets the planner pick — batched work amortizes on a GPU,
+unbatched work fans out cheapest on CPU; pass `cpu`/`gpu` to force it.
+
+Packing K (jobs per VM) is clamped by **both** the VM's vCPUs and its RAM
+(`K × ram_gb_per_job ≤ host RAM × headroom`), so a RAM-hungry job packs fewer per
+VM than a lean one regardless of core count. The plan reports the **spare slots**
+left in the fleet — the sizing doctrine in action: round the job count up to fill
+them, because the marginal slot is close to free (a wave runs whether or not it is
+full).
+
+Offline plans (the default) use catalog values — the per-region quota (34 vCPU /
+10 instances / 420 GB, measured 2026-07-21) and the catalog flavor shapes.
+`flux-compute plan --live` reads the real per-region quota and flavor availability
+from the API instead; a live **launch** always re-verifies and clamps to real
+headroom per region. The planner composes the same per-region sharding the sweep
+uses, so a plan's allocation is exactly what the corresponding sweep would run.
+
+`run` and `sweep` accept the same requirement flags: give `--ram-gb`/`--device`
+(and optionally `--batchable`/`--batch-width`/`--requirements`) and omit
+`--flavor`, and the planner chooses the flavor. An explicit `--flavor` always
+overrides, and with no requirement the behavior is unchanged.
 
 ### Multi-region sweeps (the fleet-width lever)
 

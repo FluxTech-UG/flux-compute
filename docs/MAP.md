@@ -17,8 +17,11 @@ _Authenticated OpenStack connection to the OVH Public Cloud project._
 
 ### flux_compute/cli.py
 _flux-compute command-line entry point._
-- _add_target_args(p)  ·L8
-- main(argv=None) -> int  ·L15
+- _add_target_args(p)  ·L9
+- _add_requirement_args(p, *, with_count)  ·L16 — Generic fleet-requirement flags. `with_count` adds --count (the `plan`
+- _build_requirements(args, *, default_count=None)  ·L36 — Assemble JobRequirements from --requirements JSON overlaid by flags.
+- _flavor_from_requirements(args, *, default_count)  ·L76 — Resolve the flavor for a run/sweep: an explicit --flavor always wins;
+- main(argv=None) -> int  ·L92
 
 ### flux_compute/detach.py
 _Detach-and-poll: run a remote job so it survives the launching SSH session_
@@ -55,10 +58,47 @@ _OVH Public Cloud flavor policy for the FluxTech Startup Program._
 - const _KNOWN_PRICE_EUR_HR  ·L45
 - const _GPU_RULES  ·L61
 - const _CPU_PREFIXES  ·L84
-- @dataclass class FlavorVerdict  ·L88 — The policy verdict for a single flavor name.
-  - @property usable_for_sim(self) -> bool  ·L100 — True only when both gates pass: covered by credits and fp64-healthy.
-- classify(name: str) -> FlavorVerdict  ·L105 — Classify a flavor name against the credit + fp64 policy.
-- recommended_for_sim(available_names) -> str  ·L133 — Return the cheapest credit-eligible, fp64-healthy GPU among those available.
+- const _CPU_RAM_PER_VCPU_GB  ·L94
+- const _GPU_SPECS_VCPU_RAM  ·L102
+- @dataclass class FlavorVerdict  ·L110 — The policy verdict for a single flavor name.
+  - @property usable_for_sim(self) -> bool  ·L122 — True only when both gates pass: covered by credits and fp64-healthy.
+- classify(name: str) -> FlavorVerdict  ·L127 — Classify a flavor name against the credit + fp64 policy.
+- recommended_for_sim(available_names) -> str  ·L155 — Return the cheapest credit-eligible, fp64-healthy GPU among those available.
+- @dataclass class FlavorSpec  ·L175 — A flavor's resource shape: the fields the fleet planner sizes against.
+- _parse_cpu_suffix(name: str)  ·L194 — (family_prefix, numeric suffix) for a b3-*/c3-* flavor, or raise.
+- static_flavor_spec(name: str) -> FlavorSpec  ·L221 — Resolve a flavor's (vCPU, RAM, price) shape offline from the catalog tables.
+- flavor_ram_gb(flavor_obj) -> float  ·L251 — Host RAM in GB read from a live OpenStack flavor object.
+- live_flavor_spec(flavor_obj) -> FlavorSpec  ·L267 — Resolve a FlavorSpec from a live OpenStack flavor object.
+
+### flux_compute/fleet.py
+_Resource-aware fleet planner: turn a generic job description into a launch plan._
+- const RAM_HEADROOM  ·L39
+- const GPU_REGIONS  ·L46
+- const CPU_ONLY_REGIONS  ·L47
+- const ALL_REGIONS  ·L48
+- const _REGION_GPU_FLAVOR  ·L49
+- const CATALOG_QUOTA_CORES  ·L58
+- const CATALOG_QUOTA_INSTANCES  ·L59
+- const CATALOG_QUOTA_RAM_GB  ·L60
+- const _GPU_CANDIDATE_FLAVORS  ·L67
+- const _CPU_CANDIDATE_FLAVORS  ·L68
+- const _DEVICES  ·L73
+- @dataclass class JobRequirements  ·L77 — A consumer's generic description of a batch of independent jobs.
+  - __post_init__(self)  ·L107
+- @dataclass class RegionUnit  ·L130 — One region's contribution to the fleet: which flavor, and how many of it
+- @dataclass class RegionAllocation  ·L141 — What the plan assigns one region: the VMs it runs, and their shape.
+- @dataclass class FleetPlan  ·L153 — A structured launch plan. No side effects; the caller renders or acts.
+- _resolve_device(req: JobRequirements) -> str  ·L171 — Resolve "either" to a concrete device.
+- _candidate_specs(device: str)  ·L184 — The catalog flavor specs the offline flavor choice ranks, for a device.
+- choose_flavor(req: JobRequirements, *, ram_headroom: float=RAM_HEADROOM, candidates=None) -> FlavorSpec  ·L190 — Pick the cheapest usable flavor whose host RAM fits one job of `req`.
+- jobs_per_vm(req: JobRequirements, spec: FlavorSpec, *, ram_headroom: float=RAM_HEADROOM) -> int  ·L219 — Packing K: how many jobs/members one VM of `spec` runs at once.
+- _region_cap(spec: FlavorSpec, *, cores_used=0, cores_max=CATALOG_QUOTA_CORES, instances_used=0, instances_max=CATALOG_QUOTA_INSTANCES, ram_used_gb=0.0, ram_max_gb=CATALOG_QUOTA_RAM_GB) -> int  ·L247 — Max concurrent VMs of `spec` a region's quota allows, over all three axes.
+- _flavor_reason(req, device, primary, K) -> str  ·L268 — A one-line 'why this flavor/device' for the plan.
+- plan_fleet_core(req: JobRequirements, region_units, *, device: str, primary: FlavorSpec, budget=None, max_parallel=None, ram_headroom: float=RAM_HEADROOM, notes=()) -> FleetPlan  ·L292 — Pure planner: region caps + flavor specs -> FleetPlan. No network.
+- _target_regions(device: str, regions) -> list  ·L360 — The regions to plan across: the caller's list, or the device default.
+- plan_fleet(requirements: JobRequirements, budget=None, regions=None, max_parallel=None, *, ram_headroom: float=RAM_HEADROOM) -> FleetPlan  ·L372 — Offline fleet plan from the catalog tables. No credentials, no network.
+- plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None, regions=None, max_parallel=None, ram_headroom: float=RAM_HEADROOM) -> FleetPlan  ·L415 — Live fleet plan: gather real per-region quota and flavor availability.
+- format_plan(req: JobRequirements, plan: FleetPlan) -> str  ·L474 — Render a FleetPlan as human-readable text. Pure: returns a string, never
 
 ### flux_compute/image.py
 _Bake a reusable GPU image: provision, run a setup script, snapshot, tear down._
@@ -226,18 +266,62 @@ _Pure-logic tests for the detach-and-poll machinery. No network, no credentials.
 
 ### tests/test_flavors.py
 _Pure-logic tests for the flavor policy. No network, no credentials._
-- test_v100_is_eligible_and_fp64_healthy()  ·L7
-- test_v100s_is_eligible_and_fp64_healthy()  ·L15
-- test_rtx5000_is_eligible_but_not_fp64_healthy()  ·L20
-- @pytest.mark.parametrize test_blocked_gpus_are_not_credit_eligible(name)  ·L29
-- test_l40s_is_matched_before_l4()  ·L36
-- test_cpu_flavor_is_usable()  ·L41
-- test_cpu_flavors_are_priced()  ·L47
-- test_unpriced_cpu_flavor_is_cpu_but_priceless()  ·L56
-- test_unknown_flavor_is_not_usable()  ·L65
-- test_default_sim_flavor_is_a_healthy_v100()  ·L71
-- test_recommended_picks_cheapest_healthy_gpu()  ·L77
-- test_recommended_raises_when_no_healthy_gpu()  ·L83
+- test_v100_is_eligible_and_fp64_healthy()  ·L16
+- test_v100s_is_eligible_and_fp64_healthy()  ·L24
+- test_rtx5000_is_eligible_but_not_fp64_healthy()  ·L29
+- @pytest.mark.parametrize test_blocked_gpus_are_not_credit_eligible(name)  ·L38
+- test_l40s_is_matched_before_l4()  ·L45
+- test_cpu_flavor_is_usable()  ·L50
+- test_cpu_flavors_are_priced()  ·L56
+- test_unpriced_cpu_flavor_is_cpu_but_priceless()  ·L65
+- test_unknown_flavor_is_not_usable()  ·L74
+- test_default_sim_flavor_is_a_healthy_v100()  ·L80
+- test_recommended_picks_cheapest_healthy_gpu()  ·L86
+- test_recommended_raises_when_no_healthy_gpu()  ·L92
+- @pytest.mark.parametrize test_static_cpu_spec_from_ratio_and_suffix(name, vcpus, ram_gb)  ·L103
+- @pytest.mark.parametrize test_static_gpu_spec_from_catalog_table(name, vcpus, ram_gb)  ·L117
+- test_static_spec_carries_price_and_usability()  ·L123
+- test_static_spec_unknown_gpu_name_fails_fast()  ·L130
+- test_static_spec_unsourced_cpu_family_fails_fast()  ·L136
+- test_static_spec_nonnumeric_cpu_suffix_fails_fast()  ·L141
+- test_static_spec_unknown_family_fails_fast()  ·L146
+- test_flavor_ram_gb_converts_mib_to_gib()  ·L153
+- test_flavor_ram_gb_missing_ram_fails_fast()  ·L158
+- test_live_flavor_spec_reads_vcpus_and_ram()  ·L163
+- test_live_flavor_spec_missing_vcpus_fails_fast()  ·L171
+
+### tests/test_fleet.py
+_Pure-logic tests for the fleet planner. No network, no credentials._
+- test_requirements_defaults()  ·L24
+- test_requirements_bad_device_raises()  ·L30
+- @pytest.mark.parametrize test_requirements_nonpositive_fields_raise(kw)  ·L40
+- test_batch_width_without_batchable_raises()  ·L45
+- test_batch_width_must_be_positive()  ·L50
+- test_either_resolves_to_gpu_when_batchable()  ·L57
+- test_either_resolves_to_cpu_when_unbatched()  ·L61
+- test_explicit_device_is_respected()  ·L65
+- test_choose_cheapest_cpu_flavor_that_fits_one_job()  ·L72
+- test_ram_heavy_cpu_job_prefers_b3_over_c3()  ·L78
+- test_choose_gpu_flavor_is_the_eu_wide_default()  ·L86
+- test_ram_above_largest_flavor_fails_fast()  ·L91
+- test_pack_unbatched_is_ram_bound_when_ram_tight()  ·L98
+- test_pack_unbatched_is_vcpu_bound_when_ram_ample()  ·L104
+- test_pack_batched_uses_preferred_width_clamped_by_ram()  ·L110
+- test_pack_batched_without_width_is_ram_filled()  ·L120
+- test_pack_not_even_one_fits_fails_fast()  ·L126
+- _units(names_caps)  ·L133
+- test_core_single_region_waves_and_spare()  ·L138
+- test_core_spare_slots_reports_room_to_fill()  ·L150
+- test_core_worst_case_cost_sums_regions_at_their_price()  ·L158
+- test_core_budget_exceeded_raises()  ·L171
+- test_core_no_regions_fails_fast()  ·L179
+- test_core_max_parallel_caps_fleet_and_spreads()  ·L185
+- test_plan_fleet_cpu_spreads_across_all_nine_regions()  ·L197
+- test_plan_fleet_gpu_uses_gpu_regions_and_bhs5_v100()  ·L205
+- test_plan_fleet_gpu_with_only_cpu_regions_fails_fast()  ·L215
+- test_plan_fleet_regions_override_is_honored()  ·L220
+- test_plan_fleet_budget_guard_raises_offline()  ·L226
+- test_format_plan_returns_text()  ·L231
 
 ### tests/test_launch.py
 _Pure-logic tests for launch-spec helpers. No network, no credentials._
