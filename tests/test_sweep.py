@@ -2,17 +2,21 @@
 import os
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from flux_compute import sweep
 from flux_compute.detach import PollOutcome
 from flux_compute.sweep import (
+    RegionDrop,
+    Shard,
     _clear_attach_record,
     _failure_status,
     _fan_out,
     _finalize,
     _load_attach_records,
+    _prepare_shards,
     _status_for_outcome,
     _write_attach_record,
     allocate_concurrency,
@@ -21,6 +25,7 @@ from flux_compute.sweep import (
     clamp_concurrency,
     parse_jobs,
     parse_regions,
+    run_sweep,
     shard_jobs,
     worst_case_eur,
 )
@@ -325,3 +330,82 @@ def test_budget_guard_shards_unpriced_region_named_when_budget_set():
         budget_guard_shards(entries, 30, budget_eur=10.0)
     assert "t2-le-45-flex" in str(exc.value)
     assert "no known price" in str(exc.value)
+
+
+# --- graceful-degrade region pre-flight ---------------------------------------
+#
+# The incident this closes: a multi-region sweep was refused ENTIRELY because a
+# couple of its regions had no headroom (other fleets live there). Now unfit
+# regions are dropped with a warning and the sweep runs on the rest; it refuses
+# only when NONE fit, or under --strict-regions.
+
+def _fake_shard(region, cap=2):
+    spec = SimpleNamespace(flavor="t2-le-45", est_cost_eur_hr=0.80,
+                           gpu_model="Tesla V100S 32GB", image="img",
+                           network="Ext-Net")
+    return Shard(region=region, spec=spec, vcpus=15, cap=cap)
+
+
+def _wire_prepare(monkeypatch, fit_regions, drop_reason="RuntimeError: quota fits zero"):
+    """Drive _prepare_shards without network: `fit_regions` succeed, the rest
+    raise. occupancy_line is stubbed so no connection is attempted."""
+    def fake_prepare_shard(cloud, region, flavor, image, max_parallel):
+        if region in fit_regions:
+            return _fake_shard(region)
+        raise RuntimeError("quota fits zero")
+    monkeypatch.setattr(sweep, "_prepare_shard", fake_prepare_shard)
+    monkeypatch.setattr("flux_compute.regions.occupancy_line",
+                        lambda cloud, region: "2x flux-compute [within-ttl]")
+
+
+def _jobs_file(tmp_path):
+    p = tmp_path / "jobs.txt"
+    p.write_text("a = 1\nb = 2\nc = 3\nd = 4\n")
+    return str(p)
+
+
+def test_prepare_shards_partitions_fit_and_unfit(monkeypatch):
+    _wire_prepare(monkeypatch, fit_regions={"DE1", "BHS5"})
+    shards, drops = _prepare_shards(None, ["GRA11", "DE1", "UK1", "BHS5"], None, None, 12)
+    assert {s.region for s in shards} == {"DE1", "BHS5"}
+    assert {d.region for d in drops} == {"GRA11", "UK1"}
+    assert all("quota fits zero" in d.reason for d in drops)
+
+
+def test_prepare_shards_clouds_yaml_pin_still_raises(monkeypatch):
+    def pinned(cloud, region, flavor, image, max_parallel):
+        raise RuntimeError("Region 'UK1' was refused by the local clouds.yaml")
+    monkeypatch.setattr(sweep, "_prepare_shard", pinned)
+    with pytest.raises(RuntimeError, match="refused by the local clouds.yaml"):
+        _prepare_shards(None, ["UK1"], None, None, 12)
+
+
+def test_sweep_drops_unfit_regions_and_proceeds(monkeypatch, tmp_path, capsys):
+    _wire_prepare(monkeypatch, fit_regions={"DE1"})
+    rc = run_sweep(cloud=None, regions="GRA11,DE1,UK1", jobs_file=_jobs_file(tmp_path),
+                   plan_only=True)
+    out = capsys.readouterr().out
+    assert rc == 0                                          # ran the plan on DE1
+    assert "dropping region GRA11" in out
+    assert "dropping region UK1" in out
+    assert "occupied by: 2x flux-compute [within-ttl]" in out
+    assert "proceeding on 1 of 3 requested region(s)" in out
+
+
+def test_sweep_strict_regions_refuses_on_any_unfit(monkeypatch, tmp_path):
+    _wire_prepare(monkeypatch, fit_regions={"DE1"})
+    with pytest.raises(RuntimeError, match="these requested regions cannot run this sweep"):
+        run_sweep(cloud=None, regions="GRA11,DE1", jobs_file=_jobs_file(tmp_path),
+                  plan_only=True, strict_regions=True)
+
+
+def test_sweep_refuses_when_no_region_fits(monkeypatch, tmp_path):
+    _wire_prepare(monkeypatch, fit_regions=set())           # every region unfit
+    with pytest.raises(RuntimeError, match="no requested region can run this sweep"):
+        run_sweep(cloud=None, regions="GRA11,UK1", jobs_file=_jobs_file(tmp_path),
+                  plan_only=True)
+
+
+def test_region_drop_label_defaults_when_region_is_none():
+    assert RegionDrop(region=None, reason="x").label == "(default region)"
+    assert RegionDrop(region="DE1", reason="x").label == "DE1"

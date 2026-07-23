@@ -204,6 +204,11 @@ def main(argv=None) -> int:
                        help="Re-attach to still-running detached jobs from an interrupted sweep "
                             "(reads <into>/*/.flux_attach/); collect + tear down. Needs only --into "
                             "(and --cloud/--region); --jobs/--script/--fetch come from the records.")
+    sweep.add_argument("--strict-regions", action="store_true",
+                       help="Refuse the whole sweep if ANY requested region cannot fit >=1 "
+                            "instance of the chosen flavor (exact-width mode). Default: drop "
+                            "unfit regions with a warning (naming their occupants and headroom) "
+                            "and run the sweep on the regions that do fit.")
 
     bake = sub.add_parser(
         "bake",
@@ -218,6 +223,21 @@ def main(argv=None) -> int:
     bake.add_argument("--flavor", default=None, help="Override the flavor.")
     bake.add_argument("--replace", action="store_true",
                       help="Delete existing same-name images after the new one is built.")
+
+    regions_cmd = sub.add_parser(
+        "regions",
+        help="Live, read-only per-region occupancy: quota used/total, running "
+             "flux-compute instances, and how many of a flavor fit the headroom.",
+    )
+    _add_target_args(regions_cmd)
+    regions_cmd.add_argument("--regions", default=None, metavar="A,B,C",
+                             help="Show these regions (comma-separated). Default: every region "
+                                  "the cloud entry is configured for.")
+    regions_cmd.add_argument("--flavor", default=None, metavar="NAME",
+                             help="Flavor for the 'fits' column — how many fit each region's "
+                                  "remaining headroom (default b3-32).")
+    regions_cmd.add_argument("--json", action="store_true", dest="as_json",
+                             help="Emit machine-readable JSON (for the frontend button / agents).")
 
     reap = sub.add_parser(
         "reap",
@@ -296,7 +316,13 @@ def main(argv=None) -> int:
                              uploads=args.upload, script=args.script, jobs_file=args.jobs,
                              fetch=args.fetch, into=args.into, max_parallel=args.max_parallel,
                              max_minutes=args.max_minutes, budget_eur=args.budget, image=args.image,
-                             plan_only=args.plan, resume=args.resume)
+                             plan_only=args.plan, resume=args.resume,
+                             strict_regions=args.strict_regions)
+
+        if args.command == "regions":
+            from .regions import DEFAULT_FITS_FLAVOR, run_regions
+            return run_regions(cloud=args.cloud, region=args.region, regions=args.regions,
+                               flavor=args.flavor or DEFAULT_FITS_FLAVOR, as_json=args.as_json)
 
         if args.command == "bake":
             from .image import bake

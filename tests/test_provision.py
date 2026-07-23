@@ -5,9 +5,11 @@ import pytest
 
 from flux_compute import provision
 from flux_compute.provision import (
+    _RSYNC_EXCLUDES,
     TeardownStrandError,
     _delete_server_verified,
     _gpu_instance,
+    _rsync_up,
     _smoke_command,
     _stranded_banner,
 )
@@ -179,3 +181,43 @@ def test_body_exception_still_tears_down_without_keep(local_boot, capsys):
         with _gpu_instance(conn, _SPEC, "flux-compute-run-t2", ttl_minutes=30):
             raise RuntimeError("job failed")
     assert conn.compute.deleted == ["srv-1"]             # teardown ran, then the error propagated
+
+
+# --- rsync upload: exclude the live-fleet records dir, tolerate exit 24 --------
+#
+# Regression: uploading a repo that contains a live fleet's `cloud-sweep/`
+# .flux_attach records let those records vanish mid-transfer, rsync exited 24,
+# and check=True aborted the launch (stranding the freshly-booted VM).
+
+def test_cloud_sweep_is_excluded_from_uploads():
+    # The records dir a live fleet churns is never uploaded in the first place.
+    assert "cloud-sweep" in _RSYNC_EXCLUDES
+
+
+def _fake_rsync(monkeypatch, returncode):
+    calls = {}
+
+    def run(args, **kwargs):
+        calls["args"] = args
+        assert kwargs.get("check") is not True   # must not abort on nonzero itself
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(provision.subprocess, "run", run)
+    return calls
+
+
+def test_rsync_up_tolerates_exit_24_as_a_warning(monkeypatch, capsys):
+    _fake_rsync(monkeypatch, 24)
+    _rsync_up("./repo", "1.2.3.4", "/tmp/key", "repo")     # must not raise
+    assert "exit 24" in capsys.readouterr().err           # warned, continued
+
+
+def test_rsync_up_still_raises_on_a_real_failure(monkeypatch):
+    _fake_rsync(monkeypatch, 23)
+    with pytest.raises(RuntimeError, match="rsync upload of ./repo"):
+        _rsync_up("./repo", "1.2.3.4", "/tmp/key", "repo")
+
+
+def test_rsync_up_zero_is_success(monkeypatch):
+    _fake_rsync(monkeypatch, 0)
+    _rsync_up("./repo", "1.2.3.4", "/tmp/key", "repo")     # returns cleanly

@@ -152,34 +152,34 @@ _Provision a GPU instance, run work on it, and always tear it down._
 - const _SSH_OPTS  ·L94
 - const _GPU_SMOKE  ·L100
 - const _CPU_SMOKE  ·L106
-- const _RSYNC_EXCLUDES  ·L110
-- class TeardownStrandError(RuntimeError)  ·L116 — Teardown could not verifiably delete a created server; it may still be
-- _region(conn, region)  ·L122
-- _cloud_name(conn)  ·L128
-- _delete_server_verified(conn, server, retries=3, wait=300, retry_delay=10)  ·L132 — Delete `server` and verify it is actually gone, retrying on failure.
-- _delete_sg_with_retry(conn, sg_id, attempts=6, delay=10)  ·L158 — Delete a security group, retrying 409s: the server's port can linger for
-- _stranded_banner(cloud, name, server_id, reason)  ·L175 — Print an unmissable multi-line stranded-instance banner to stderr with
-- _name(kind)  ·L198
-- _print_plan(spec)  ·L202
-- _smoke_command(gpu_model)  ·L207 — Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
-- _public_ip_cidr()  ·L215
-- _wait_ssh(host, port=22, timeout=180)  ·L224
-- _server_ipv4(server)  ·L235
-- _ssh_cmd(keyfile)  ·L243
-- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L247
-- _scp_up(local, ip, keyfile, remote)  ·L254
-- _scp_down(ip, keyfile, remote, local, timeout=120)  ·L258 — Copy a single home-relative remote file down to a local path. Used for the
-- _rsync_up(local, ip, keyfile, dest)  ·L266
-- _rsync_down(ip, keyfile, remote, local)  ·L276
-- @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L284
-- _make_poll_runner(ip, keyfile, connect_timeout=CONNECT_TIMEOUT_S, _ssh=_ssh)  ·L360 — Build the SSH-backed poll runner the detach loop calls each iteration.
-- _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix='', launch_timeout=90, _ssh=_ssh)  ·L384 — Upload the generated launcher and run it to start the job detached.
-- follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval, on_chunk=None, on_status=None, _ssh=_ssh)  ·L414 — Poll an already-launched detached job to completion (or a local abort).
-- pull_job_log(ip, keyfile, log_path, _ssh=_ssh)  ·L429 — Pull the full remote ~/job.out down to log_path (the authoritative final
-- _server_by_name_or_id(conn, name, server_id=None)  ·L441 — Find a server by id (preferred) or name, or None if it is already gone.
-- teardown_by_name(conn, name, server_id=None)  ·L456 — Delete a flux-compute instance and its same-named keypair + security group
-- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L484
-- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L507
+- const _RSYNC_EXCLUDES  ·L117
+- class TeardownStrandError(RuntimeError)  ·L123 — Teardown could not verifiably delete a created server; it may still be
+- _region(conn, region)  ·L129
+- _cloud_name(conn)  ·L135
+- _delete_server_verified(conn, server, retries=3, wait=300, retry_delay=10)  ·L139 — Delete `server` and verify it is actually gone, retrying on failure.
+- _delete_sg_with_retry(conn, sg_id, attempts=6, delay=10)  ·L165 — Delete a security group, retrying 409s: the server's port can linger for
+- _stranded_banner(cloud, name, server_id, reason)  ·L182 — Print an unmissable multi-line stranded-instance banner to stderr with
+- _name(kind)  ·L205
+- _print_plan(spec)  ·L209
+- _smoke_command(gpu_model)  ·L214 — Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
+- _public_ip_cidr()  ·L222
+- _wait_ssh(host, port=22, timeout=180)  ·L231
+- _server_ipv4(server)  ·L242
+- _ssh_cmd(keyfile)  ·L250
+- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L254
+- _scp_up(local, ip, keyfile, remote)  ·L261
+- _scp_down(ip, keyfile, remote, local, timeout=120)  ·L265 — Copy a single home-relative remote file down to a local path. Used for the
+- _rsync_up(local, ip, keyfile, dest)  ·L273
+- _rsync_down(ip, keyfile, remote, local)  ·L296
+- @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L304
+- _make_poll_runner(ip, keyfile, connect_timeout=CONNECT_TIMEOUT_S, _ssh=_ssh)  ·L380 — Build the SSH-backed poll runner the detach loop calls each iteration.
+- _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix='', launch_timeout=90, _ssh=_ssh)  ·L404 — Upload the generated launcher and run it to start the job detached.
+- follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval, on_chunk=None, on_status=None, _ssh=_ssh)  ·L434 — Poll an already-launched detached job to completion (or a local abort).
+- pull_job_log(ip, keyfile, log_path, _ssh=_ssh)  ·L449 — Pull the full remote ~/job.out down to log_path (the authoritative final
+- _server_by_name_or_id(conn, name, server_id=None)  ·L461 — Find a server by id (preferred) or name, or None if it is already gone.
+- teardown_by_name(conn, name, server_id=None)  ·L476 — Delete a flux-compute instance and its same-named keypair + security group
+- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L504
+- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L527
 
 ### flux_compute/reap.py
 _`flux-compute reap`: find flux-compute instances and delete the expired ones._
@@ -198,6 +198,27 @@ _`flux-compute reap`: find flux-compute instances and delete the expired ones._
 - run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False) -> int  ·L217 — Hunt strays across regions, because servers and quota are BOTH per region.
 - _reap_region(cloud, region, yes, take_all) -> int  ·L253
 
+### flux_compute/regions.py
+_`flux-compute regions`: a live, read-only per-region occupancy view._
+- const DEFAULT_FITS_FLAVOR  ·L33
+- @dataclass class RegionQuota  ·L37 — One region's compute quota, both axes read straight off the limits API.
+- @dataclass class RegionStatus  ·L53 — A region's live occupancy: quota, who occupies it, and how many `flavor` fit.
+- _axis_fits(used, mx, per_unit) -> int | None  ·L74 — How many units of size `per_unit` fit a quota axis, or None if unbounded.
+- fits_count(spec, quota: RegionQuota) -> int | None  ·L86 — How many VMs of `spec` fit `quota`'s remaining headroom, over all axes.
+- build_region_status(region, *, flavor, spec, quota, servers, now) -> RegionStatus  ·L102 — Assemble a `RegionStatus` from already-read pieces. Pure: no network.
+- _region_name(conn, fallback)  ·L117
+- _read_quota(lim) -> RegionQuota  ·L123 — Read a `RegionQuota` off a compute-limits object (the same fields
+- _one_region_status(cloud, region, flavor, now) -> RegionStatus  ·L145 — Live-read one region into a `RegionStatus`, or an error row (never raises,
+- gather_region_status(cloud, regions, flavor=DEFAULT_FITS_FLAVOR, *, now=None)  ·L170 — Read every region into a `RegionStatus`. Read-only; one row per region.
+- occupancy_summary(status: RegionStatus) -> str | None  ·L176 — A short 'who occupies this region' line from a `RegionStatus`, grouping the
+- occupancy_line(cloud, region) -> str | None  ·L190 — Best-effort one-line occupancy for `region`, for a drop warning. Read-only;
+- _quota_cells(q: RegionQuota)  ·L203 — (vCPU, instances, RAM) 'used/max' cells for the text table, with '∞' for an
+- format_regions(statuses, flavor=DEFAULT_FITS_FLAVOR) -> str  ·L215 — Render the region statuses as a human-readable block. Pure: returns a
+- _quota_json(q: RegionQuota)  ·L250
+- regions_json(statuses, flavor=DEFAULT_FITS_FLAVOR) -> dict  ·L260 — The machine-readable shape for the frontend button / agents.
+- _resolve_targets(cloud, region, regions)  ·L286 — The regions to show: an explicit --regions list, a single --region, else
+- run_regions(cloud=None, region=None, regions=None, flavor=DEFAULT_FITS_FLAVOR, as_json=False) -> int  ·L299 — CLI entry: gather live occupancy for the target regions and print it.
+
 ### flux_compute/sweep.py
 _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling._
 - const ATTACH_DIR  ·L42
@@ -214,19 +235,24 @@ _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling.
 - @dataclass class Shard  ·L222 — One region's slice of a sweep: where to launch, how wide, and which jobs.
   - with_plan(self, concurrency, jobs)  ·L231
 - _prepare_shard(cloud, region, flavor, image, max_parallel)  ·L236 — Resolve one region: connect, pick the flavor/image, read its own quota.
-- _prepare_shards(cloud, regions, flavor, image, max_parallel)  ·L258 — Resolve every requested region, reporting ALL failures together.
-- _flavor_vcpus(conn, flavor_name)  ·L288 — Read the vCPU count for a flavor from the compute API, or raise.
-- _failure_status(exc)  ·L299 — Label a per-job failure for the job record. A teardown strand reads as
-- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L314 — Run run_one(job) across up to max_workers threads (one instance per job);
-- _attach_dir(dest)  ·L330
-- _write_attach_record(dest, *, label, cloud, region, name, server_id, ip, keyfile, remote_script, fetch, into, cap_seconds)  ·L334 — Persist the attach record plus a durable copy of the ephemeral private key
-- _clear_attach_record(dest)  ·L354 — Drop the attach dir (record + key copy) after a clean finalize + teardown;
-- _load_attach_records(into)  ·L360 — Every persisted attach record under <into> (in-flight or interrupted jobs).
-- _status_for_outcome(outcome)  ·L373 — Map a follow outcome to the sweep's (rc, status) record fields.
-- _finalize(ip, keyfile, dest, fetch, outcome)  ·L385 — Collect a followed job: pull the authoritative job.log always, and the
-- resume_sweep(cloud=None, region=None, into='cloud-sweep', max_parallel=4) -> int  ·L394 — Re-attach to still-running detached jobs after a full orchestrator restart.
-- _make_run_one(cloud, shard, uploads, script, fetch, into, max_minutes)  ·L446 — Build the per-job runner bound to one region shard (provision -> upload ->
-- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L497
+- @dataclass class RegionDrop  ·L259 — A requested region that cannot host the sweep, and why. The raw `region`
+  - @property label(self) -> str  ·L268
+- _prepare_shards(cloud, regions, flavor, image, max_parallel)  ·L272 — Resolve every requested region; return (shards, drops).
+- const _REFUSAL_TAIL  ·L295
+- _region_refusal(cloud, drops, *, all_dropped)  ·L302 — The informative refusal message when the sweep cannot proceed: every
+- _warn_region_drops(cloud, drops, surviving)  ·L317 — Graceful-degrade: print a warning per dropped region (reason + who occupies
+- _flavor_vcpus(conn, flavor_name)  ·L329 — Read the vCPU count for a flavor from the compute API, or raise.
+- _failure_status(exc)  ·L340 — Label a per-job failure for the job record. A teardown strand reads as
+- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L355 — Run run_one(job) across up to max_workers threads (one instance per job);
+- _attach_dir(dest)  ·L371
+- _write_attach_record(dest, *, label, cloud, region, name, server_id, ip, keyfile, remote_script, fetch, into, cap_seconds)  ·L375 — Persist the attach record plus a durable copy of the ephemeral private key
+- _clear_attach_record(dest)  ·L395 — Drop the attach dir (record + key copy) after a clean finalize + teardown;
+- _load_attach_records(into)  ·L401 — Every persisted attach record under <into> (in-flight or interrupted jobs).
+- _status_for_outcome(outcome)  ·L414 — Map a follow outcome to the sweep's (rc, status) record fields.
+- _finalize(ip, keyfile, dest, fetch, outcome)  ·L426 — Collect a followed job: pull the authoritative job.log always, and the
+- resume_sweep(cloud=None, region=None, into='cloud-sweep', max_parallel=4) -> int  ·L435 — Re-attach to still-running detached jobs after a full orchestrator restart.
+- _make_run_one(cloud, shard, uploads, script, fetch, into, max_minutes)  ·L487 — Build the per-job runner bound to one region shard (provision -> upload ->
+- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L538
 
 ### tests/test_detach.py
 _Pure-logic tests for the detach-and-poll machinery. No network, no credentials._
@@ -368,39 +394,44 @@ _Guard: docs/MAP.md stays in sync with the source._
 
 ### tests/test_provision.py
 _Pure-logic tests for provision helpers. No network, no credentials._
-- test_gpu_smoke_uses_nvidia_smi()  ·L16
-- test_cpu_smoke_verifies_boot_and_exec_without_gpu()  ·L22
-- class _FakeCompute  ·L32 — Fake compute API: fail the first `fail_deletes` delete calls and the
-  - __init__(self, fail_deletes=0, fail_waits=0)  ·L36
-  - delete_server(self, server_id, force=False)  ·L42
-  - wait_for_delete(self, server, wait=0)  ·L47
-- _conn(compute)  ·L53
-- const _SERVER  ·L57
-- test_delete_retries_transient_failure_then_verifies()  ·L60
-- test_unverified_delete_is_a_strand()  ·L67
-- test_persistent_delete_failure_is_a_strand()  ·L77
-- test_strand_error_is_a_runtimeerror_so_cli_exits_nonzero()  ·L83
-- test_stranded_banner_is_unmissable_and_actionable(capsys)  ·L88
-- class _FakeInstanceCompute  ·L100 — Fake compute API for driving _gpu_instance end to end.
-  - __init__(self)  ·L103
-  - find_image(self, name)  ·L106
-  - find_flavor(self, name)  ·L109
-  - create_keypair(self, name, public_key)  ·L112
-  - create_server(self, **kwargs)  ·L115
-  - wait_for_server(self, server, status=None, wait=None)  ·L121
-  - delete_server(self, server_id, force=False)  ·L124
-  - wait_for_delete(self, server, wait=0)  ·L127
-  - delete_keypair(self, name, ignore_missing=True)  ·L130
-- class _FakeInstanceNetwork  ·L134
-  - find_network(self, name)  ·L135
-  - create_security_group(self, name=None, description=None)  ·L138
-  - create_security_group_rule(self, **kwargs)  ·L141
-  - delete_security_group(self, sg_id, ignore_missing=True)  ·L144
-- _instance_conn()  ·L148
-- const _SPEC  ·L154
-- @pytest.fixture local_boot(monkeypatch)  ·L158 — Cut the two real-network steps out of _gpu_instance.
-- test_keep_does_not_swallow_a_body_exception(local_boot, capsys)  ·L164
-- test_body_exception_still_tears_down_without_keep(local_boot, capsys)  ·L176
+- test_gpu_smoke_uses_nvidia_smi()  ·L18
+- test_cpu_smoke_verifies_boot_and_exec_without_gpu()  ·L24
+- class _FakeCompute  ·L34 — Fake compute API: fail the first `fail_deletes` delete calls and the
+  - __init__(self, fail_deletes=0, fail_waits=0)  ·L38
+  - delete_server(self, server_id, force=False)  ·L44
+  - wait_for_delete(self, server, wait=0)  ·L49
+- _conn(compute)  ·L55
+- const _SERVER  ·L59
+- test_delete_retries_transient_failure_then_verifies()  ·L62
+- test_unverified_delete_is_a_strand()  ·L69
+- test_persistent_delete_failure_is_a_strand()  ·L79
+- test_strand_error_is_a_runtimeerror_so_cli_exits_nonzero()  ·L85
+- test_stranded_banner_is_unmissable_and_actionable(capsys)  ·L90
+- class _FakeInstanceCompute  ·L102 — Fake compute API for driving _gpu_instance end to end.
+  - __init__(self)  ·L105
+  - find_image(self, name)  ·L108
+  - find_flavor(self, name)  ·L111
+  - create_keypair(self, name, public_key)  ·L114
+  - create_server(self, **kwargs)  ·L117
+  - wait_for_server(self, server, status=None, wait=None)  ·L123
+  - delete_server(self, server_id, force=False)  ·L126
+  - wait_for_delete(self, server, wait=0)  ·L129
+  - delete_keypair(self, name, ignore_missing=True)  ·L132
+- class _FakeInstanceNetwork  ·L136
+  - find_network(self, name)  ·L137
+  - create_security_group(self, name=None, description=None)  ·L140
+  - create_security_group_rule(self, **kwargs)  ·L143
+  - delete_security_group(self, sg_id, ignore_missing=True)  ·L146
+- _instance_conn()  ·L150
+- const _SPEC  ·L156
+- @pytest.fixture local_boot(monkeypatch)  ·L160 — Cut the two real-network steps out of _gpu_instance.
+- test_keep_does_not_swallow_a_body_exception(local_boot, capsys)  ·L166
+- test_body_exception_still_tears_down_without_keep(local_boot, capsys)  ·L178
+- test_cloud_sweep_is_excluded_from_uploads()  ·L192
+- _fake_rsync(monkeypatch, returncode)  ·L197
+- test_rsync_up_tolerates_exit_24_as_a_warning(monkeypatch, capsys)  ·L209
+- test_rsync_up_still_raises_on_a_real_failure(monkeypatch)  ·L215
+- test_rsync_up_zero_is_success(monkeypatch)  ·L221
 
 ### tests/test_reap.py
 _Pure-logic tests for reap selection: expiry math, positive identification,_
@@ -438,51 +469,90 @@ _Pure-logic tests for reap selection: expiry math, positive identification,_
 - test_run_reap_unscannable_region_does_not_mask_the_others(monkeypatch)  ·L309 — One dead region must not abort the sweep -- the remaining regions are
 - test_run_reap_empty_regions_string_raises()  ·L330
 
+### tests/test_regions.py
+_Tests for the live per-region occupancy view. The pure core (fits math,_
+- const NOW  ·L28
+- _iso(dt)  ·L31
+- _stamp(expires_delta_min, keep=False)  ·L35
+- test_axis_fits_bounded_and_unbounded()  ·L45
+- test_fits_count_takes_the_binding_axis()  ·L53
+- test_fits_count_all_unbounded_is_none()  ·L64
+- _server(sid, name, md, age_hr, flavor='t2-le-45')  ·L72
+- test_build_region_status_partitions_and_counts_fits()  ·L78
+- test_build_region_status_absent_flavor_has_no_fits()  ·L96
+- test_occupancy_summary_groups_buckets_and_foreign()  ·L105
+- test_occupancy_summary_none_when_idle_or_unreadable()  ·L122
+- test_read_quota_converts_ram_mib_and_preserves_unlimited()  ·L136
+- _sample_statuses()  ·L154
+- test_format_regions_shows_fits_instances_and_errors()  ·L169
+- test_regions_json_shape_is_stable_for_the_frontend()  ·L179
+- class _FakeConn  ·L195
+  - __init__(self, region, lim, servers, flavors)  ·L196
+  - get_compute_limits(self)  ·L202
+  - @property compute(self)  ·L206
+- _flavor_obj(name, vcpus, ram_gb)  ·L212
+- test_gather_region_status_reads_each_region(monkeypatch)  ·L216
+- test_gather_region_status_unreadable_region_is_an_error_row(monkeypatch)  ·L235
+- test_gather_region_status_clouds_yaml_pin_surfaces_whole(monkeypatch)  ·L245
+- test_occupancy_line_best_effort_never_raises(monkeypatch)  ·L254
+- test_run_regions_json_output(monkeypatch, capsys)  ·L264
+- test_run_regions_default_flavor_is_b3_32()  ·L276
+- test_resolve_targets_empty_regions_string_raises()  ·L280
+
 ### tests/test_sweep.py
 _Pure-logic tests for the sweep helpers. No network, no credentials._
-- test_parse_label_equals_params()  ·L29
-- test_parse_skips_blanks_and_comments()  ·L34
-- test_parse_line_without_equals_is_label_and_params()  ·L39
-- test_duplicate_label_raises()  ·L43
-- test_label_with_slash_raises()  ·L48
-- test_empty_jobs_raises()  ·L53
-- test_worst_case_cost()  ·L58
-- test_worst_case_price_unknown_is_none()  ·L63
-- test_budget_guard_priced_under_budget_returns_worst_case()  ·L67
-- test_budget_guard_priced_over_budget_raises()  ·L73
-- test_budget_guard_unpriced_with_budget_refuses_and_names_flavor()  ·L78
-- test_budget_guard_unpriced_without_budget_returns_none()  ·L86
-- test_clamp_concurrency_bounded_by_core_quota()  ·L93
-- test_clamp_concurrency_bounded_by_instance_quota()  ·L99
-- test_clamp_concurrency_user_ceiling_wins_when_quota_is_ample()  ·L105
-- test_clamp_concurrency_no_core_headroom_raises()  ·L110
-- test_clamp_concurrency_no_instance_headroom_raises()  ·L117
-- test_clamp_concurrency_unlimited_quota_sentinel_is_no_bound()  ·L123
-- test_fan_out_bounds_concurrency_and_runs_every_job()  ·L134
-- test_failure_status_flags_quota_and_capacity()  ·L156
-- test_failure_status_generic_error_stays_generic()  ·L161
-- test_failure_status_flags_teardown_strand()  ·L165
-- test_status_ok_on_clean_exit()  ·L173
-- test_status_nonzero_job()  ·L177
-- test_status_remote_cap_kill_reads_as_timed_out()  ·L182
-- test_status_local_deadline_is_a_failure_record()  ·L188
-- _make_keyfile(tmp_path)  ·L195
-- test_attach_record_write_load_clear_round_trip(tmp_path)  ·L201
-- test_load_attach_records_empty_when_no_into_dir(tmp_path)  ·L226
-- test_finalize_pulls_log_always_and_artifacts_only_on_done(tmp_path, monkeypatch)  ·L230
-- test_parse_regions_orders_and_dedupes()  ·L250
-- test_parse_regions_empty_raises()  ·L255
-- test_allocate_concurrency_spreads_across_regions_before_stacking()  ·L261
-- test_allocate_concurrency_never_exceeds_a_regions_cap()  ·L268
-- test_allocate_concurrency_five_gpu_regions_at_two_each()  ·L274
-- test_allocate_concurrency_rejects_nonpositive_ceiling()  ·L279
-- test_shard_jobs_deals_in_proportion_to_concurrency()  ·L284
-- test_shard_jobs_skips_zero_weight_regions()  ·L291
-- test_shard_jobs_fewer_jobs_than_regions_spreads_out()  ·L298
-- test_shard_jobs_no_allocation_raises()  ·L303
-- test_budget_guard_shards_sums_across_regions()  ·L308
-- test_budget_guard_shards_over_budget_raises_on_the_total()  ·L315
-- test_budget_guard_shards_unpriced_region_named_when_budget_set()  ·L322
+- test_parse_label_equals_params()  ·L34
+- test_parse_skips_blanks_and_comments()  ·L39
+- test_parse_line_without_equals_is_label_and_params()  ·L44
+- test_duplicate_label_raises()  ·L48
+- test_label_with_slash_raises()  ·L53
+- test_empty_jobs_raises()  ·L58
+- test_worst_case_cost()  ·L63
+- test_worst_case_price_unknown_is_none()  ·L68
+- test_budget_guard_priced_under_budget_returns_worst_case()  ·L72
+- test_budget_guard_priced_over_budget_raises()  ·L78
+- test_budget_guard_unpriced_with_budget_refuses_and_names_flavor()  ·L83
+- test_budget_guard_unpriced_without_budget_returns_none()  ·L91
+- test_clamp_concurrency_bounded_by_core_quota()  ·L98
+- test_clamp_concurrency_bounded_by_instance_quota()  ·L104
+- test_clamp_concurrency_user_ceiling_wins_when_quota_is_ample()  ·L110
+- test_clamp_concurrency_no_core_headroom_raises()  ·L115
+- test_clamp_concurrency_no_instance_headroom_raises()  ·L122
+- test_clamp_concurrency_unlimited_quota_sentinel_is_no_bound()  ·L128
+- test_fan_out_bounds_concurrency_and_runs_every_job()  ·L139
+- test_failure_status_flags_quota_and_capacity()  ·L161
+- test_failure_status_generic_error_stays_generic()  ·L166
+- test_failure_status_flags_teardown_strand()  ·L170
+- test_status_ok_on_clean_exit()  ·L178
+- test_status_nonzero_job()  ·L182
+- test_status_remote_cap_kill_reads_as_timed_out()  ·L187
+- test_status_local_deadline_is_a_failure_record()  ·L193
+- _make_keyfile(tmp_path)  ·L200
+- test_attach_record_write_load_clear_round_trip(tmp_path)  ·L206
+- test_load_attach_records_empty_when_no_into_dir(tmp_path)  ·L231
+- test_finalize_pulls_log_always_and_artifacts_only_on_done(tmp_path, monkeypatch)  ·L235
+- test_parse_regions_orders_and_dedupes()  ·L255
+- test_parse_regions_empty_raises()  ·L260
+- test_allocate_concurrency_spreads_across_regions_before_stacking()  ·L266
+- test_allocate_concurrency_never_exceeds_a_regions_cap()  ·L273
+- test_allocate_concurrency_five_gpu_regions_at_two_each()  ·L279
+- test_allocate_concurrency_rejects_nonpositive_ceiling()  ·L284
+- test_shard_jobs_deals_in_proportion_to_concurrency()  ·L289
+- test_shard_jobs_skips_zero_weight_regions()  ·L296
+- test_shard_jobs_fewer_jobs_than_regions_spreads_out()  ·L303
+- test_shard_jobs_no_allocation_raises()  ·L308
+- test_budget_guard_shards_sums_across_regions()  ·L313
+- test_budget_guard_shards_over_budget_raises_on_the_total()  ·L320
+- test_budget_guard_shards_unpriced_region_named_when_budget_set()  ·L327
+- _fake_shard(region, cap=2)  ·L342
+- _wire_prepare(monkeypatch, fit_regions, drop_reason='RuntimeError: quota fits zero')  ·L349 — Drive _prepare_shards without network: `fit_regions` succeed, the rest
+- _jobs_file(tmp_path)  ·L361
+- test_prepare_shards_partitions_fit_and_unfit(monkeypatch)  ·L367
+- test_prepare_shards_clouds_yaml_pin_still_raises(monkeypatch)  ·L375
+- test_sweep_drops_unfit_regions_and_proceeds(monkeypatch, tmp_path, capsys)  ·L383
+- test_sweep_strict_regions_refuses_on_any_unfit(monkeypatch, tmp_path)  ·L395
+- test_sweep_refuses_when_no_region_fits(monkeypatch, tmp_path)  ·L402
+- test_region_drop_label_defaults_when_region_is_none()  ·L409
 
 ## Other source files
 

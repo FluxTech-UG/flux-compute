@@ -107,6 +107,13 @@ end-to-end "is the API working?" check.
   **`--regions A,B,C`** to shard one sweep across several regions at once (see
   *Multi-region sweeps* below) — the way to run a fleet wider than one region's
   quota.
+- **`regions [--regions A,B,C] [--flavor NAME] [--json]`** — live, read-only
+  per-region occupancy: quota (vCPU / instances / RAM used vs total), the running
+  flux-compute instances occupying each region (name, flavor, age, TTL bucket) and
+  a count of foreign servers, and how many of a flavor (`--flavor`, default
+  `b3-32`) still fit the remaining headroom. `--json` is the machine-readable
+  shape for the frontend region-status button and for launchers that check
+  occupancy before fanning out. Safe against live fleets (read-only throughout).
 - **`reap [--yes] [--all]`** — list every flux-compute instance with age, hourly
   price and accrued cost; delete the ones past their stamped TTL (see Cost
   guardrails below).
@@ -204,10 +211,17 @@ resolved **per region** (BHS5 picking the cheaper V100 above is that at work), a
 the budget guard sums the shards' worst cases against the one `--budget`.
 `--plan` prints the whole allocation table without launching anything.
 
-A region that cannot run the sweep — no credit-eligible fp64-healthy GPU, no
-quota headroom, no compute endpoint — raises rather than being skipped: silently
-dropping a region you asked for would quietly halve a fleet you believe is
-running. All failing regions are reported together, so it is one fix-up round.
+A region that cannot fit at least one instance of the chosen flavor — no
+credit-eligible fp64-healthy GPU, no quota headroom (another fleet is living
+there), no compute endpoint — is **dropped with a warning** naming its occupants
+and headroom, and the wave allocation is recomputed over the regions that do fit.
+The sweep proceeds as long as one region fits; it refuses only when **none** do.
+This turns a partial-capacity situation into a running sweep on the free regions
+instead of an all-or-nothing failure. Pass **`--strict-regions`** to restore
+refuse-on-any-unfit (exact-width mode, for a caller that needs the full width or
+nothing); the refusal then lists every unfit region with its reason and
+occupancy, so it is one fix-up round. Run `flux-compute regions` first to see the
+live occupancy before launching.
 
 **Your `clouds.yaml` must not pin one region.** An entry with a single
 `region_name:` makes every other region fail *locally*, before any request is

@@ -25,7 +25,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
-from . import detach
+from . import detach, regions
 from .auth import connect
 from .launch import resolve_spec
 from .provision import (
@@ -255,34 +255,75 @@ def _prepare_shard(cloud, region, flavor, image, max_parallel):
     return Shard(region=reg, spec=spec, vcpus=vcpus, cap=cap)
 
 
-def _prepare_shards(cloud, regions, flavor, image, max_parallel):
-    """Resolve every requested region, reporting ALL failures together.
+@dataclass(frozen=True)
+class RegionDrop:
+    """A requested region that cannot host the sweep, and why. The raw `region`
+    (possibly None for the clouds.yaml default) is kept so an occupancy read can
+    re-target it; `label` is what to print."""
 
-    A region that cannot run the sweep (no healthy GPU, no quota headroom, no
-    compute endpoint) raises rather than being skipped: silently dropping a
-    region the operator explicitly asked for would quietly halve a fleet they
-    believe is running. Collecting every failure first means one fix-up round,
-    not one per region.
+    region: str | None
+    reason: str
+
+    @property
+    def label(self) -> str:
+        return self.region or "(default region)"
+
+
+def _prepare_shards(cloud, regions, flavor, image, max_parallel):
+    """Resolve every requested region; return (shards, drops).
+
+    A region that cannot host the sweep — no credit-eligible fp64-healthy GPU, no
+    quota headroom for even one instance, no compute endpoint — becomes a
+    `RegionDrop` carrying the reason instead of a shard, rather than raising. The
+    caller decides between graceful-degrade (drop unfit regions with a warning
+    and run on the rest — the default) and refuse-the-whole-sweep
+    (`--strict-regions`). A clouds.yaml region pin is one global config fault
+    (fixing it fixes every region), so it still surfaces whole and at once.
     """
-    shards, failures = [], []
+    shards, drops = [], []
     for region in regions:
         try:
             shards.append(_prepare_shard(cloud, region, flavor, image, max_parallel))
         except Exception as exc:
-            # A clouds.yaml region pin is one global config fault, not a per-region
-            # one -- fixing it fixes every region -- so it surfaces whole and at
-            # once rather than truncated into a per-region failure list.
             if "refused by the local clouds.yaml" in str(exc):
                 raise
-            failures.append(f"  {region}: {type(exc).__name__}: {str(exc)[:160]}")
-    if failures:
-        raise RuntimeError(
-            "these requested regions cannot run this sweep:\n" + "\n".join(failures) +
-            "\n\nDrop them from --regions, or fix the cause above (a region with no "
-            "credit-eligible fp64-healthy GPU cannot host a sim; check `flux-compute "
-            "doctor --region <name>`)."
-        )
-    return shards
+            drops.append(RegionDrop(
+                region=region, reason=f"{type(exc).__name__}: {str(exc)[:160]}"))
+    return shards, drops
+
+
+_REFUSAL_TAIL = (
+    "Drop them from --regions, or fix the cause above (a region with no "
+    "credit-eligible fp64-healthy GPU cannot host a sim; check `flux-compute "
+    "doctor --region <name>`). Run `flux-compute regions` to see live occupancy."
+)
+
+
+def _region_refusal(cloud, drops, *, all_dropped):
+    """The informative refusal message when the sweep cannot proceed: every
+    dropped region with its reason and (best-effort) who is occupying it."""
+    lines = []
+    for d in drops:
+        occ = regions.occupancy_line(cloud, d.region)
+        line = f"  {d.label}: {d.reason}"
+        if occ:
+            line += f"\n      occupied by: {occ}"
+        lines.append(line)
+    head = ("no requested region can run this sweep:" if all_dropped
+            else "these requested regions cannot run this sweep:")
+    return head + "\n" + "\n".join(lines) + "\n\n" + _REFUSAL_TAIL
+
+
+def _warn_region_drops(cloud, drops, surviving):
+    """Graceful-degrade: print a warning per dropped region (reason + who occupies
+    it) and note that the sweep proceeds on the survivors."""
+    for d in drops:
+        print(f"WARNING: dropping region {d.label} (cannot fit >=1 instance): {d.reason}")
+        occ = regions.occupancy_line(cloud, d.region)
+        if occ:
+            print(f"         occupied by: {occ}")
+    print(f"proceeding on {surviving} of {surviving + len(drops)} requested region(s); "
+          "re-run with --strict-regions to refuse the whole sweep instead.")
 
 
 def _flavor_vcpus(conn, flavor_name):
@@ -497,7 +538,7 @@ def _make_run_one(cloud, shard, uploads, script, fetch, into, max_minutes):
 def run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None,
               jobs_file=None, fetch=None, into="cloud-sweep",
               max_parallel=4, max_minutes=30, budget_eur=None, image=None,
-              plan_only=False, resume=False) -> int:
+              plan_only=False, resume=False, strict_regions=False) -> int:
     if resume:
         return resume_sweep(cloud=cloud, region=region, into=into,
                             max_parallel=max_parallel)
@@ -518,7 +559,18 @@ def run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), sc
     # One shard per region; a lone --region (or the clouds.yaml default) is the
     # single-shard case of the same path.
     targets = parse_regions(regions) if regions else [region]
-    shards = _prepare_shards(cloud, targets, flavor, image, max_parallel)
+    shards, drops = _prepare_shards(cloud, targets, flavor, image, max_parallel)
+
+    # Graceful-degrade pre-flight (the default): a region that cannot fit >=1
+    # instance of the chosen flavor is dropped with a warning naming its
+    # occupants and headroom, and the wave allocation is recomputed over the
+    # survivors. The sweep refuses only when NONE fit, or under --strict-regions
+    # (exact-width mode). This turns a partial-capacity situation into a running
+    # sweep instead of an all-or-nothing failure.
+    if drops and (strict_regions or not shards):
+        raise RuntimeError(_region_refusal(cloud, drops, all_dropped=not shards))
+    if drops:
+        _warn_region_drops(cloud, drops, surviving=len(shards))
 
     # --max-parallel is the GLOBAL live-instance ceiling; each region is
     # additionally bounded by its own quota headroom.

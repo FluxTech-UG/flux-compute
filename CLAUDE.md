@@ -98,10 +98,21 @@ verified teardown.
 - `flux_compute/sweep.py`: the fan-out, including per-region sharding
   (`parse_regions` / `allocate_concurrency` / `shard_jobs` / `Shard`, all pure
   and tested). `--max-parallel` is the GLOBAL live-instance ceiling; each region
-  is additionally clamped to its own headroom.
+  is additionally clamped to its own headroom. The region pre-flight is
+  **graceful-degrade by default**: `_prepare_shards` returns `(shards, drops)`,
+  and a region that cannot fit >=1 instance is dropped with a warning (occupants
+  + headroom, via `regions.occupancy_line`) and the sweep runs on the rest;
+  `--strict-regions` restores refuse-on-any-unfit, and NONE-fit always refuses.
+- `flux_compute/regions.py`: `flux-compute regions`, the live read-only
+  per-region occupancy view (quota, running flux-compute instances via
+  `reap.find_candidates`, and a flavor `fits` count over the remaining headroom).
+  `build_region_status` is pure; `gather_region_status`/`_read_quota` do the live
+  reads (reusing `plan_fleet_live`'s limits plumbing). `--json` (`regions_json`)
+  is the shape the heat-mod-frontend region button and autonomous launchers read;
+  the sweep pre-flight reuses `occupancy_line` for its drop warnings.
 - `flux_compute/doctor.py`: `flux-compute doctor`, the API health check.
 - `flux_compute/cli.py`: argparse entry point (`doctor`, `preflight`, `run`,
-  `plan`, `sweep`, `reap`, `bake`, `push`). `plan` prints a fleet plan for a
+  `plan`, `sweep`, `regions`, `reap`, `bake`, `push`). `plan` prints a fleet plan for a
   generic requirement (offline from catalog tables, or `--live`). `run`/`sweep`
   take the same requirement flags (`--ram-gb`, `--device`, `--batchable`,
   `--batch-width`, `--requirements FILE`): when given and `--flavor` is absent, the
