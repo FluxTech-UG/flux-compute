@@ -216,8 +216,8 @@ def test_region_cap_is_zero_when_ram_starved():
     # RAM quota fully used -> zero VMs fit, even though cores/instances would.
     cap = _region_cap(spec, ram_used_gb=CATALOG_QUOTA_RAM_GB, ram_max_gb=CATALOG_QUOTA_RAM_GB)
     assert cap == 0
-    # With headroom it is the RAM-or-core-bound positive cap (unchanged behavior).
-    assert _region_cap(static_flavor_spec("c3-4")) == 10
+    # With headroom it is the core-bound positive cap (64 vCPU / 2 per c3-4).
+    assert _region_cap(static_flavor_spec("c3-4")) == 32
 
 
 def test_core_all_regions_zero_cap_fails_fast():
@@ -355,7 +355,7 @@ def test_plan_fleet_cpu_spreads_across_all_nine_regions():
     plan = plan_fleet(JobRequirements(200, 2.0, "cpu"))
     assert plan.device == "cpu" and plan.flavor == "c3-4"
     assert len(plan.region_allocation) == len(ALL_REGIONS)
-    assert plan.vm_count == 90                       # 9 regions * 10 instance-cap
+    assert plan.vm_count == 288                      # 9 regions * 32 core-cap
     assert isinstance(plan, FleetPlan)
 
 
@@ -364,9 +364,9 @@ def test_plan_fleet_gpu_uses_gpu_regions_and_bhs5_v100():
     assert plan.device == "gpu"
     regions = {ra.region: ra for ra in plan.region_allocation}
     assert set(regions) == set(GPU_REGIONS)
-    assert regions["DE1"].flavor == "t2-le-45" and regions["DE1"].vms == 2
-    assert regions["BHS5"].flavor == "t1-le-45" and regions["BHS5"].vms == 4
-    assert plan.vm_count == 12                        # 4*2 + 4 (BHS5)
+    assert regions["DE1"].flavor == "t2-le-45" and regions["DE1"].vms == 4
+    assert regions["BHS5"].flavor == "t1-le-45" and regions["BHS5"].vms == 8
+    assert plan.vm_count == 24                        # 4*4 + 8 (BHS5)
 
 
 def test_plan_fleet_gpu_with_only_cpu_regions_fails_fast():
@@ -377,7 +377,7 @@ def test_plan_fleet_gpu_with_only_cpu_regions_fails_fast():
 def test_plan_fleet_regions_override_is_honored():
     plan = plan_fleet(JobRequirements(20, 2.0, "cpu"), regions="GRA11,DE1")
     assert {ra.region for ra in plan.region_allocation} == {"GRA11", "DE1"}
-    assert plan.vm_count == 20
+    assert plan.vm_count == 64                       # 2 regions * 32 core-cap
 
 
 def test_plan_fleet_budget_guard_raises_offline():

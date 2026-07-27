@@ -78,31 +78,31 @@ _Resource-aware fleet planner: turn a generic job description into a launch plan
 - const CPU_ONLY_REGIONS  ·L47
 - const ALL_REGIONS  ·L48
 - const _REGION_GPU_FAMILY  ·L52
-- const CATALOG_QUOTA_CORES  ·L61
-- const CATALOG_QUOTA_INSTANCES  ·L62
-- const CATALOG_QUOTA_RAM_GB  ·L63
-- const _GPU_CANDIDATE_FLAVORS  ·L77
-- const _CPU_CANDIDATE_FLAVORS  ·L78
-- const _DEVICES  ·L83
-- @dataclass class JobRequirements  ·L87 — A consumer's generic description of a batch of independent jobs.
-  - __post_init__(self)  ·L124
-- @dataclass class RegionUnit  ·L155 — One region's contribution to the fleet: which flavor, and how many of it
-- @dataclass class RegionAllocation  ·L166 — What the plan assigns one region: the VMs it runs, and their shape.
-- @dataclass class FleetPlan  ·L178 — A structured launch plan. No side effects; the caller renders or acts.
-- _gpu_size(flavor_name: str) -> str  ·L200 — The size suffix of a GPU flavor name: 't2-le-90' -> '90'.
-- _region_gpu_flavor(region: str, size: str) -> str | None  ·L205 — The GPU flavor a region runs at a given family size, or None when the
-- _resolve_device(req: JobRequirements) -> str  ·L212 — Resolve "either" to a concrete device.
-- _candidate_specs(device: str)  ·L225 — The catalog flavor specs the offline flavor choice ranks, for a device.
-- choose_flavor(req: JobRequirements, *, ram_headroom: float=RAM_HEADROOM, candidates=None) -> FlavorSpec  ·L231 — Pick the cheapest usable flavor whose host RAM fits one job of `req`.
-- jobs_per_vm(req: JobRequirements, spec: FlavorSpec, *, ram_headroom: float=RAM_HEADROOM) -> int  ·L260 — Packing K: how many jobs/members one VM of `spec` runs at once.
-- _region_cap(spec: FlavorSpec, *, cores_used=0, cores_max=CATALOG_QUOTA_CORES, instances_used=0, instances_max=CATALOG_QUOTA_INSTANCES, ram_used_gb=0.0, ram_max_gb=CATALOG_QUOTA_RAM_GB) -> int  ·L304 — Max concurrent VMs of `spec` a region's quota allows, over all three axes.
-- _flavor_reason(req, device, primary, K) -> str  ·L327 — A one-line 'why this flavor/device' for the plan.
-- _deal_counts(total: int, weights) -> list  ·L351 — Deal `total` items across positive weights, summing to exactly `total`
-- plan_fleet_core(req: JobRequirements, region_units, *, device: str, primary: FlavorSpec, budget=None, max_parallel=None, ram_headroom: float=RAM_HEADROOM, notes=()) -> FleetPlan  ·L369 — Pure planner: region caps + flavor specs -> FleetPlan. No network.
-- _target_regions(device: str, regions) -> list  ·L466 — The regions to plan across: the caller's list, or the device default.
-- plan_fleet(requirements: JobRequirements, budget=None, regions=None, max_parallel=None, *, ram_headroom: float=RAM_HEADROOM) -> FleetPlan  ·L478 — Offline fleet plan from the catalog tables. No credentials, no network.
-- plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None, regions=None, max_parallel=None, ram_headroom: float=RAM_HEADROOM) -> FleetPlan  ·L524 — Live fleet plan: gather real per-region quota and flavor availability.
-- format_plan(req: JobRequirements, plan: FleetPlan) -> str  ·L586 — Render a FleetPlan as human-readable text. Pure: returns a string, never
+- const CATALOG_QUOTA_CORES  ·L62
+- const CATALOG_QUOTA_INSTANCES  ·L63
+- const CATALOG_QUOTA_RAM_GB  ·L64
+- const _GPU_CANDIDATE_FLAVORS  ·L78
+- const _CPU_CANDIDATE_FLAVORS  ·L79
+- const _DEVICES  ·L84
+- @dataclass class JobRequirements  ·L88 — A consumer's generic description of a batch of independent jobs.
+  - __post_init__(self)  ·L125
+- @dataclass class RegionUnit  ·L156 — One region's contribution to the fleet: which flavor, and how many of it
+- @dataclass class RegionAllocation  ·L167 — What the plan assigns one region: the VMs it runs, and their shape.
+- @dataclass class FleetPlan  ·L179 — A structured launch plan. No side effects; the caller renders or acts.
+- _gpu_size(flavor_name: str) -> str  ·L201 — The size suffix of a GPU flavor name: 't2-le-90' -> '90'.
+- _region_gpu_flavor(region: str, size: str) -> str | None  ·L206 — The GPU flavor a region runs at a given family size, or None when the
+- _resolve_device(req: JobRequirements) -> str  ·L213 — Resolve "either" to a concrete device.
+- _candidate_specs(device: str)  ·L226 — The catalog flavor specs the offline flavor choice ranks, for a device.
+- choose_flavor(req: JobRequirements, *, ram_headroom: float=RAM_HEADROOM, candidates=None) -> FlavorSpec  ·L232 — Pick the cheapest usable flavor whose host RAM fits one job of `req`.
+- jobs_per_vm(req: JobRequirements, spec: FlavorSpec, *, ram_headroom: float=RAM_HEADROOM) -> int  ·L261 — Packing K: how many jobs/members one VM of `spec` runs at once.
+- _region_cap(spec: FlavorSpec, *, cores_used=0, cores_max=CATALOG_QUOTA_CORES, instances_used=0, instances_max=CATALOG_QUOTA_INSTANCES, ram_used_gb=0.0, ram_max_gb=CATALOG_QUOTA_RAM_GB) -> int  ·L305 — Max concurrent VMs of `spec` a region's quota allows, over all three axes.
+- _flavor_reason(req, device, primary, K) -> str  ·L328 — A one-line 'why this flavor/device' for the plan.
+- _deal_counts(total: int, weights) -> list  ·L352 — Deal `total` items across positive weights, summing to exactly `total`
+- plan_fleet_core(req: JobRequirements, region_units, *, device: str, primary: FlavorSpec, budget=None, max_parallel=None, ram_headroom: float=RAM_HEADROOM, notes=()) -> FleetPlan  ·L370 — Pure planner: region caps + flavor specs -> FleetPlan. No network.
+- _target_regions(device: str, regions) -> list  ·L467 — The regions to plan across: the caller's list, or the device default.
+- plan_fleet(requirements: JobRequirements, budget=None, regions=None, max_parallel=None, *, ram_headroom: float=RAM_HEADROOM) -> FleetPlan  ·L479 — Offline fleet plan from the catalog tables. No credentials, no network.
+- plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None, regions=None, max_parallel=None, ram_headroom: float=RAM_HEADROOM) -> FleetPlan  ·L525 — Live fleet plan: gather real per-region quota and flavor availability.
+- format_plan(req: JobRequirements, plan: FleetPlan) -> str  ·L587 — Render a FleetPlan as human-readable text. Pure: returns a string, never
 
 ### flux_compute/image.py
 _Bake a reusable GPU image: provision, run a setup script, snapshot, tear down._

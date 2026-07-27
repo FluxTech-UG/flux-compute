@@ -36,22 +36,18 @@ fp64-healthy GPU actually present in the region. When in doubt, validate a card
 with 1DSim3's `scripts/gpu_check.py` before committing to it.
 
 ### Quota is PER REGION, and regions are the fleet-width lever.
-Each OVH region carries its own compute quota — **34 vCPUs / 10 instances /
-420 GiB** as measured live on 2026-07-21, identical in all nine regions. A V100S
-(`t2-le-45`) is 15 vCPU, so one region fits **2 concurrent V100S**; BHS5's plain
-V100 (`t1-le-45`) is 8 vCPU and fits 4. Across the five GPU regions (GRA11, DE1,
-UK1, WAW1, BHS5) that is **12 concurrent GPU instances**, which is what
-`sweep --regions` exists to reach. The other four regions (SBG5, RBX-A,
-EU-WEST-PAR, EU-SOUTH-MIL) are CPU-only but carry the same 34 vCPU each — ~306
-vCPUs project-wide for CPU fan-out.
+Each OVH region carries its own compute quota — **64 vCPUs / 50 instances /
+496 GiB** (the CS16091787 increase, granted 2026-07-19, in effect as measured
+live 2026-07-27 in DE1/UK1/WAW1/SBG5). A V100S (`t2-le-45`) is 15 vCPU, so one
+region fits **4 concurrent V100S**; BHS5's plain V100 (`t1-le-45`) is 8 vCPU and
+fits 8. Across the five GPU regions (GRA11, DE1, UK1, WAW1, BHS5) that is **24
+concurrent GPU instances**, which is what `sweep --regions` exists to reach. The
+other four regions (SBG5, RBX-A, EU-WEST-PAR, EU-SOUTH-MIL) are CPU-only but
+carry the same 64 vCPU each — ~576 vCPUs project-wide for CPU fan-out.
 
-A quota increase to 50 instances / 64 vCPUs / 496 GB was granted in writing on
-ticket CS16091787 (2026-07-19) but **is not in effect in any region** as of the
-2026-07-21 measurement; it may land at any time, which is precisely why no
-sizing decision should be taken from this paragraph. The code never trusts these
-numbers: preflight and sweep read live quota from the API and clamp to real
-headroom, per region. Treat this line as orientation, and let the clamp be the
-authority — if it reports more headroom than stated here, the increase landed.
+The code never trusts these numbers: preflight and sweep read live quota from
+the API and clamp to real headroom, per region. Treat this section as
+orientation, and let the clamp be the authority.
 
 ### Fail fast on missing credentials or no healthy GPU.
 No silent defaults. Missing credentials raise with the remedy; a region exposing

@@ -161,8 +161,8 @@ one instance per job), and the **fill-the-fleet** cost (every spare slot used) i
 reported beside it — so both the cost of your jobs and the cost if you round up to
 fill are visible.
 
-Offline plans (the default) use catalog values — the per-region quota (34 vCPU /
-10 instances / 420 GB, measured 2026-07-21) and the catalog flavor shapes.
+Offline plans (the default) use catalog values — the per-region quota (64 vCPU /
+50 instances / 496 GB, measured 2026-07-27) and the catalog flavor shapes.
 `flux-compute plan --live` reads the real per-region quota and flavor availability
 from the API instead; a live **launch** always re-verifies and clamps to real
 headroom per region. The planner reuses the sweep's per-region sharding
@@ -181,25 +181,26 @@ overrides, and with no requirement the behavior is unchanged.
 ### Multi-region sweeps (the fleet-width lever)
 
 **OVH compute quota is per region, not per project.** Every region carries its
-own 34 vCPUs / 10 instances / 420 GiB (measured live 2026-07-21, identical in all
-nine). A V100S (`t2-le-45`, 15 vCPU) therefore fits **2 per region** — so a
-single-region sweep tops out at 2 GPUs no matter how high `--max-parallel` goes.
+own 64 vCPUs / 50 instances / 496 GiB (measured live 2026-07-27; the CS16091787
+increase is in effect). A V100S (`t2-le-45`, 15 vCPU) therefore fits **4 per
+region** — so a single-region sweep tops out at 4 GPUs no matter how high
+`--max-parallel` goes.
 Spreading the same sweep across regions is what widens the fleet:
 
 | Region | GPU flavor chosen | vCPU | Concurrent |
 |---|---|---|---|
-| GRA11, DE1, UK1, WAW1 | `t2-le-45` (V100S 32GB) | 15 | 2 each |
-| BHS5 | `t1-le-45` (V100 16GB, cheaper) | 8 | 4 |
+| GRA11, DE1, UK1, WAW1 | `t2-le-45` (V100S 32GB) | 15 | 4 each |
+| BHS5 | `t1-le-45` (V100 16GB, cheaper) | 8 | 8 |
 | SBG5, RBX-A, EU-WEST-PAR, EU-SOUTH-MIL | CPU only | — | — |
 
-**12 concurrent GPU instances** across the five GPU regions, versus 2 in one.
-For CPU fan-out the nine regions total ~306 vCPUs.
+**24 concurrent GPU instances** across the five GPU regions, versus 4 in one.
+For CPU fan-out the nine regions total ~576 vCPUs.
 
 ```bash
 flux-compute sweep --cloud flux-ovh \
     --regions GRA11,DE1,UK1,WAW1,BHS5 \
     --jobs jobs.txt --script job.sh --fetch out \
-    --max-parallel 12 --budget 40
+    --max-parallel 24 --budget 40
 ```
 
 `--max-parallel` stays what it always was — the total instances alive at once
@@ -288,8 +289,8 @@ the stock image + per-job install.
   spend (jobs x price x wall cap) exceeds the cap, and refuses outright when the
   flavor has no known price. With `--regions`, the shards' worst cases are summed
   against the one budget. Concurrency is clamped to compute-quota headroom, read
-  live from the API **per region** (34 vCPUs / 10 instances each as measured
-  2026-07-21 — 2 concurrent V100S, or 4 of BHS5's 8-vCPU V100).
+  live from the API **per region** (64 vCPUs / 50 instances each as measured
+  2026-07-27 — 4 concurrent V100S, or 8 of BHS5's 8-vCPU V100).
 - **Wall caps**: the remote job runs under a `timeout` wrapper on the VM, so a
   hung job is killed at its cap independently of the laptop (the local poll loop
   and `flux-compute reap`'s TTL stamp are the two further backstops).

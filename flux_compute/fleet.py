@@ -54,13 +54,14 @@ _REGION_GPU_FAMILY = {
     "WAW1": "t2-le", "BHS5": "t1-le",
 }
 
-# Per-region compute quota, measured live 2026-07-21 (identical in all nine
-# regions; README "Cost guardrails"). The quota is per region — spreading across
-# regions is the only way to widen a fleet past one region's headroom. A live
-# plan reads the real numbers from the API; these bound the offline preview.
-CATALOG_QUOTA_CORES = 34
-CATALOG_QUOTA_INSTANCES = 10
-CATALOG_QUOTA_RAM_GB = 420
+# Per-region compute quota, measured live 2026-07-27 in DE1/UK1/WAW1/SBG5 —
+# the CS16091787 increase (granted 2026-07-19) is in effect (README "Cost
+# guardrails"). The quota is per region — spreading across regions is the only
+# way to widen a fleet past one region's headroom. A live plan reads the real
+# numbers from the API; these bound the offline preview.
+CATALOG_QUOTA_CORES = 64
+CATALOG_QUOTA_INSTANCES = 50
+CATALOG_QUOTA_RAM_GB = 496
 
 # The catalog flavor ladders the offline flavor choice picks from. GPU work uses
 # the EU-wide single-card V100S default (a live plan may pick a region's cheaper
@@ -510,8 +511,8 @@ def plan_fleet(requirements: JobRequirements, budget=None, regions=None,
             f"GPU work was requested but none of the regions {targets} carry a "
             f"credit-eligible fp64-healthy GPU. GPU regions: {list(GPU_REGIONS)}.")
 
-    notes = ["offline plan: catalog quota (34 vCPU / 10 instances / 420 GB per "
-             "region, measured 2026-07-21) and catalog flavor shapes; a live "
+    notes = ["offline plan: catalog quota (64 vCPU / 50 instances / 496 GB per "
+             "region, measured 2026-07-27) and catalog flavor shapes; a live "
              "launch re-verifies quota and availability per region."]
     if dropped:
         notes.append(f"CPU-only region(s) skipped for GPU work: {', '.join(dropped)}.")
