@@ -1,15 +1,15 @@
-"""Resolve a launch spec for a GPU run, and (for now) plan it without launching.
+"""Resolve a launch spec for a run, and print it as a dry run.
 
 `resolve_spec` turns a region into the concrete choices a launch needs: which
 flavor (credit-eligible and fp64-healthy), which image (flavor-aware: an
 NVIDIA-driver Ubuntu for a GPU flavor, a plain Ubuntu LTS for a CPU flavor,
-unless `--image` overrides), which network. `plan` prints that spec as a dry
-run. The actual provision / bootstrap / fetch / teardown step is billable and is
-wired separately.
+unless `--image` overrides), which network. It is the single resolver every
+launching path shares -- `provision.run_job`, `provision.smoke_test`,
+`sweep._prepare_shard` and `image.bake` all call it -- so a dry run resolves
+exactly what a real launch will use. `plan` prints that spec without launching.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 from .flavors import classify, recommended_for_sim
@@ -137,15 +137,12 @@ def resolve_spec(conn, region: str, flavor: str | None = None, keypair: str | No
 
 
 def plan(cloud: str | None = None, region: str | None = None, flavor: str | None = None) -> int:
-    from .auth import connect
+    from .auth import connect, resolve_region_name
     from .reap import warn_strays  # function-level: reap imports provision, which imports this module
 
     conn = connect(cloud=cloud, region=region)
     warn_strays(conn)
-    reg = (region
-           or getattr(getattr(conn, "config", None), "region_name", None)
-           or os.environ.get("OS_REGION_NAME")
-           or "(unknown)")
+    reg = resolve_region_name(conn, region)
     spec = resolve_spec(conn, reg, flavor=flavor)
 
     cost = f"EUR {spec.est_cost_eur_hr:.2f}/hr" if spec.est_cost_eur_hr is not None else "price n/a"
@@ -157,5 +154,7 @@ def plan(cloud: str | None = None, region: str | None = None, flavor: str | None
     print(f"  keypair  : {spec.keypair}")
     print(f"  est cost : {cost}")
     print()
-    print("Provision / bootstrap / fetch / teardown is billable and not wired yet.")
+    print("Dry run: nothing launched, nothing billed. To actually run work here:")
+    print("  flux-compute run   --upload DIR[:DEST] --script FILE --fetch REMOTE:LOCAL")
+    print("  flux-compute sweep --jobs FILE --script FILE --fetch REMOTE --budget EUR")
     return 0

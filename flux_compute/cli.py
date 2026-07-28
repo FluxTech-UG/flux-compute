@@ -104,7 +104,27 @@ def _flavor_from_requirements(args, *, default_count):
     return chosen.name
 
 
+def _stream_output():
+    """Make progress output appear as it happens, even through a pipe.
+
+    Python line-buffers stdout only when it is a TTY; redirected or piped
+    (``flux-compute sweep ... | tee run.log``, or any launcher capturing output)
+    it switches to 4 KiB block buffering, so a multi-hour fleet writes NOTHING to
+    the log until the buffer fills or the process exits. An empty log is then
+    indistinguishable from a hung launcher, and chasing that phantom cost a
+    session. Setting line buffering at the entry point fixes every print in the
+    package at once, and requires nothing of the caller (no PYTHONUNBUFFERED, no
+    ``stdbuf``) -- which is the point: the caller cannot be relied on to remember.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError):
+            pass          # already unbuffered, detached, or a non-TextIO stand-in
+
+
 def main(argv=None) -> int:
+    _stream_output()
     parser = argparse.ArgumentParser(
         prog="flux-compute",
         description="Run FluxTech simulations on OVH Public Cloud GPU instances.",
@@ -134,8 +154,10 @@ def main(argv=None) -> int:
     run.add_argument("--smoke", action="store_true",
                      help="Provision, verify the device (nvidia-smi on a GPU flavor, a boot + "
                           "remote-exec check on a CPU flavor), and tear down. Billable.")
-    run.add_argument("--upload", action="append", default=[], metavar="DIR",
-                     help="Local dir to rsync to ~/<name> on the instance (repeatable).")
+    run.add_argument("--upload", action="append", default=[], metavar="DIR[:DEST]",
+                     help="Local dir to rsync up (repeatable). 'DIR' lands at ~/<basename>; "
+                          "'SRC:DEST' lands SRC at ~/DEST, so the remote name need not match "
+                          "the local one (e.g. a worktree: --upload /path/1DSim3-wt:1DSim3).")
     run.add_argument("--script", default=None, metavar="FILE",
                      help="Local bash script uploaded and run on the instance (your setup + job).")
     run.add_argument("--fetch", action="append", default=[], metavar="REMOTE:LOCAL",
@@ -160,7 +182,9 @@ def main(argv=None) -> int:
     plan.add_argument("--max-parallel", type=int, default=None, metavar="N",
                       help="Global cap on concurrent VMs (default: the full quota fleet).")
     plan.add_argument("--budget", type=float, default=None, metavar="EUR",
-                      help="Refuse the plan if worst-case spend exceeds this.")
+                      help="Refuse the plan if the WHOLE batch's worst-case spend "
+                           "(all --count jobs x price x --minutes) exceeds this. One cap for "
+                           "the batch, not per job, and independent of the region spread.")
     plan.add_argument("--live", action="store_true",
                       help="Read real per-region quota and availability from the API "
                            "(needs credentials) instead of the offline catalog tables.")
@@ -171,12 +195,17 @@ def main(argv=None) -> int:
     )
     _add_target_args(sweep)
     _add_requirement_args(sweep, with_count=False)
-    sweep.add_argument("--upload", action="append", default=[], metavar="DIR",
-                       help="Local dir to rsync to ~/<name> on each instance (repeatable).")
+    sweep.add_argument("--upload", action="append", default=[], metavar="DIR[:DEST]",
+                       help="Local dir to rsync up to each instance (repeatable). 'DIR' lands "
+                            "at ~/<basename>; 'SRC:DEST' lands SRC at ~/DEST, so the remote "
+                            "name need not match the local one (e.g. a worktree: "
+                            "--upload /path/1DSim3-wt:1DSim3).")
     sweep.add_argument("--script", default=None, metavar="FILE",
                        help="Per-job bash script; reads $FLUX_LABEL and $FLUX_JOB.")
     sweep.add_argument("--jobs", default=None, metavar="FILE",
-                       help="Jobs file: each line 'LABEL = PARAMS' (PARAMS -> $FLUX_JOB).")
+                       help="Jobs file: each line 'LABEL = PARAMS' (PARAMS -> $FLUX_JOB). "
+                            "Blank lines, whole-line '#' comments and inline '# ...' comments "
+                            "are stripped from both label and params.")
     sweep.add_argument("--fetch", default=None, metavar="REMOTE",
                        help="Home-relative artifact dir pulled per job into <into>/<label>/.")
     sweep.add_argument("--into", default="cloud-sweep", metavar="DIR",
@@ -194,16 +223,23 @@ def main(argv=None) -> int:
     sweep.add_argument("--max-minutes", type=int, default=30,
                        help="Per-job remote wall-clock cap; kills a hung job (default 30).")
     sweep.add_argument("--budget", type=float, default=None, metavar="EUR",
-                       help="Refuse to start if worst-case cost (jobs x price x cap) exceeds this; "
-                            "an unpriced flavor is refused rather than skipping the guard.")
+                       help="Hard cap on the WHOLE SWEEP's worst-case spend, not a per-job cap: "
+                            "the guard computes (total jobs) x (flavor EUR/hr) x (--max-minutes) "
+                            "-- every job running to its full wall cap -- and refuses to start "
+                            "above this. With --regions the per-region shards' worst cases are "
+                            "SUMMED against this one number, so the cap is independent of how "
+                            "many regions the sweep spans (regions buy wall-clock, not spend). "
+                            "An unpriced flavor is refused rather than skipping the guard.")
     sweep.add_argument("--plan", action="store_true",
                        help="Resolve the spec and print the cost/budget (and quota) preview without launching (dry run).")
     sweep.add_argument("--image", default=None,
                        help="Boot from this image name instead of the auto-selected image.")
     sweep.add_argument("--resume", action="store_true",
-                       help="Re-attach to still-running detached jobs from an interrupted sweep "
-                            "(reads <into>/*/.flux_attach/); collect + tear down. Needs only --into "
-                            "(and --cloud/--region); --jobs/--script/--fetch come from the records.")
+                       help="Continue an interrupted sweep: re-attach to its still-running "
+                            "detached jobs (reads <into>/*/.flux_attach/), collect and tear them "
+                            "down. Needs only --into (and --cloud/--region). Pass --jobs (with "
+                            "--script/--fetch) as well to ALSO launch the jobs of that file that "
+                            "never started -- jobs already collected are skipped.")
     sweep.add_argument("--strict-regions", action="store_true",
                        help="Refuse the whole sweep if ANY requested region cannot fit >=1 "
                             "instance of the chosen flavor (exact-width mode). Default: drop "
@@ -252,8 +288,14 @@ def main(argv=None) -> int:
     reap.add_argument("--yes", action="store_true",
                       help="Skip confirmation for expired-stamped instances (non-interactive reap).")
     reap.add_argument("--all", action="store_true", dest="take_all",
-                      help="Also take keep-flagged / within-TTL / unstamped-legacy instances; "
-                           "these always require the interactive confirmation.")
+                      help="Also take keep-flagged / within-TTL / unstamped-legacy instances. "
+                           "Interactive confirmation is required unless --force is also given.")
+    reap.add_argument("--force", action="store_true",
+                      help="Non-interactive confirmation for EVERYTHING --all selects, including "
+                           "instances still inside their TTL (a live fleet). This kills running "
+                           "work: it exists so a runaway fleet can be stopped from a script or a "
+                           "non-tty session without piping `yes`, which is indiscriminate and "
+                           "answers prompts nobody read. Implies --yes.")
 
     push = sub.add_parser(
         "push",
@@ -333,7 +375,7 @@ def main(argv=None) -> int:
         if args.command == "reap":
             from .reap import run_reap
             return run_reap(cloud=args.cloud, region=args.region, regions=args.regions,
-                            yes=args.yes, take_all=args.take_all)
+                            yes=args.yes, take_all=args.take_all, force=args.force)
 
         if args.command == "push":
             from .objstore import run_push

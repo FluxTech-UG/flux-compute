@@ -17,7 +17,9 @@ annotates each listing with the decision basis:
 
 A server that is neither stamped nor name-prefixed is never listed as reapable
 and never touched. --yes skips confirmation for the expired-stamped bucket
-only; everything --all adds always requires the interactive confirmation.
+only; everything --all adds needs a confirmation of its own -- interactive by
+default, or `--all --force` for the non-interactive case (stopping a runaway
+fleet from a script or a session with no tty).
 Exit is nonzero when expired-stamped or unstamped-legacy strays remain.
 """
 from __future__ import annotations
@@ -26,7 +28,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .auth import configured_regions, connect
+from .auth import configured_regions, connect, parse_region_list
 from .flavors import classify
 from .provision import (
     FLUX_CREATED_BY,
@@ -214,7 +216,8 @@ def _reap_one(conn, c: Candidate) -> bool:
     return True
 
 
-def run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False) -> int:
+def run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False,
+             force=False) -> int:
     """Hunt strays across regions, because servers and quota are BOTH per region.
 
     With no --region/--regions, every region the cloud entry is configured for is
@@ -223,25 +226,32 @@ def run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False) -
     billed elsewhere. A region that cannot be scanned is reported and the exit
     code is nonzero, but the remaining regions are still swept -- one unreachable
     region must never mask strays in the others.
+
+    `force` is the explicit non-interactive confirmation for the --all buckets
+    (see `_reap_region`).
     """
     if regions:
-        targets = [s.strip() for s in str(regions).split(",") if s.strip()]
-        if not targets:
-            raise RuntimeError("--regions was given but named no region")
+        targets = parse_region_list(regions)
     elif region:
         targets = [region]
     else:
         targets = configured_regions(cloud)
 
+    if force and not take_all:
+        raise RuntimeError(
+            "--force only means anything with --all: on its own the expired-stamped "
+            "bucket is already non-interactive via --yes. Use `--all --force` to take "
+            "within-TTL / keep-flagged / legacy instances without a prompt.")
+
     if len(targets) == 1:
-        return _reap_region(cloud, targets[0], yes, take_all)
+        return _reap_region(cloud, targets[0], yes, take_all, force)
 
     print(f"reap: scanning {len(targets)} configured region(s): {', '.join(targets)}\n")
     rc = 0
     for r in targets:
         print(f"--- region {r}")
         try:
-            rc |= _reap_region(cloud, r, yes, take_all)
+            rc |= _reap_region(cloud, r, yes, take_all, force)
         except Exception as exc:
             print(f"reap: region {r} could not be scanned: "
                   f"{type(exc).__name__}: {str(exc)[:160]}", file=sys.stderr)
@@ -250,7 +260,7 @@ def run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False) -
     return rc
 
 
-def _reap_region(cloud, region, yes, take_all) -> int:
+def _reap_region(cloud, region, yes, take_all, force=False) -> int:
     conn = connect(cloud=cloud, region=region)
     now = datetime.now(timezone.utc)
     servers = list(conn.compute.servers(details=True))
@@ -269,7 +279,7 @@ def _reap_region(cloud, region, yes, take_all) -> int:
     reaped = set()
 
     if auto:
-        if yes or _confirm(f"Delete {len(auto)} expired-stamped instance(s)? [y/N] "):
+        if yes or force or _confirm(f"Delete {len(auto)} expired-stamped instance(s)? [y/N] "):
             for c in auto:
                 if _reap_one(conn, c):
                     reaped.add(c.server_id)
@@ -277,11 +287,20 @@ def _reap_region(cloud, region, yes, take_all) -> int:
             print("reap: expired-stamped instances left in place (not confirmed).")
 
     if extra:
-        # Everything beyond the expired-stamped bucket always requires the
-        # interactive confirmation; --yes deliberately does not extend to it.
+        # Everything beyond the expired-stamped bucket needs an explicit
+        # confirmation, because it can kill a live fleet: --yes deliberately does
+        # not extend to it. `--force` is that confirmation given up front, for the
+        # case the interactive prompt cannot serve -- stopping a runaway fleet
+        # from a script or a session with no tty. It is a separate flag rather
+        # than a widened --yes so that "skip the routine prompt" and "kill running
+        # work" can never be the same keystroke, and it beats the alternative that
+        # was actually reached for (`yes | flux-compute reap --all`), which
+        # answers every prompt in the command blind, including ones added later.
         print(f"--all: {len(extra)} non-expired candidate(s) "
               "(keep-flagged / within-ttl / unstamped-legacy).")
-        if _confirm(f"Also delete these {len(extra)} instance(s)? [y/N] "):
+        if force:
+            print(f"--force: taking all {len(extra)} without confirmation.")
+        if force or _confirm(f"Also delete these {len(extra)} instance(s)? [y/N] "):
             for c in extra:
                 if _reap_one(conn, c):
                     reaped.add(c.server_id)

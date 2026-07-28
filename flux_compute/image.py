@@ -19,6 +19,10 @@ import os
 
 from .auth import connect
 from .launch import resolve_spec
+# How long to wait for the OVH snapshot, and therefore how much TTL headroom the
+# bake instance needs beyond its setup script. One constant, used for both.
+SNAPSHOT_WAIT_S = 1200
+
 from .provision import (
     _gpu_instance, _name, _print_plan, _region, _rsync_up, _scp_up, _ssh,
     ttl_minutes_for,
@@ -46,8 +50,9 @@ def bake(cloud=None, region=None, name=None, script=None, flavor=None,
             f"image {name!r} already exists ({len(existing)} found). "
             "Use --replace to rebuild, or pick another --name.")
 
-    # TTL cap: the setup script's wall cap plus the snapshot wait (20 min).
-    bake_ttl = ttl_minutes_for(-(-setup_timeout // 60) + 20)
+    # TTL cap: the setup script's wall cap plus the snapshot wait, both from the
+    # one SNAPSHOT_WAIT_S below so the budget and the actual wait cannot drift.
+    bake_ttl = ttl_minutes_for(-(-setup_timeout // 60) + -(-SNAPSHOT_WAIT_S // 60))
     with _gpu_instance(conn, spec, _name("bake"), ttl_minutes=bake_ttl) as (server, ip, keyfile):
         for local in uploads:
             base = os.path.basename(os.path.abspath(local.rstrip("/")))
@@ -61,7 +66,8 @@ def bake(cloud=None, region=None, name=None, script=None, flavor=None,
         if res.returncode != 0:
             raise RuntimeError(f"setup script exited {res.returncode}; image not created")
         print(f"snapshotting to image '{name}' (this can take a few minutes) ...")
-        img = conn.compute.create_server_image(server, name=name, wait=True, timeout=1200)
+        img = conn.compute.create_server_image(server, name=name, wait=True,
+                                              timeout=SNAPSHOT_WAIT_S)
         print(f"image created: {name} ({img.id})")
 
     if existing and replace:

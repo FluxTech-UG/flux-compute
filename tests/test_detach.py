@@ -303,3 +303,102 @@ def test_attach_record_tolerates_none_cloud_and_region():
         keyfile="/k", remote_script="j.sh", fetch="out", into="cloud-sweep",
         cap_seconds=600, launch_epoch=1.0)
     assert AttachRecord.from_json(rec.to_json()) == rec
+
+
+# --- universal allocator tuning (host-RAM mitigation at the provision layer) ---
+
+def test_launcher_applies_the_glibc_arena_cap():
+    """The OOM mitigation belongs to every job, not to each consumer's script."""
+    ls = launcher_script("job.sh", 600)
+    assert "MALLOC_ARENA_MAX" in ls and "MALLOC_TRIM_THRESHOLD_" in ls
+
+
+def test_launcher_lets_a_preset_value_win():
+    """':-' expansion: a job script's own export (or a caller's env prefix) still
+    overrides, so consumer-side settings keep working, redundantly."""
+    ls = launcher_script("job.sh", 600)
+    assert 'MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"' in ls
+    assert 'MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"' in ls
+
+
+def test_launcher_preloads_tcmalloc_only_when_already_installed():
+    """Opportunistic: no apt round-trip in front of every job, and never
+    clobbering an LD_PRELOAD the caller set."""
+    ls = launcher_script("job.sh", 600)
+    assert "libtcmalloc_minimal" in ls and "ldconfig" in ls
+    assert 'if [ -z "${LD_PRELOAD:-}" ]' in ls
+    assert "apt-get" not in ls
+
+
+def test_launcher_tuning_precedes_the_job_spawn():
+    ls = launcher_script("job.sh", 600)
+    assert ls.index("MALLOC_ARENA_MAX") < ls.index("setsid --fork")
+
+
+# --- on_stuck: a sustained SSH blackout is surfaced, not retried in silence ----
+
+def test_stuck_handler_fires_on_a_sustained_blackout():
+    stuck = []
+    _run([PollAttempt.failed("ssh timed out")] * 4 + [PollAttempt.connected("\x1eSIZE=0;RC=0")],
+         on_stuck=lambda n, secs: stuck.append((n, secs)), stuck_after=4)
+    assert len(stuck) == 1 and stuck[0][0] == 4
+    assert stuck[0][1] > 0                    # reports how long it has been down
+
+
+def test_stuck_handler_re_fires_while_the_blackout_continues():
+    stuck = []
+    _run([PollAttempt.failed("ssh timed out")] * 8 + [PollAttempt.connected("\x1eSIZE=0;RC=0")],
+         on_stuck=lambda n, secs: stuck.append(n), stuck_after=4)
+    assert stuck == [4, 8]
+
+
+def test_stuck_handler_does_not_fire_on_a_brief_flap():
+    stuck = []
+    _run([PollAttempt.failed("flap"),
+          PollAttempt.connected("\x1eSIZE=0;RC="),
+          PollAttempt.failed("flap"),
+          PollAttempt.connected("\x1eSIZE=0;RC=0")],
+         on_stuck=lambda n, secs: stuck.append(n), stuck_after=4)
+    assert stuck == []
+
+
+def test_a_connected_read_resets_the_blackout_counter():
+    """Only transport failures count: a garbled trailer is a LIVE ssh, so it must
+    not be mistaken for an unreachable host."""
+    stuck = []
+    _run([PollAttempt.failed("down")] * 3
+         + [PollAttempt.connected("garbled, no trailer")]     # connected but unparseable
+         + [PollAttempt.failed("down")] * 3
+         + [PollAttempt.connected("\x1eSIZE=0;RC=0")],
+         on_stuck=lambda n, secs: stuck.append(n), stuck_after=4)
+    assert stuck == []
+
+
+def test_a_raising_stuck_handler_never_breaks_the_follow_loop():
+    """Only the local deadline may abort the follow; a failing self-heal may not."""
+    def boom(n, secs):
+        raise RuntimeError("network API down")
+
+    _, out = _run([PollAttempt.failed("down")] * 4 + [PollAttempt.connected("\x1eSIZE=0;RC=0")],
+                  on_stuck=boom, stuck_after=4)
+    assert out.reason == "done" and out.rc == 0
+
+
+# --- pending (pre-boot) attach records -----------------------------------------
+
+def test_pending_record_round_trips_without_boot_time_facts():
+    rec = AttachRecord(
+        label="alpha", cloud="flux-ovh", region="GRA11",
+        name="flux-compute-sweep-abcd1234", remote_script="job.sh", fetch="out",
+        into="cloud-sweep", cap_seconds=1800, launch_epoch=1.0)
+    assert not rec.attachable                     # no ip / key: killable, not collectable
+    assert rec.name and rec.server_id == "" and rec.ip == ""
+    assert AttachRecord.from_json(rec.to_json()) == rec
+
+
+def test_full_record_is_attachable():
+    rec = AttachRecord(
+        label="alpha", cloud=None, region=None, name="n", remote_script="j.sh",
+        fetch="out", into="cloud-sweep", cap_seconds=600, launch_epoch=1.0,
+        server_id="srv-1", ip="1.2.3.4", keyfile="/k")
+    assert rec.attachable

@@ -102,11 +102,44 @@ end-to-end "is the API working?" check.
 - **`sweep --jobs FILE --max-parallel K --budget EUR`** — fan out one instance per
   job, with a pre-flight worst-case cost guard and a per-job wall-clock cap. Each
   job runs **detached** on its VM and is followed by a reconnect-tolerant poll
-  loop, so a laptop sleep does not kill it; `sweep --resume` re-attaches to an
+  loop, so a laptop sleep does not kill it; `sweep --resume` continues an
   interrupted run (see *Surviving laptop sleep* below). Add
   **`--regions A,B,C`** to shard one sweep across several regions at once (see
   *Multi-region sweeps* below) — the way to run a fleet wider than one region's
   quota.
+
+### The jobs file
+
+One job per line, `LABEL = PARAMS`. The label names the per-job artifact
+subdirectory; `PARAMS` reaches the job script verbatim as `$FLUX_JOB` (and the
+label as `$FLUX_LABEL`). A line with no `=` is both label and params.
+
+```
+# a whole-line comment
+anchor      = --select anchor
+heavy_nx128 = --select nx128 --resume    # inline comments are stripped too
+```
+
+Comments — whole-line and inline — and surrounding whitespace are stripped from
+**both** the label and the params, so what the remote receives is exactly the
+parameters. A `#` only opens a comment when it is unquoted and at the start of a
+line or preceded by whitespace, so `--tag run#3` and `--note "a # b"` keep their
+hashes, exactly as a shell would read them.
+
+### Uploads
+
+`--upload DIR` rsyncs `DIR` to `~/<basename>` on each instance.
+`--upload SRC:DEST` lands `SRC` at `~/DEST` instead, for when the remote name
+must differ from the local one — a git worktree being the usual case:
+
+```bash
+--upload /path/to/1DSim3-experiment:1DSim3     # arrives as ~/1DSim3
+```
+
+Uploads always exclude the heavy and hazardous trees: VCS and cache dirs, and
+any `.flux_attach` records or the sweep's own `--into` results dir when it lives
+inside an upload source (a live fleet writes and deletes those records while the
+upload runs).
 - **`regions [--regions A,B,C] [--flavor NAME] [--json]`** — live, read-only
   per-region occupancy: quota (vCPU / instances / RAM used vs total), the running
   flux-compute instances occupying each region (name, flavor, age, TTL bucket) and
@@ -114,9 +147,11 @@ end-to-end "is the API working?" check.
   `b3-32`) still fit the remaining headroom. `--json` is the machine-readable
   shape for the frontend region-status button and for launchers that check
   occupancy before fanning out. Safe against live fleets (read-only throughout).
-- **`reap [--yes] [--all]`** — list every flux-compute instance with age, hourly
-  price and accrued cost; delete the ones past their stamped TTL (see Cost
-  guardrails below).
+- **`reap [--yes] [--all] [--force]`** — list every flux-compute instance with
+  age, hourly price and accrued cost; delete the ones past their stamped TTL
+  (see Cost guardrails below). `--all --force` is the non-interactive way to
+  take instances still inside their TTL, for stopping a runaway fleet from a
+  script or a session with no tty.
 - **`push DIR CONTAINER`** — durable artifact copies to OVH Object Storage (Swift).
 
 ### Fleet planning (size the experiment to the machine)
@@ -259,13 +294,25 @@ avoid this in two halves (`flux_compute/detach.py`):
    artifacts are fetched, and the VM is torn down — the same success path as
    before.
 
+If SSH stops working for every job at once — the usual cause being the operator's
+**public IP moving** out of the one address each instance's security group allows
+— the poll loop says so instead of retrying in silence: after a few consecutive
+transport failures it prints `SSH unreachable since <time>`, re-reads the public
+IP, and opens ingress for the new one, after which polling recovers on its own.
+(A blackout used to be indistinguishable from a healthy long job, since both
+produce no output.)
+
 For the harder case — the process is fully killed (a sleep long enough to be
 terminated, a closed terminal) — each sweep job persists an **attach record** and
-a copy of its ephemeral key under `<into>/<label>/.flux_attach/`. Re-attach and
-finish with:
+a copy of its ephemeral key under `<into>/<label>/.flux_attach/`. Continue with:
 
 ```bash
+# re-attach to what is still running:
 flux-compute sweep --resume --into cloud-sweep --cloud flux-ovh
+
+# ... and also launch the jobs of the file that never started:
+flux-compute sweep --resume --into cloud-sweep --cloud flux-ovh \
+    --jobs jobs.txt --script job.sh --fetch out
 ```
 
 `--resume` scans `<into>` for in-flight jobs, re-establishes the poll loop against
@@ -273,6 +320,52 @@ each still-running VM, and on completion collects the log + artifacts and tears
 the VM down. A VM already gone (reaped past its TTL, or torn down) is recorded as
 lost. The `.flux_attach/` dir is removed on clean teardown, so its presence is
 exactly the set of jobs still needing collection.
+
+Given `--jobs` (with `--script`/`--fetch`) it then **continues the jobs file**:
+every job that is neither in flight nor already collected is launched now, on the
+normal sweep path with the same quota clamp and budget guard. Jobs already
+collected — a `job.log` was pulled, whatever the outcome — are skipped, so
+`--resume` continues a sweep rather than retrying its failures. Without `--jobs`
+it only re-attaches, unchanged.
+
+The record is written **before** the instance boots (with the instance name,
+which is generated locally), so a launcher killed mid-boot leaves a VM that
+`--resume` can still find and tear down instead of an unnamed orphan billing in
+the console. Such a VM can be killed but not collected — its ephemeral key was
+never persisted — and `--resume` reports exactly that.
+
+### When a job dies: what the status line means
+
+`sweep` records one line per job, and the return code is explained rather than
+guessed:
+
+| rc | reported as |
+|---|---|
+| 0 | `ok` |
+| 124 | `job timed out (remote cap)` — `timeout` TERM'd it at `--max-minutes` |
+| 137 at ~its cap | `job timed out (remote cap; SIGKILL after TERM)` |
+| 137 far short of its cap, kernel log confirms | `OOM-killed (rc=137, kernel oom-killer confirmed ...)` |
+| 137 far short of its cap, no evidence | `killed (rc=137, SIGKILL ...) - cause unknown` |
+| other nonzero | `job nonzero` |
+
+137 is `128 + SIGKILL` and is genuinely ambiguous: the wall cap's kill-after
+escalation and the kernel OOM-killer both produce it. Reading every 137 as a
+timeout sent an OOM investigation chasing phantom slow jobs, so a sub-cap 137
+now triggers a kernel-log read on the still-live VM (`dmesg`/`journalctl -k`)
+before teardown, and is never called a timeout. A log that cannot be read is
+reported as unknown, never as innocence.
+
+**Artifacts are fetched on every path**, not only after a clean exit — a job
+killed by its cap, by the OOM-killer, or abandoned at the local deadline has
+still written checkpoints and partial results, and the instance is about to be
+deleted. Those partial fetches are best-effort and are labelled `PARTIAL`.
+
+Every job also runs with the glibc allocator capped (`MALLOC_ARENA_MAX=2`,
+a lowered trim threshold, and tcmalloc preloaded when the image already has it).
+A thread pool otherwise spawns up to `8 × ncpu` malloc arenas and fragments large
+transient buffers across them until RSS ratchets into the OOM-killer on a VM
+whose real working set fits. A job script's own `export` still wins, so
+consumer-side settings keep working.
 
 ### Tested and rejected on OVH: baked images
 
@@ -285,12 +378,16 @@ the stock image + per-job install.
 
 "Every provisioned instance tears down" is enforced by mechanism, not trust:
 
-- **Hard spend cap**: `sweep --budget EUR` refuses to start when worst-case
-  spend (jobs x price x wall cap) exceeds the cap, and refuses outright when the
-  flavor has no known price. With `--regions`, the shards' worst cases are summed
-  against the one budget. Concurrency is clamped to compute-quota headroom, read
-  live from the API **per region** (64 vCPUs / 50 instances each as measured
-  2026-07-27 — 4 concurrent V100S, or 8 of BHS5's 8-vCPU V100).
+- **Hard spend cap**: `sweep --budget EUR` caps **the whole sweep's** worst case,
+  not one job's. The guard computes `(total jobs) × (EUR/hr) × (--max-minutes)` —
+  every job running to its full wall cap — and refuses to start above the number;
+  it refuses outright when the flavor has no known price, since a money cap that
+  cannot see the price is not a cap. With `--regions` the per-region shards' worst
+  cases are **summed against that one budget**, so the cap is *independent of how
+  many regions the sweep spans*: regions buy wall-clock, not spend. Concurrency is
+  clamped to compute-quota headroom, read live from the API **per region** (64
+  vCPUs / 50 instances each as measured 2026-07-27 — 4 concurrent V100S, or 8 of
+  BHS5's 8-vCPU V100).
 - **Wall caps**: the remote job runs under a `timeout` wrapper on the VM, so a
   hung job is killed at its cap independently of the laptop (the local poll loop
   and `flux-compute reap`'s TTL stamp are the two further backstops).
@@ -304,11 +401,16 @@ the stock image + per-job install.
 - **`flux-compute reap`**: auto-deletes only instances that are positively
   metadata-stamped AND past their stamped expiry (`--yes` for non-interactive
   use), removing the same-named keypair and security group with them. Everything
-  else it only reports, annotated with the decision basis: keep-flagged and
-  unstamped-legacy (name-prefix, no stamp) instances need `--all` plus an
-  interactive confirmation; servers it cannot positively identify as
-  flux-compute-created are never listed or touched. Exits nonzero while strays
-  remain.
+  else it only reports, annotated with the decision basis: keep-flagged,
+  within-TTL and unstamped-legacy (name-prefix, no stamp) instances need `--all`
+  plus a confirmation — interactive by default, or an explicit `--force` for a
+  script or a session with no tty (`--force` alone is refused; it means something
+  only with `--all`). Two flags rather than one widened `--yes`, so "skip the
+  routine prompt" and "kill running work" can never be the same keystroke — and
+  so nobody has to reach for `yes | flux-compute reap --all`, which answers every
+  prompt in the command blind, including ones added later. Servers it cannot
+  positively identify as flux-compute-created are never listed or touched. Exits
+  nonzero while strays remain.
 - **Stray visibility**: every command that connects (`doctor`, `preflight`,
   `run`, `sweep`, `bake`, `push`) first surfaces any stranded or kept instance
   with its accrued cost and points at `reap` — advisory only; no command other

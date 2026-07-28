@@ -30,10 +30,11 @@ import time
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from . import detach
-from .auth import connect
+from .auth import connect, resolve_region_name
 from .launch import resolve_spec
 
 # Provenance + TTL metadata stamped on every created server. `flux-compute
@@ -65,6 +66,34 @@ BACKOFF_MAX_S = 60.0
 # A resume after a full restart gets at least this long to reach a job whose
 # original deadline may already have passed while the orchestrator was down.
 RESUME_MIN_DEADLINE_S = 300
+
+# Remote exit codes of the `timeout --signal=TERM --kill-after=N CAP ...` wrapper
+# the detached launcher wraps every job in (detach.launcher_script).
+#
+# 124 is unambiguous: `timeout` TERM'd the job at its cap.
+# 137 is 128+SIGKILL(9) and is AMBIGUOUS -- `timeout`'s own --kill-after
+# escalation raises it, but so does the kernel OOM-killer, and the two mean
+# opposite things. Reading every 137 as "job timed out (remote cap)" is what sent
+# an OOM investigation chasing phantom slow jobs; a 137 far short of its cap was
+# killed by something else, and saying so is the whole point of _classify_exit.
+RC_CAP_TIMEOUT = 124
+RC_SIGKILL = 137
+# A genuine cap kill lands at (or just past) the cap. Below this fraction of the
+# cap, "the cap did it" is not a tenable explanation.
+CAP_KILL_MIN_FRACTION = 0.9
+# Kernel-log markers the OOM-killer leaves behind.
+_OOM_MARKERS = ("out of memory", "oom-kill", "oom_kill", "oom_reaper", "killed process")
+# Read the kernel ring buffer however this host allows it: dmesg is often
+# restricted to root (kernel.dmesg_restrict), and journald may or may not be the
+# one carrying it. Best-effort by construction -- an empty read is "not
+# confirmed", never "confirmed absent".
+_KERNEL_LOG_CMD = (
+    "{ sudo -n dmesg -T 2>/dev/null || sudo -n dmesg 2>/dev/null "
+    "|| dmesg -T 2>/dev/null || dmesg 2>/dev/null "
+    "|| sudo -n journalctl -k -n 400 --no-pager 2>/dev/null "
+    "|| journalctl -k -n 400 --no-pager 2>/dev/null "
+    "|| true; } | tail -n 400"
+)
 
 
 def ttl_minutes_for(cap_minutes):
@@ -114,9 +143,16 @@ _CPU_SMOKE = (
 # mid-transfer, so rsync exits 24 and (with check=True) aborts the whole launch
 # — this stranded two fleets. Excluding it removes the self-race at the source;
 # `_rsync_up` additionally tolerates exit 24 as belt-and-suspenders.
+#
+# `.flux_attach` is the general form of that hazard and the one that actually
+# holds: `--into` is configurable, so excluding only the default `cloud-sweep`
+# left every non-default results tree exposed. The attach dirs are excluded by
+# name wherever they live, and callers additionally pass their own `--into` dir
+# via `extra_excludes` so fetched results never re-enter an upload either.
 _RSYNC_EXCLUDES = (
     ".git", ".jax_cache", ".pche_cache", "outputs", "__pycache__",
     ".venv", ".pytest_cache", "*.egg-info", "cc-logs", "cloud-sweep",
+    ".flux_attach",
 )
 
 
@@ -127,9 +163,7 @@ class TeardownStrandError(RuntimeError):
 
 
 def _region(conn, region):
-    return (region
-            or getattr(getattr(conn, "config", None), "region_name", None)
-            or os.environ.get("OS_REGION_NAME") or "(unknown)")
+    return resolve_region_name(conn, region)
 
 
 def _cloud_name(conn):
@@ -270,9 +304,46 @@ def _scp_down(ip, keyfile, remote, local, timeout=120):
         capture_output=True, text=True, timeout=timeout)
 
 
-def _rsync_up(local, ip, keyfile, dest):
+def parse_upload_spec(spec):
+    """Parse one ``--upload`` value into ``(local_src, remote_dest)``.
+
+    Two forms, and the mapping form is why this exists:
+
+      ``DIR``           -> uploaded to ``~/<basename of DIR>`` (unchanged behavior)
+      ``SRC:DEST``      -> uploaded to ``~/DEST``, whatever SRC is named
+
+    Without the mapping form, the only way to land a directory under a different
+    remote name was to build a local symlink named like the destination and
+    upload that -- a workaround at the call site for a missing feature here.
+
+    Split on the LAST colon: DEST is a remote home-relative name and never
+    contains one, while a local path may. A DEST that is absolute, escapes home
+    (``..``), or is empty is refused, as is a source that does not exist -- so a
+    mistyped spec fails at parse time with the remedy, rather than rsyncing
+    nothing or writing outside the home dir.
+    """
+    text = str(spec)
+    src, dest = (text.rsplit(":", 1) if ":" in text else (text, None))
+    src = src.rstrip("/") or "/"
+    if not os.path.isdir(src):
+        hint = (f" (parsed as SRC={src!r} DEST={dest!r}; pass a bare path if the "
+                "colon is part of the directory name)" if dest is not None else "")
+        raise RuntimeError(f"--upload source {src!r} is not an existing directory{hint}")
+    if dest is None:
+        return src, os.path.basename(os.path.abspath(src))
+    dest = dest.strip()
+    # Checked BEFORE any normalization, so an absolute path cannot be normalized
+    # into looking relative: the destination is joined onto the remote home dir.
+    if not dest or dest.startswith("/") or ".." in dest.split("/"):
+        raise RuntimeError(
+            f"--upload destination {dest!r} must be a non-empty path relative to the "
+            "remote home dir (no leading '/', no '..')")
+    return src, dest.rstrip("/")
+
+
+def _rsync_up(local, ip, keyfile, dest, extra_excludes=()):
     excludes = []
-    for e in _RSYNC_EXCLUDES:
+    for e in (*_RSYNC_EXCLUDES, *extra_excludes):
         excludes += ["--exclude", e]
     res = subprocess.run(
         ["rsync", "-az", "-e", _ssh_cmd(keyfile), *excludes,
@@ -298,6 +369,122 @@ def _rsync_down(ip, keyfile, remote, local):
         ["rsync", "-az", "-e", _ssh_cmd(keyfile),
          f"{SSH_USER}@{ip}:{remote.rstrip('/')}/", local.rstrip("/") + "/"],
         check=True)
+
+
+def rsync_down_best_effort(ip, keyfile, remote, local, _rsync=None):
+    """Fetch artifacts without letting a failure abort the caller. Returns True
+    when the fetch succeeded.
+
+    This is the fetch used on the paths where the job did NOT finish cleanly --
+    a local-deadline abort, a job killed by its cap or the OOM-killer. Those runs
+    still have partial results on disk (checkpoints, a resumable ledger, the
+    rows computed before the kill), and the VM is about to be torn down, so the
+    partial fetch is the last chance to keep them: skipping it turned a partial
+    result into a total loss and destroyed a fleet's worth of work once. The
+    remote dir may legitimately not exist yet, so failure here is reported and
+    swallowed, never raised.
+    """
+    fetch = _rsync or _rsync_down
+    try:
+        fetch(ip, keyfile, remote, local)
+        return True
+    except Exception as exc:
+        print(f"  partial fetch of ~/{remote} failed "
+              f"({type(exc).__name__}: {str(exc)[:100]}); nothing recovered.",
+              file=sys.stderr)
+        return False
+
+
+# --- why did the remote job die? (rc=137 is ambiguous) ------------------------
+
+@dataclass(frozen=True)
+class OomProbe:
+    """A read of the VM's kernel log looking for OOM-killer evidence.
+
+    ``confirmed`` False means "no evidence found", never "definitely not an OOM":
+    the log may be root-restricted, rotated, or on a host whose journal was not
+    reachable. Absence is reported as unknown, not as innocence.
+    """
+
+    confirmed: bool
+    summary: str = ""
+    read_ok: bool = False
+
+
+def oom_evidence(kernel_log):
+    """Pure: scan a kernel-log excerpt for OOM-killer markers -> ``OomProbe``."""
+    text = kernel_log or ""
+    hits = [ln.strip() for ln in text.splitlines()
+            if any(m in ln.lower() for m in _OOM_MARKERS)]
+    return OomProbe(confirmed=bool(hits), summary=(hits[-1][:200] if hits else ""),
+                    read_ok=bool(text.strip()))
+
+
+def probe_oom_kill(ip, keyfile, _ssh=_ssh):
+    """Read the VM's kernel log over SSH and look for the OOM-killer. Best-effort:
+    any failure returns an unconfirmed probe rather than raising, because this runs
+    on the teardown path where the job's own outcome must survive."""
+    try:
+        res = _ssh(ip, keyfile, _KERNEL_LOG_CMD, timeout=60, capture=True)
+    except Exception:
+        return OomProbe(confirmed=False)
+    return oom_evidence(getattr(res, "stdout", "") or "")
+
+
+def looks_like_cap_kill(elapsed_s, cap_seconds, *, fraction=CAP_KILL_MIN_FRACTION):
+    """Did this run live long enough for its own wall cap to be the killer?
+    Returns True / False, or None when there is no basis to judge."""
+    if elapsed_s is None or not cap_seconds or cap_seconds <= 0:
+        return None
+    return elapsed_s >= fraction * cap_seconds
+
+
+def _elapsed_phrase(elapsed_s, cap_seconds):
+    if elapsed_s is None:
+        return ""
+    cap = f" of {int(cap_seconds)}s cap" if cap_seconds else ""
+    return f" at {int(elapsed_s)}s{cap}"
+
+
+def classify_exit(rc, *, elapsed_s=None, cap_seconds=None, oom=None):
+    """Explain a remote job's return code honestly -> a short status string.
+
+    The rule that matters: a 137 is only called a cap timeout when the run
+    actually reached its cap. An OOM-killed job that died at 8 minutes of a
+    60-minute cap is reported as an OOM kill (or as an unexplained SIGKILL when
+    the kernel log could not confirm it), never as a timeout -- misreporting it
+    sends the next session tuning wall caps for a memory problem.
+    """
+    if rc == 0:
+        return "ok"
+    if rc == RC_CAP_TIMEOUT:
+        return "job timed out (remote cap)"
+    if rc != RC_SIGKILL:
+        return "job nonzero"
+
+    where = _elapsed_phrase(elapsed_s, cap_seconds)
+    if oom is not None and oom.confirmed:
+        detail = f": {oom.summary}" if oom.summary else ""
+        return f"OOM-killed (rc=137, kernel oom-killer confirmed{where}){detail}"
+    at_cap = looks_like_cap_kill(elapsed_s, cap_seconds)
+    if at_cap:
+        return f"job timed out (remote cap; SIGKILL after TERM{where})"
+    if at_cap is False:
+        why = ("no oom-killer evidence in the kernel log" if oom is not None and oom.read_ok
+               else "kernel log unavailable")
+        return (f"killed (rc=137, SIGKILL{where}, far short of the cap) - "
+                f"cause unknown: {why}")
+    return "killed (rc=137, SIGKILL) - cause unknown (no elapsed/cap basis to judge)"
+
+
+def explain_remote_kill(ip, keyfile, rc, *, elapsed_s, cap_seconds, _ssh=_ssh):
+    """Classify a finished job, probing the VM's kernel log first when the return
+    code is an ambiguous sub-cap SIGKILL. Must be called BEFORE teardown -- the
+    evidence dies with the instance."""
+    oom = None
+    if rc == RC_SIGKILL and looks_like_cap_kill(elapsed_s, cap_seconds) is not True:
+        oom = probe_oom_kill(ip, keyfile, _ssh=_ssh)
+    return classify_exit(rc, elapsed_s=elapsed_s, cap_seconds=cap_seconds, oom=oom)
 
 
 @contextmanager
@@ -431,19 +618,100 @@ def _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix="",
     return res.stdout
 
 
+def _sg_allows_ssh_from(conn, sg, cidr):
+    """Does this security group already permit SSH ingress from `cidr`?"""
+    for rule in conn.network.security_group_rules(security_group_id=sg.id):
+        if getattr(rule, "direction", None) != "ingress":
+            continue
+        if getattr(rule, "remote_ip_prefix", None) != cidr:
+            continue
+        lo = getattr(rule, "port_range_min", None)
+        hi = getattr(rule, "port_range_max", None)
+        if lo is None or hi is None or (lo <= 22 <= hi):
+            return True
+    return False
+
+
+def heal_ssh_ingress(conn, sg_name, _cidr=None):
+    """Re-read the caller's public IP and open SSH ingress for it if it moved.
+
+    Every instance's security group is created allowing SSH from ONE address --
+    the launcher's public IP at boot (`_public_ip_cidr`). If that address changes
+    while a fleet is running (a different network, a VPN toggling, an ISP
+    re-lease), every SSH to every job starts timing out at once and the poll loop
+    retries forever in silence: the fleet is alive, the work is fine, and nothing
+    can be collected. Re-opening ingress for the new address is the fix, and it is
+    the one repair worth attempting automatically, because the failure is global
+    and self-inflicted rather than a property of any job.
+
+    Returns a short description of what it did, or None when the address is
+    unchanged (in which case the blackout is something else). Additive only: the
+    stale rule is left in place, so a flapping address does not lock anyone out.
+    """
+    cidr = _cidr or _public_ip_cidr()
+    if cidr == "0.0.0.0/0":
+        return None            # the public-IP read itself failed; nothing to trust
+    sg = conn.network.find_security_group(sg_name)
+    if sg is None:
+        return None
+    if _sg_allows_ssh_from(conn, sg, cidr):
+        return None
+    conn.network.create_security_group_rule(
+        security_group_id=sg.id, direction="ingress", protocol="tcp",
+        port_range_min=22, port_range_max=22, remote_ip_prefix=cidr,
+        ethertype="IPv4")
+    return f"public IP moved: opened SSH ingress from {cidr} on security group {sg_name}"
+
+
+def make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None):
+    """Build the poll loop's `on_stuck` callback: say the host is unreachable, and
+    try the one repair that fixes it fleet-wide (`heal_ssh_ingress`).
+
+    Visibility is half the point. A sustained SSH blackout used to look exactly
+    like a healthy long job -- no output either way -- so a fleet sat frozen for
+    hours before anyone suspected it. This prints an escalating, timestamped
+    "SSH unreachable since ..." line instead.
+    """
+    emit = emit or (lambda msg: print(msg, file=sys.stderr))
+    clock = now or time.time
+
+    def _on_stuck(n_failures, seconds_unreachable):
+        since = time.strftime("%H:%M:%S", time.localtime(clock() - seconds_unreachable))
+        tag = f"[{label}] " if label else ""
+        emit(f"WARNING: {tag}SSH unreachable since {since} "
+             f"({n_failures} consecutive failed polls, {int(seconds_unreachable)}s); "
+             "the job itself may be fine and still running -- checking whether our "
+             "public IP moved out of the instance's allowed range ...")
+        try:
+            healed = heal_ssh_ingress(conn, sg_name)
+        except Exception as exc:
+            emit(f"         {tag}ingress re-check failed "
+                 f"({type(exc).__name__}: {str(exc)[:100]}); still retrying.")
+            return
+        if healed:
+            emit(f"         {tag}{healed}; polling should recover.")
+        else:
+            emit(f"         {tag}public IP unchanged and ingress still open; "
+                 "the instance or the network is the cause. Retrying until the "
+                 "local deadline.")
+
+    return _on_stuck
+
+
 def follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval,
-                        on_chunk=None, on_status=None, _ssh=_ssh):
+                        on_chunk=None, on_status=None, on_stuck=None, _ssh=_ssh):
     """Poll an already-launched detached job to completion (or a local abort).
 
     Returns the `PollOutcome`. Reconnection-tolerant: a failed poll is retried with
     backoff and never fatal; only `deadline_s` (measured from the first poll)
-    aborts. `on_chunk` receives new job.out fragments for a live log/stream.
+    aborts. `on_chunk` receives new job.out fragments for a live log/stream;
+    `on_stuck` (see `make_stuck_handler`) escalates a sustained SSH blackout.
     """
     run_poll = _make_poll_runner(ip, keyfile, _ssh=_ssh)
     return detach.poll_until_done(
         run_poll, poll_interval=poll_interval, deadline_s=deadline_s,
         backoff_base=BACKOFF_BASE_S, backoff_max=BACKOFF_MAX_S,
-        on_chunk=on_chunk, on_status=on_status)
+        on_chunk=on_chunk, on_status=on_status, on_stuck=on_stuck)
 
 
 def pull_job_log(ip, keyfile, log_path, _ssh=_ssh):
@@ -533,19 +801,22 @@ def run_job(cloud=None, region=None, flavor=None, uploads=(), script=None,
     spec = resolve_spec(conn, _region(conn, region), flavor=flavor, image=image)
     _print_plan(spec)
     ttl = ttl_minutes_for(-(-exec_timeout // 60))
-    with _gpu_instance(conn, spec, _name("run"), ttl_minutes=ttl, keep=keep) as (_server, ip, keyfile):
-        for local in uploads:
-            base = os.path.basename(os.path.abspath(local.rstrip("/")))
-            _rsync_up(local, ip, keyfile, base)
-            print(f"uploaded {local} -> ~/{base}/")
+    upload_pairs = [parse_upload_spec(u) for u in uploads]
+    name = _name("run")
+    with _gpu_instance(conn, spec, name, ttl_minutes=ttl, keep=keep) as (_server, ip, keyfile):
+        for local, dest in upload_pairs:
+            _rsync_up(local, ip, keyfile, dest)
+            print(f"uploaded {local} -> ~/{dest}/")
 
         rc = 0
+        deadline_hit = False
         if script:
             remote = os.path.basename(script)
             _scp_up(script, ip, keyfile, remote)
             cap = exec_timeout
             print(f"running ~/{remote} detached (remote cap {cap}s); "
                   "streaming output as it lands, surviving local disconnection ...")
+            started = time.time()
             _launch_detached(ip, keyfile, remote, cap)
 
             def _emit(chunk):
@@ -555,20 +826,36 @@ def run_job(cloud=None, region=None, flavor=None, uploads=(), script=None,
             outcome = follow_detached_job(
                 ip, keyfile, cap,
                 deadline_s=cap + LOCAL_GRACE_S, poll_interval=POLL_INTERVAL_RUN_S,
-                on_chunk=_emit)
+                on_chunk=_emit,
+                on_stuck=make_stuck_handler(conn, name))
+            elapsed = time.time() - started
             if outcome.reason == "deadline":
-                raise RuntimeError(
-                    f"local deadline reached without the job finishing (remote cap {cap}s "
-                    "+ grace); ~/job.rc never appeared -- the VM may be wedged (torn down now)")
-            rc = outcome.rc
-            print(f"\njob exited {rc}" + (" (killed by remote cap)" if rc in (124, 137) else ""))
+                # Do NOT raise yet: the artifacts below are the only surviving
+                # trace of the work, and the instance is about to be torn down.
+                deadline_hit = True
+                rc = -1
+                print(f"\nlocal deadline reached without the job finishing (remote cap {cap}s "
+                      "+ grace); fetching whatever exists before teardown ...", file=sys.stderr)
+            else:
+                rc = outcome.rc
+                print(f"\njob exited {rc}: "
+                      + explain_remote_kill(ip, keyfile, rc, elapsed_s=elapsed,
+                                            cap_seconds=cap))
 
         for spec_f in fetch:
             if ":" not in spec_f:
                 raise RuntimeError(f"--fetch expects REMOTE:LOCAL (home-relative), got {spec_f!r}")
             remote, local = spec_f.split(":", 1)
             os.makedirs(local, exist_ok=True)
-            _rsync_down(ip, keyfile, remote, local)
-            print(f"fetched ~/{remote} -> {local}")
+            if rc == 0:
+                _rsync_down(ip, keyfile, remote, local)
+                print(f"fetched ~/{remote} -> {local}")
+            elif rsync_down_best_effort(ip, keyfile, remote, local):
+                print(f"fetched ~/{remote} -> {local} (PARTIAL: the job did not finish cleanly)")
 
+        if deadline_hit:
+            raise RuntimeError(
+                f"local deadline reached without the job finishing (remote cap {exec_timeout}s "
+                "+ grace); ~/job.rc never appeared -- the VM may be wedged (torn down now). "
+                "Any artifacts that existed were fetched first.")
         return rc

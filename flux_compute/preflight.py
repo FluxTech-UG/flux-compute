@@ -7,12 +7,15 @@ public network, an NVIDIA-driver image), without launching anything.
 from __future__ import annotations
 
 from .auth import connect
-from .flavors import classify, recommended_for_sim
+from .flavors import (DEFAULT_SIM_FLAVOR, classify, recommended_for_sim,
+                      static_flavor_spec)
 from .launch import PUBLIC_NETWORK
 from .reap import warn_strays
 
-# A single V100S (t2-le-45) is 15 vCPU; treat that as the core-quota floor.
-_MIN_CORES = 15
+# The core-quota floor is "one default sim flavor fits", read from the flavor
+# catalog rather than restated: a catalog change must not leave a stale literal
+# here claiming a different card size.
+_MIN_CORES = static_flavor_spec(DEFAULT_SIM_FLAVOR).vcpus
 
 
 def gather(conn) -> dict:

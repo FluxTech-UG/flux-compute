@@ -290,7 +290,7 @@ def test_run_reap_scans_every_configured_region_by_default(monkeypatch):
     monkeypatch.setattr(reap_mod, "configured_regions",
                         lambda cloud: ["GRA11", "DE1", "UK1"])
     monkeypatch.setattr(reap_mod, "_reap_region",
-                        lambda cloud, region, yes, take_all: seen.append(region) or 0)
+                        lambda cloud, region, yes, take_all, force: seen.append(region) or 0)
 
     rc = reap_mod.run_reap(cloud="flux-ovh")
     assert rc == 0
@@ -301,7 +301,7 @@ def test_run_reap_explicit_region_scans_only_that_one(monkeypatch):
     from flux_compute import reap as reap_mod
     seen = []
     monkeypatch.setattr(reap_mod, "_reap_region",
-                        lambda cloud, region, yes, take_all: seen.append(region) or 0)
+                        lambda cloud, region, yes, take_all, force: seen.append(region) or 0)
     reap_mod.run_reap(cloud="flux-ovh", region="DE1")
     assert seen == ["DE1"]
 
@@ -312,7 +312,7 @@ def test_run_reap_unscannable_region_does_not_mask_the_others(monkeypatch):
     from flux_compute import reap as reap_mod
     seen = []
 
-    def _fake(cloud, region, yes, take_all):
+    def _fake(cloud, region, yes, take_all, force):
         seen.append(region)
         if region == "DE1":
             raise RuntimeError("no compute endpoint")
@@ -332,3 +332,69 @@ def test_run_reap_empty_regions_string_raises():
     from flux_compute.reap import run_reap
     with pytest.raises(RuntimeError, match="named no region"):
         run_reap(cloud="flux-ovh", regions=" , ")
+
+
+# --- --force: the non-interactive confirmation for the --all buckets ----------
+#
+# The alternative that was actually reached for to stop a runaway fleet was
+# `yes | flux-compute reap --all`, which answers every prompt in the command
+# blind. These lock the explicit flag's scope instead.
+
+def test_force_with_all_takes_within_ttl_instances_without_a_prompt(monkeypatch):
+    conn = _FakeReapConn(_live_fleet(foreign=True))
+    _wire(monkeypatch, conn, confirm=_no_prompt)     # any prompt fails the test
+    reap_mod.run_reap(cloud="c", region="DE1", take_all=True, force=True)
+    assert set(conn.deleted) == {"e1", "w1", "k1", "l1"}   # every flux-compute bucket
+    assert "f1" not in conn.deleted                        # foreign still never touched
+
+
+def test_force_implies_yes_for_the_expired_bucket(monkeypatch):
+    conn = _FakeReapConn(_live_fleet(within=False, keep=False, legacy=False))
+    _wire(monkeypatch, conn, confirm=_no_prompt)
+    reap_mod.run_reap(cloud="c", region="DE1", take_all=True, force=True)
+    assert conn.deleted == ["e1"]
+
+
+def test_force_without_all_is_refused(monkeypatch):
+    """--force alone would be a confusing synonym for --yes; make it say so."""
+    import pytest
+    conn = _FakeReapConn(_live_fleet())
+    _wire(monkeypatch, conn, confirm=_no_prompt)
+    with pytest.raises(RuntimeError, match="only means anything with --all"):
+        reap_mod.run_reap(cloud="c", region="DE1", force=True)
+
+
+def test_all_without_force_still_prompts(monkeypatch):
+    """The interactive default is unchanged: declining leaves everything extra."""
+    conn = _FakeReapConn(_live_fleet())
+    _wire(monkeypatch, conn, confirm=lambda prompt: prompt.startswith("Delete"))
+    reap_mod.run_reap(cloud="c", region="DE1", take_all=True)
+    assert conn.deleted == ["e1"]      # expired only; the --all prompt was declined
+
+
+# --- shared --regions parsing (was three implementations) --------------------
+
+def test_reap_dedupes_a_repeated_region(monkeypatch):
+    """reap and regions each re-implemented the comma parser WITHOUT sweep's
+    de-duplication, so `--regions DE1,DE1` scanned DE1 twice."""
+    seen = []
+    monkeypatch.setattr(reap_mod, "_reap_region",
+                        lambda cloud, region, yes, take_all, force: seen.append(region) or 0)
+    reap_mod.run_reap(cloud="flux-ovh", regions="DE1,DE1,GRA11,DE1")
+    assert seen == ["DE1", "GRA11"]
+
+
+def test_configured_regions_refuses_to_degrade_to_one_region(monkeypatch):
+    """An unreadable config used to silently become a single-region scan -- the
+    exact partial stray hunt the function exists to prevent."""
+    import pytest
+    from flux_compute import auth
+
+    class _Boom:
+        def __init__(self, *a, **kw):
+            raise RuntimeError("clouds.yaml is malformed")
+
+    import openstack.config
+    monkeypatch.setattr(openstack.config, "OpenStackConfig", _Boom)
+    with pytest.raises(RuntimeError, match="PER REGION"):
+        auth.configured_regions("flux-ovh")

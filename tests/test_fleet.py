@@ -389,3 +389,68 @@ def test_format_plan_returns_text():
     plan = plan_fleet(JobRequirements(100, 2.0, "cpu"))
     text = format_plan(JobRequirements(100, 2.0, "cpu"), plan)
     assert "fleet plan" in text and "flavor" in text and "worst case" in text
+
+
+# --- live quota: a partial read must not describe itself as fully live -------
+
+def test_live_region_cap_raises_when_a_USED_axis_is_missing():
+    """Defaulting a missing 'used' to 0 says the region is empty and inflates the
+    cap upward -- planning a fleet onto headroom that may already be occupied."""
+    from types import SimpleNamespace
+    import pytest
+    from flux_compute.fleet import _live_region_cap, static_flavor_spec
+
+    spec = static_flavor_spec("b3-8")
+    lim = SimpleNamespace(max_total_cores=64, max_total_instances=50,
+                          max_total_ram_size=496 * 1024,
+                          total_instances_used=0, total_ram_used=0)   # no cores_used
+    with pytest.raises(RuntimeError, match="vCPUs in use"):
+        _live_region_cap(spec, lim)
+
+
+def test_live_region_cap_substitutes_a_missing_MAX_and_says_which(monkeypatch):
+    from types import SimpleNamespace
+    from flux_compute.fleet import _live_region_cap, static_flavor_spec
+
+    spec = static_flavor_spec("b3-8")
+    lim = SimpleNamespace(total_cores_used=0, total_instances_used=0, total_ram_used=0,
+                          max_total_instances=50, max_total_ram_size=496 * 1024)
+    cap, substituted = _live_region_cap(spec, lim)      # no max_total_cores
+    assert substituted == {"vCPU quota"}
+    assert cap > 0
+
+
+def test_live_region_cap_full_read_substitutes_nothing():
+    from types import SimpleNamespace
+    from flux_compute.fleet import _live_region_cap, static_flavor_spec
+
+    spec = static_flavor_spec("b3-8")
+    lim = SimpleNamespace(total_cores_used=8, max_total_cores=64,
+                          total_instances_used=1, max_total_instances=50,
+                          total_ram_used=32 * 1024, max_total_ram_size=496 * 1024)
+    cap, substituted = _live_region_cap(spec, lim)
+    assert substituted == set()
+    # b3-8 is 2 vCPU / 8 GB, so vCPU binds: (64-8)/2 = 28, under the RAM bound
+    # ((496-32)/8 = 58) and the instance bound (50-1 = 49).
+    assert cap == 28
+
+
+def test_offline_note_is_built_from_the_catalog_constants():
+    """The note used to restate 64/50/496 as prose 450 lines from the constants."""
+    from flux_compute import fleet
+    from flux_compute.fleet import (CATALOG_QUOTA_CORES, CATALOG_QUOTA_INSTANCES,
+                                    CATALOG_QUOTA_RAM_GB, JobRequirements, plan_fleet)
+    plan = plan_fleet(JobRequirements(job_count=4, ram_gb_per_job=2, device="cpu"))
+    note = " ".join(plan.notes)
+    assert f"{CATALOG_QUOTA_CORES} vCPU" in note
+    assert f"{CATALOG_QUOTA_INSTANCES} instances" in note
+    assert f"{CATALOG_QUOTA_RAM_GB} GB" in note
+
+
+def test_gpu_region_advice_is_built_from_GPU_REGIONS():
+    import pytest
+    from flux_compute.fleet import GPU_REGIONS, JobRequirements, plan_fleet
+    with pytest.raises(RuntimeError) as exc:
+        plan_fleet(JobRequirements(job_count=1, ram_gb_per_job=2, device="gpu"),
+                   regions="SBG5")
+    assert ", ".join(GPU_REGIONS) in str(exc.value) or list(GPU_REGIONS)[0] in str(exc.value)

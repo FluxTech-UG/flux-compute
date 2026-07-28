@@ -66,9 +66,26 @@ runs), `flux-compute reap` auto-deletes only stamped instances past their
 expiry (keep-flagged and unstamped name-prefix matches are report-only, taken
 only via `--all` + confirmation, and unidentifiable servers are never touched),
 and every command that connects surfaces strays with accrued cost before doing
-its own work. `sweep --budget` is the hard spend cap and refuses unpriced
-flavors. Do not add a provisioning path that bypasses the TTL stamp or the
+its own work. Do not add a provisioning path that bypasses the TTL stamp or the
 verified teardown.
+
+**`--budget` caps the WHOLE sweep, not one job.** The guard is
+`(total jobs) × (EUR/hr) × (--max-minutes)` — every job at its full wall cap — and
+with `--regions` the shards' worst cases are summed against that single number.
+It is therefore **independent of the region count**: regions buy wall-clock, not
+spend. An unpriced flavor is refused rather than skipping the guard. Say this
+plainly wherever budget is documented; a "per job" reading has propagated into a
+consumer repo before.
+
+### A job's outcome is reported, never guessed.
+The remote wrapper's rc=137 is `128 + SIGKILL` and is genuinely ambiguous: the
+wall cap's kill-after escalation and the kernel OOM-killer both produce it. A
+sub-cap 137 triggers a kernel-log read on the still-live VM before teardown
+(`provision.explain_remote_kill`) and is reported as an OOM kill, a cap timeout,
+or an honest "cause unknown" — never blanket-labelled a timeout. Absence of
+evidence is reported as unknown, not as innocence. Artifacts are fetched on
+**every** teardown path, including the local-deadline and killed paths: partial
+results are the last trace of the work and the instance is about to be deleted.
 
 ## Layout
 
@@ -93,7 +110,13 @@ verified teardown.
   `regions:`-list fix, because the pin silently caps fleet width.
 - `flux_compute/sweep.py`: the fan-out, including per-region sharding
   (`parse_regions` / `allocate_concurrency` / `shard_jobs` / `Shard`, all pure
-  and tested). `--max-parallel` is the GLOBAL live-instance ceiling; each region
+  and tested). `parse_jobs` owns the jobs-file format and strips comments
+  (whole-line AND inline, quote-aware) from both label and params — the parse is
+  the single definition of what reaches `$FLUX_JOB`, so never add a compensating
+  strip in a consumer's job script. `_launch_jobs` is the shared launch path, used
+  both by a fresh sweep and by `--resume --jobs`, which continues the jobs file by
+  launching whatever `job_state` finds neither in flight nor collected.
+  `--max-parallel` is the GLOBAL live-instance ceiling; each region
   is additionally clamped to its own headroom. The region pre-flight is
   **graceful-degrade by default**: `_prepare_shards` returns `(shards, drops)`,
   and a region that cannot fit >=1 instance is dropped with a warning (occupants
@@ -107,8 +130,22 @@ verified teardown.
   is the shape the heat-mod-frontend region button and autonomous launchers read;
   the sweep pre-flight reuses `occupancy_line` for its drop warnings.
 - `flux_compute/doctor.py`: `flux-compute doctor`, the API health check.
+- `flux_compute/detach.py`: the sleep-survival machinery, all pure and unit-tested
+  (`provision.py` wires it to real SSH). `launcher_script` emits the detached
+  `setsid` + `timeout` launcher — which also applies the **universal glibc
+  allocator tuning** (arena cap + trim threshold, opportunistic tcmalloc preload),
+  so the host-RAM OOM mitigation belongs to every job rather than being re-derived
+  in each consumer's job script; a job script's own `export` still overrides.
+  `poll_until_done` is the reconnect-tolerant follow loop: only the local deadline
+  aborts it, and `on_stuck` escalates a sustained SSH blackout (see
+  `provision.make_stuck_handler`, which re-opens security-group ingress when the
+  caller's public IP has moved — the one failure that breaks every job at once).
+  `AttachRecord` is written in two stages, the first **before the instance boots**,
+  so a launcher killed mid-boot leaves a VM `--resume` can name and tear down.
 - `flux_compute/cli.py`: argparse entry point (`doctor`, `preflight`, `run`,
-  `plan`, `sweep`, `regions`, `reap`, `bake`, `push`). `plan` prints a fleet plan for a
+  `plan`, `sweep`, `regions`, `reap`, `bake`, `push`). Sets line-buffered
+  stdout/stderr at entry (`_stream_output`), so progress streams through a pipe
+  and no caller needs `PYTHONUNBUFFERED`. `plan` prints a fleet plan for a
   generic requirement (offline from catalog tables, or `--live`). `run`/`sweep`
   take the same requirement flags (`--ram-gb`, `--device`, `--batchable`,
   `--batch-width`, `--requirements FILE`): when given and `--flavor` is absent, the

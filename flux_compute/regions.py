@@ -17,12 +17,12 @@ credentials), and `gather_region_status` gathers the live per-region reads.
 from __future__ import annotations
 
 import json
-import os
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .auth import configured_regions, connect
+from .auth import (configured_regions, connect, parse_region_list,
+                   resolve_region_name)
 from .flavors import live_flavor_spec
 from .reap import find_candidates
 
@@ -115,9 +115,7 @@ def build_region_status(region, *, flavor, spec, quota, servers, now) -> RegionS
 
 
 def _region_name(conn, fallback):
-    return (fallback
-            or getattr(getattr(conn, "config", None), "region_name", None)
-            or os.environ.get("OS_REGION_NAME") or "(unknown)")
+    return resolve_region_name(conn, fallback)
 
 
 def _read_quota(lim) -> RegionQuota:
@@ -287,10 +285,7 @@ def _resolve_targets(cloud, region, regions):
     """The regions to show: an explicit --regions list, a single --region, else
     every region the cloud entry is configured for (like `reap`'s default scan)."""
     if regions:
-        targets = [s.strip() for s in str(regions).split(",") if s.strip()]
-        if not targets:
-            raise RuntimeError("--regions was given but named no region")
-        return targets
+        return parse_region_list(regions)
     if region:
         return [region]
     return configured_regions(cloud)

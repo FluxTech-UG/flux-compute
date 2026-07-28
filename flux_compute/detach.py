@@ -37,11 +37,45 @@ from dataclasses import asdict, dataclass
 # trailer. Job logs are text and never contain it, so the split is unambiguous.
 RS = "\x1e"
 
+# Consecutive ssh-transport failures before the poll loop escalates to its
+# ``on_stuck`` handler. Four polls is ~1 minute of sweep polling (or two
+# backoff-doubled retries): long enough not to fire on a single network flap,
+# short enough that a real blackout is surfaced in minutes rather than hours.
+STUCK_AFTER_POLLS = 4
+
 # Home-relative remote filenames the launcher writes and the poller reads.
 REMOTE_OUT = "job.out"        # combined stdout+stderr, tailed by the poller
 REMOTE_RC = "job.rc"          # integer return code, written only on completion
 REMOTE_PID = "job.pid"        # PID of the detached job supervisor
 REMOTE_LAUNCHER = "job_launch.sh"
+
+# Host-RAM mitigation applied to EVERY detached job, at the provision layer.
+#
+# On Linux glibc, a thread pool (XLA's, in every JAX consumer) spawns up to
+# 8 x ncpu malloc arenas, and large transient buffers fragment across them and
+# are never returned to the OS: process RSS ratchets far past the live set until
+# the kernel OOM-killer fires (rc=137) on a VM whose actual working set fits.
+# Capping the arena count and lowering the trim threshold collapses that
+# fragmentation headroom. It is allocator tuning only -- no correctness impact,
+# strictly less RSS -- so it belongs on every job rather than being re-derived in
+# each consumer's job script.
+#
+# ``:-`` means a value already in the environment wins, so a job script's own
+# ``export MALLOC_ARENA_MAX=...`` (or a caller's env prefix) still overrides and
+# consumer-side settings keep working, redundantly.
+#
+# tcmalloc is preloaded only when it is ALREADY installed on the image: it avoids
+# per-thread arena fragmentation outright, but installing it would put an apt
+# round-trip in front of every job, so the launcher uses it opportunistically and
+# a consumer that needs it keeps installing it in its own script.
+_MALLOC_TUNING = """\
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"
+if [ -z "${LD_PRELOAD:-}" ]; then
+  _tcm=$(ldconfig -p 2>/dev/null | grep -om1 '/[^ ]*libtcmalloc_minimal\\.so[^ ]*' || true)
+  [ -n "$_tcm" ] && export LD_PRELOAD="$_tcm"
+fi
+"""
 
 
 def launcher_script(remote_script, cap_seconds, *, kill_after_s=30):
@@ -54,6 +88,10 @@ def launcher_script(remote_script, cap_seconds, *, kill_after_s=30):
     launcher itself is short and non-blocking: it spawns the ``setsid`` job with
     all descriptors off the SSH channel and returns, so the launching SSH closes
     at once and the job keeps running through any later disconnect.
+
+    It also applies the universal glibc-allocator tuning (``_MALLOC_TUNING``)
+    before spawning the job, so every consumer inherits the OOM mitigation
+    without repeating it in its own script.
     """
     remote_script = str(remote_script)
     cap = int(cap_seconds)
@@ -63,6 +101,7 @@ def launcher_script(remote_script, cap_seconds, *, kill_after_s=30):
 set -u
 cd "$HOME"
 chmod +x "$HOME/{remote_script}" 2>/dev/null || true
+{_MALLOC_TUNING}
 rm -f {REMOTE_RC} {REMOTE_PID}
 : > {REMOTE_OUT}
 # New session + every fd off the SSH channel: sshd closes the channel the moment
@@ -170,7 +209,8 @@ class PollOutcome:
 def poll_until_done(run_poll, *, poll_interval, deadline_s,
                     backoff_base=5.0, backoff_max=60.0,
                     clock=time.monotonic, sleep=time.sleep,
-                    on_chunk=None, on_status=None):
+                    on_chunk=None, on_status=None,
+                    on_stuck=None, stuck_after=STUCK_AFTER_POLLS):
     """Poll a detached remote job to completion, tolerant of reconnection.
 
     ``run_poll(next_byte) -> PollAttempt`` performs one poll (a fresh short SSH in
@@ -183,11 +223,22 @@ def poll_until_done(run_poll, *, poll_interval, deadline_s,
     ``clock``/``sleep`` are injected for deterministic tests. ``on_chunk(str)``
     receives each new ``job.out`` fragment (for a live local log / stream);
     ``on_status(str)`` receives a short human progress line per poll.
+
+    ``on_stuck(n_failures, seconds_unreachable)`` fires once every
+    ``stuck_after`` CONSECUTIVE ssh-transport failures, so a caller can escalate a
+    sustained blackout rather than retrying in silence: print that SSH has been
+    unreachable, and re-check the things that silently break every job at once
+    (the caller's public IP having moved out of the security group's allowed
+    CIDR). Only genuine connection failures count toward it -- a connected read
+    whose status trailer was garbled is a live SSH and resets the counter -- so it
+    is a true "the host is unreachable" signal, never a parse hiccup.
     """
     next_byte = 1
     size_seen = 0
     start = clock()
     consecutive_failures = 0
+    ssh_failures = 0            # consecutive TRANSPORT failures (the stuck signal)
+    unreachable_since = None
 
     def _remaining():
         return deadline_s - (clock() - start)
@@ -200,14 +251,31 @@ def poll_until_done(run_poll, *, poll_interval, deadline_s,
 
         if not attempt.ok:
             consecutive_failures += 1
+            ssh_failures += 1
+            if unreachable_since is None:
+                unreachable_since = clock()
             if on_status is not None:
                 on_status(f"poll failed ({attempt.error}); retry #{consecutive_failures}")
+            if (on_stuck is not None and stuck_after > 0
+                    and ssh_failures % stuck_after == 0):
+                # Best-effort escalation: a self-heal that itself fails must never
+                # break the follow loop, whose whole contract is that only the
+                # local deadline aborts it.
+                try:
+                    on_stuck(ssh_failures, clock() - unreachable_since)
+                except Exception as exc:      # noqa: BLE001 - advisory hook
+                    if on_status is not None:
+                        on_status(f"stuck handler failed: {type(exc).__name__}: {str(exc)[:80]}")
             backoff = min(backoff_max, backoff_base * (2 ** (consecutive_failures - 1)))
             remaining = _remaining()
             if remaining <= 0:
                 return PollOutcome(rc=None, reason="deadline", output_size=size_seen)
             sleep(min(backoff, remaining))
             continue
+
+        # The connection is live: whatever the payload, SSH is reachable again.
+        ssh_failures = 0
+        unreachable_since = None
 
         parsed = parse_poll_output(attempt.stdout)
         if parsed is None:
@@ -244,20 +312,40 @@ class AttachRecord:
     """Everything needed to re-attach to a detached job on a still-running VM
     after the local orchestrator restarts (a hard process kill, where the
     teardown context manager never ran). Persisted per label under ``<into>``; its
-    presence marks a job as not-yet-completed-and-torn-down."""
+    presence marks a job as not-yet-completed-and-torn-down.
+
+    The record is written in TWO stages, and the first one is written **before
+    the instance boots**. A launcher killed between ``create_server`` and the
+    post-launch record write would otherwise leave a booted, billing VM that no
+    later ``--resume`` could even name -- an orphan recoverable only by hand. So a
+    *pending* record (``label``/``cloud``/``region``/``name``, no ``server_id``,
+    ``ip`` or ``keyfile``) lands first: ``name`` is generated locally and is the
+    instance / keypair / security-group name, which is enough for resume to find
+    the server and tear it down. The post-launch write fills in the boot-time
+    facts and makes the job ``attachable`` -- collectable, not merely killable.
+    """
 
     label: str
     cloud: str | None
     region: str | None
     name: str            # instance / keypair / security-group name
-    server_id: str
-    ip: str
-    keyfile: str         # path to the persisted (ephemeral) private key
     remote_script: str   # home-relative job-script basename
     fetch: str           # home-relative artifact dir pulled on completion
     into: str            # local base dir for fetched artifacts
     cap_seconds: int     # remote runaway cap
     launch_epoch: float  # wall-clock (time.time) at launch, for the resume deadline
+    # Boot-time facts: empty in a pending (pre-boot) record, filled in after the
+    # instance is up and the job is launched.
+    server_id: str = ""
+    ip: str = ""
+    keyfile: str = ""    # path to the persisted (ephemeral) private key
+
+    @property
+    def attachable(self) -> bool:
+        """True when the job can be re-followed and collected (the VM's address
+        and private key are known). A pending record is not attachable: its VM can
+        still be found and torn down by name, but its results are unreachable."""
+        return bool(self.ip and self.keyfile)
 
     def to_json(self):
         return json.dumps(asdict(self), indent=2, sort_keys=True)

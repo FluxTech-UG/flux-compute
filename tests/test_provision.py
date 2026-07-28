@@ -12,6 +12,14 @@ from flux_compute.provision import (
     _rsync_up,
     _smoke_command,
     _stranded_banner,
+    classify_exit,
+    heal_ssh_ingress,
+    looks_like_cap_kill,
+    make_stuck_handler,
+    oom_evidence,
+    parse_upload_spec,
+    probe_oom_kill,
+    rsync_down_best_effort,
 )
 
 
@@ -221,3 +229,224 @@ def test_rsync_up_still_raises_on_a_real_failure(monkeypatch):
 def test_rsync_up_zero_is_success(monkeypatch):
     _fake_rsync(monkeypatch, 0)
     _rsync_up("./repo", "1.2.3.4", "/tmp/key", "repo")     # returns cleanly
+
+
+# --- rc=137 is ambiguous: OOM vs cap kill vs unknown --------------------------
+
+_OOM_LOG = """\
+[12345.6] python3 invoked oom-killer: gfp_mask=0x140dca(GFP_HIGHUSER_MOVABLE)
+[12345.7] Out of memory: Killed process 941 (python3) total-vm:41203400kB
+"""
+
+
+def test_oom_evidence_finds_the_kernel_oom_killer():
+    probe = oom_evidence(_OOM_LOG)
+    assert probe.confirmed and probe.read_ok
+    assert "Killed process 941" in probe.summary
+
+
+def test_oom_evidence_on_a_clean_log_is_unconfirmed_but_read():
+    probe = oom_evidence("[1.0] eth0: link up\n[2.0] systemd: started\n")
+    assert not probe.confirmed and probe.read_ok
+
+
+def test_oom_evidence_on_an_unreadable_log_is_unconfirmed_and_unread():
+    """Absence of evidence is reported as unknown, never as innocence."""
+    probe = oom_evidence("")
+    assert not probe.confirmed and not probe.read_ok
+
+
+def test_looks_like_cap_kill_needs_a_basis():
+    assert looks_like_cap_kill(1795, 1800) is True
+    assert looks_like_cap_kill(60, 1800) is False
+    assert looks_like_cap_kill(None, 1800) is None      # no elapsed -> no verdict
+    assert looks_like_cap_kill(60, None) is None        # no cap -> no verdict
+
+
+def test_classify_exit_never_calls_a_sub_cap_sigkill_a_timeout():
+    status = classify_exit(137, elapsed_s=200, cap_seconds=7200)
+    assert "timed out" not in status and "timeout" not in status
+    assert "cause unknown" in status and "137" in status
+
+
+def test_classify_exit_reports_a_confirmed_oom_kill():
+    status = classify_exit(137, elapsed_s=200, cap_seconds=7200,
+                           oom=oom_evidence(_OOM_LOG))
+    assert "OOM-killed" in status and "oom-killer confirmed" in status
+
+
+def test_classify_exit_distinguishes_a_read_log_from_an_unreadable_one():
+    read = classify_exit(137, elapsed_s=200, cap_seconds=7200, oom=oom_evidence("clean\n"))
+    unread = classify_exit(137, elapsed_s=200, cap_seconds=7200, oom=oom_evidence(""))
+    assert "no oom-killer evidence" in read
+    assert "kernel log unavailable" in unread
+
+
+def test_classify_exit_ordinary_codes_are_unchanged():
+    assert classify_exit(0) == "ok"
+    assert "timed out" in classify_exit(124)
+    assert "nonzero" in classify_exit(3)
+
+
+def test_probe_oom_kill_never_raises_when_ssh_fails():
+    def boom(ip, keyfile, command, timeout=None, capture=True):
+        raise OSError("connection reset")
+    probe = probe_oom_kill("1.2.3.4", "/k", _ssh=boom)
+    assert not probe.confirmed and not probe.read_ok
+
+
+def test_probe_oom_kill_reads_the_kernel_log_over_ssh():
+    seen = {}
+
+    def fake(ip, keyfile, command, timeout=None, capture=True):
+        seen["cmd"] = command
+        return SimpleNamespace(returncode=0, stdout=_OOM_LOG, stderr="")
+
+    assert probe_oom_kill("1.2.3.4", "/k", _ssh=fake).confirmed
+    assert "dmesg" in seen["cmd"] and "journalctl" in seen["cmd"]
+
+
+# --- best-effort artifact fetch (never lose partial results) ------------------
+
+def test_rsync_down_best_effort_swallows_a_failure(capsys):
+    def boom(ip, kf, remote, local):
+        raise RuntimeError("no such remote dir")
+    assert rsync_down_best_effort("ip", "/k", "out", "/tmp/x", _rsync=boom) is False
+    assert "partial fetch" in capsys.readouterr().err
+
+
+def test_rsync_down_best_effort_reports_success():
+    assert rsync_down_best_effort("ip", "/k", "out", "/tmp/x",
+                                  _rsync=lambda *a: None) is True
+
+
+# --- --upload SRC:DEST -------------------------------------------------------
+
+def test_parse_upload_bare_dir_keeps_basename_behavior(tmp_path):
+    src = tmp_path / "1DSim3"
+    src.mkdir()
+    assert parse_upload_spec(str(src)) == (str(src), "1DSim3")
+
+
+def test_parse_upload_bare_dir_tolerates_a_trailing_slash(tmp_path):
+    src = tmp_path / "1DSim3"
+    src.mkdir()
+    assert parse_upload_spec(str(src) + "/") == (str(src), "1DSim3")
+
+
+def test_parse_upload_maps_src_to_a_different_remote_name(tmp_path):
+    """The feature that replaces the symlink-named-like-the-destination trick."""
+    src = tmp_path / "1DSim3-worktree"
+    src.mkdir()
+    assert parse_upload_spec(f"{src}:1DSim3") == (str(src), "1DSim3")
+
+
+def test_parse_upload_rejects_a_missing_source(tmp_path):
+    with pytest.raises(RuntimeError, match="not an existing directory"):
+        parse_upload_spec(str(tmp_path / "nope"))
+
+
+def test_parse_upload_rejects_an_escaping_or_absolute_destination(tmp_path):
+    src = tmp_path / "repo"
+    src.mkdir()
+    for bad in ("/etc", "../evil", "a/../../b"):
+        with pytest.raises(RuntimeError, match="relative to the remote home"):
+            parse_upload_spec(f"{src}:{bad}")
+
+
+def test_rsync_excludes_cover_attach_records_under_any_into_dir():
+    """`--into` is configurable, so excluding only the default name left every
+    other results tree exposed to the mid-transfer record race."""
+    assert ".flux_attach" in _RSYNC_EXCLUDES
+    assert "cloud-sweep" in _RSYNC_EXCLUDES      # the default, still excluded
+
+
+def test_rsync_up_passes_extra_excludes_through(monkeypatch, tmp_path):
+    seen = {}
+
+    def run(args, **kw):
+        seen["args"] = args
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(provision.subprocess, "run", run)
+    _rsync_up(str(tmp_path), "1.2.3.4", "/k", "repo", extra_excludes=("/outputs/fleet",))
+    assert "/outputs/fleet" in seen["args"]
+
+
+# --- SSH self-heal: our public IP moved out of the security group -------------
+
+class _FakeRule:
+    def __init__(self, cidr, lo=22, hi=22, direction="ingress"):
+        self.remote_ip_prefix, self.port_range_min = cidr, lo
+        self.port_range_max, self.direction = hi, direction
+
+
+class _FakeNet:
+    def __init__(self, sg, rules):
+        self.sg, self.rules, self.created = sg, rules, []
+
+    def find_security_group(self, name):
+        return self.sg
+
+    def security_group_rules(self, security_group_id=None):
+        return list(self.rules)
+
+    def create_security_group_rule(self, **kw):
+        self.created.append(kw)
+
+
+def _conn_with(rules, sg=SimpleNamespace(id="sg-1")):
+    return SimpleNamespace(network=_FakeNet(sg, rules))
+
+
+def test_heal_opens_ingress_when_the_public_ip_moved(monkeypatch):
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "9.9.9.9/32")
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    msg = heal_ssh_ingress(conn, "flux-compute-sweep-abcd")
+    assert msg and "9.9.9.9/32" in msg
+    assert conn.network.created[0]["remote_ip_prefix"] == "9.9.9.9/32"
+
+
+def test_heal_is_a_noop_when_ingress_is_already_open(monkeypatch):
+    """Idempotent: a repeated escalation must not pile up duplicate rules."""
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    assert heal_ssh_ingress(conn, "sg") is None
+    assert conn.network.created == []
+
+
+def test_heal_declines_when_the_public_ip_read_failed(monkeypatch):
+    """0.0.0.0/0 is _public_ip_cidr's failure value; never open the world on it."""
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "0.0.0.0/0")
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    assert heal_ssh_ingress(conn, "sg") is None
+    assert conn.network.created == []
+
+
+def test_heal_declines_when_the_security_group_is_gone(monkeypatch):
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "9.9.9.9/32")
+    conn = _conn_with([], sg=None)
+    assert heal_ssh_ingress(conn, "sg") is None
+
+
+def test_stuck_handler_surfaces_the_blackout_and_tries_to_heal(monkeypatch):
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "9.9.9.9/32")
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    lines = []
+    make_stuck_handler(conn, "sg", label="alpha", emit=lines.append)(8, 300.0)
+    text = "\n".join(lines)
+    assert "SSH unreachable since" in text and "[alpha]" in text
+    assert "9.9.9.9/32" in text                       # healed, and said so
+    assert conn.network.created                       # the rule really was added
+
+
+def test_stuck_handler_reports_a_failed_heal_without_raising():
+    """The follow loop's contract is that only the deadline aborts it, so the
+    handler must swallow its own failure."""
+    class _Boom:
+        def find_security_group(self, name):
+            raise RuntimeError("network API down")
+
+    lines = []
+    make_stuck_handler(SimpleNamespace(network=_Boom()), "sg", emit=lines.append)(4, 60.0)
+    assert any("ingress re-check failed" in ln for ln in lines)

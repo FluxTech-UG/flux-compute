@@ -62,6 +62,7 @@ _REGION_GPU_FAMILY = {
 CATALOG_QUOTA_CORES = 64
 CATALOG_QUOTA_INSTANCES = 50
 CATALOG_QUOTA_RAM_GB = 496
+CATALOG_QUOTA_MEASURED = "measured 2026-07-27"
 
 # The catalog flavor ladders the offline flavor choice picks from. GPU work uses
 # the EU-wide single-card V100S default (a live plan may pick a region's cheaper
@@ -382,7 +383,7 @@ def plan_fleet_core(req: JobRequirements, region_units, *, device: str,
     if not units:
         raise RuntimeError(
             f"no region can host this {device} work. "
-            + ("GPU work needs a GPU region (GRA11, DE1, UK1, WAW1, BHS5)."
+            + (f"GPU work needs a GPU region ({', '.join(GPU_REGIONS)})."
                if device == "gpu" else
                "no region with quota headroom was supplied."))
 
@@ -511,8 +512,9 @@ def plan_fleet(requirements: JobRequirements, budget=None, regions=None,
             f"GPU work was requested but none of the regions {targets} carry a "
             f"credit-eligible fp64-healthy GPU. GPU regions: {list(GPU_REGIONS)}.")
 
-    notes = ["offline plan: catalog quota (64 vCPU / 50 instances / 496 GB per "
-             "region, measured 2026-07-27) and catalog flavor shapes; a live "
+    notes = [f"offline plan: catalog quota ({CATALOG_QUOTA_CORES} vCPU / "
+             f"{CATALOG_QUOTA_INSTANCES} instances / {CATALOG_QUOTA_RAM_GB} GB per "
+             f"region, {CATALOG_QUOTA_MEASURED}) and catalog flavor shapes; a live "
              "launch re-verifies quota and availability per region."]
     if dropped:
         notes.append(f"CPU-only region(s) skipped for GPU work: {', '.join(dropped)}.")
@@ -520,6 +522,54 @@ def plan_fleet(requirements: JobRequirements, budget=None, regions=None,
     return plan_fleet_core(
         requirements, units, device=device, primary=primary, budget=budget,
         max_parallel=max_parallel, ram_headroom=ram_headroom, notes=notes)
+
+
+def _live_region_cap(spec, lim):
+    """One region's cap from its LIVE compute limits -> (cap, substituted_axes).
+
+    The two halves of a quota axis fail in opposite directions, so they are not
+    treated alike:
+
+    * A missing **used** value is a hard error. Defaulting it to 0 says "this
+      region is empty", which inflates the cap *upward* and plans a fleet on
+      headroom that may already be occupied -- the expensive direction to be
+      wrong in, and invisible in the output.
+    * A missing **max** falls back to the catalog number, which is a real
+      measurement of this project's quota and errs toward the known limit. The
+      axis is returned in `substituted` so the plan can say the read was partial
+      instead of labelling a half-catalog plan "read from the API".
+    """
+    gq = lambda k: getattr(lim, k, None)
+    substituted = set()
+
+    def used(key, label):
+        val = gq(key)
+        if val is None:
+            raise RuntimeError(
+                f"the compute API did not report {label} ({key}) for this region, so "
+                "its free headroom cannot be known. Re-run `flux-compute regions` to "
+                "check the endpoint, or use the offline plan (drop --live).")
+        return val
+
+    def maximum(key, catalog, label):
+        val = gq(key)
+        if val is None:
+            substituted.add(label)
+            return catalog
+        return val
+
+    cap = _region_cap(
+        spec,
+        cores_used=used("total_cores_used", "vCPUs in use"),
+        cores_max=maximum("max_total_cores", CATALOG_QUOTA_CORES, "vCPU quota"),
+        instances_used=used("total_instances_used", "instances in use"),
+        instances_max=maximum("max_total_instances", CATALOG_QUOTA_INSTANCES,
+                              "instance quota"),
+        ram_used_gb=used("total_ram_used", "RAM in use") / 1024.0,
+        ram_max_gb=maximum("max_total_ram_size", CATALOG_QUOTA_RAM_GB * 1024.0,
+                           "RAM quota") / 1024.0,
+    )
+    return cap, substituted
 
 
 def plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None,
@@ -546,7 +596,7 @@ def plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None,
     size = _gpu_size(primary.name) if device == "gpu" else None
     targets = _target_regions(device, regions)
 
-    units, failures = [], []
+    units, failures, substituted = [], [], set()
     for region in targets:
         try:
             pin = primary.name if device == "cpu" else _region_gpu_flavor(region, size)
@@ -555,17 +605,8 @@ def plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None,
             spec_launch = resolve_spec(conn, reg, flavor=pin)
             flavor_obj = conn.compute.find_flavor(spec_launch.flavor)
             spec = live_flavor_spec(flavor_obj)
-            lim = conn.get_compute_limits()
-            gq = lambda k: getattr(lim, k, None)
-            cap = _region_cap(
-                spec,
-                cores_used=gq("total_cores_used") or 0,
-                cores_max=gq("max_total_cores") if gq("max_total_cores") is not None else CATALOG_QUOTA_CORES,
-                instances_used=gq("total_instances_used") or 0,
-                instances_max=gq("max_total_instances") if gq("max_total_instances") is not None else CATALOG_QUOTA_INSTANCES,
-                ram_used_gb=(gq("total_ram_used") or 0) / 1024.0,
-                ram_max_gb=(gq("max_total_ram_size") / 1024.0) if gq("max_total_ram_size") is not None else CATALOG_QUOTA_RAM_GB,
-            )
+            cap, sub = _live_region_cap(spec, conn.get_compute_limits())
+            substituted.update(sub)
             units.append(RegionUnit(region=reg, spec=spec, cap=cap))
         except Exception as exc:       # noqa: BLE001 — collected and re-raised together
             if "refused by the local clouds.yaml" in str(exc):
@@ -576,6 +617,12 @@ def plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None,
             "no requested region can host this fleet:\n" + "\n".join(failures))
 
     notes = ["live plan: per-region quota and flavor availability read from the API."]
+    if substituted:
+        # Never let a partly-catalog plan describe itself as fully live.
+        notes.append(
+            "PARTIAL live read: the API did not report "
+            f"{', '.join(sorted(substituted))}; the catalog value was used for "
+            "those axes, so this plan is not entirely live.")
     if failures:
         notes.append("regions that could not host the work were skipped:\n"
                      + "\n".join(failures))

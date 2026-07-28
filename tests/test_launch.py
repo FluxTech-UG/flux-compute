@@ -94,3 +94,75 @@ def test_resolve_spec_image_override_wins_for_cpu():
     conn = _fake_conn(["c3-8"], _IMAGES)
     spec = resolve_spec(conn, "GRA11", flavor="c3-8", image="Ubuntu 22.04")
     assert spec.image == "Ubuntu 22.04"
+
+
+# --- CLI output streaming (an empty log must mean "nothing happened") ---------
+
+def test_stream_output_line_buffers_a_piped_stdout(monkeypatch):
+    """Piped stdout block-buffers by default, so hours of fleet progress sat in a
+    4 KiB buffer and `| tee run.log` showed nothing. Line buffering is set at the
+    entry point so no caller has to remember PYTHONUNBUFFERED."""
+    import io
+    import sys
+    from flux_compute.cli import _stream_output
+
+    pipe = io.TextIOWrapper(io.BufferedWriter(io.BytesIO()), line_buffering=False)
+    monkeypatch.setattr(sys, "stdout", pipe)
+    monkeypatch.setattr(sys, "stderr", pipe)
+    assert pipe.line_buffering is False
+    _stream_output()
+    assert pipe.line_buffering is True
+
+
+def test_stream_output_tolerates_a_stream_that_cannot_reconfigure(monkeypatch):
+    """pytest's capture and other stand-ins are not TextIOWrapper; the entry point
+    must not die on them."""
+    import io
+    import sys
+    from flux_compute.cli import _stream_output
+
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    _stream_output()          # must not raise
+
+
+# --- shared region-name resolution (was four near-copies) --------------------
+
+def test_resolve_region_name_prefers_the_explicit_override():
+    from types import SimpleNamespace
+    from flux_compute.auth import resolve_region_name
+    conn = SimpleNamespace(config=SimpleNamespace(region_name="DE1"))
+    assert resolve_region_name(conn, "UK1") == "UK1"
+
+
+def test_resolve_region_name_falls_back_to_the_connection_then_env(monkeypatch):
+    from types import SimpleNamespace
+    from flux_compute.auth import resolve_region_name
+    conn = SimpleNamespace(config=SimpleNamespace(region_name="DE1"))
+    assert resolve_region_name(conn, None) == "DE1"
+
+    bare = SimpleNamespace(config=None)
+    monkeypatch.setenv("OS_REGION_NAME", "WAW1")
+    assert resolve_region_name(bare, None) == "WAW1"
+    monkeypatch.delenv("OS_REGION_NAME")
+    assert resolve_region_name(bare, None) == "(unknown)"
+
+
+def test_every_module_shares_one_region_resolver():
+    """Four modules carried byte-identical copies of this chain; they must now
+    all route through the one definition."""
+    from flux_compute import auth, doctor, launch, provision, regions
+    assert provision._region.__module__ == "flux_compute.provision"
+    conn = type("C", (), {"config": type("Cfg", (), {"region_name": "GRA11"})()})()
+    assert provision._region(conn, None) == "GRA11"
+    assert regions._region_name(conn, None) == "GRA11"
+    assert doctor._region_of(conn, None) == "GRA11"
+
+
+def test_plan_no_longer_claims_launching_is_unwired():
+    """Living-documents: `run --plan` used to tell the user the product it is
+    part of does not exist yet."""
+    import inspect
+    from flux_compute import launch
+    src = inspect.getsource(launch)
+    assert "not wired yet" not in src and "for now" not in src

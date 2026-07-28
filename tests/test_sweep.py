@@ -60,6 +60,89 @@ def test_empty_jobs_raises():
         parse_jobs("# only comments\n\n")
 
 
+# --- inline comments in the jobs file (the 16-VM fleet that did no work) ------
+
+def test_parse_strips_an_inline_comment_from_the_params():
+    """The incident: the comment reached the remote inside $FLUX_JOB, so the
+    job's own selector matched nothing and every VM in the fleet ran empty."""
+    jobs = parse_jobs("heavy = --select nx128   # rerun: OOM'd on b3-32\n")
+    assert jobs == [("heavy", "--select nx128")]
+
+
+def test_parse_strips_an_inline_comment_from_a_bare_label():
+    assert parse_jobs("spec_point    # the anchor cell\n") == [
+        ("spec_point", "spec_point")]
+
+
+def test_parse_strips_an_inline_comment_before_the_equals():
+    """Stripping happens before the label/params split, so a comment containing
+    '=' cannot smuggle itself into the parse."""
+    assert parse_jobs("alpha  # note: N_x=128 was the old value\n") == [
+        ("alpha", "alpha")]
+
+
+def test_parse_keeps_an_uncommented_line_byte_for_byte():
+    """The uncommented forms every existing jobs file uses must be untouched."""
+    assert parse_jobs("a = --flag x --other y\n") == [("a", "--flag x --other y")]
+    assert parse_jobs("a=x\n") == [("a", "x")]
+
+
+def test_parse_keeps_a_hash_that_is_not_a_comment():
+    """A '#' glued to a value is part of the value (the shell reads it that way
+    too); only a whitespace- or line-initial '#' opens a comment."""
+    assert parse_jobs("a = --tag run#3\n") == [("a", "--tag run#3")]
+    assert parse_jobs('a = --note "phase # two"\n') == [("a", '--note "phase # two"')]
+    assert parse_jobs("a = --note 'x # y' --z 1\n") == [("a", "--note 'x # y' --z 1")]
+
+
+def test_parse_strips_trailing_whitespace_left_by_a_comment():
+    jobs = parse_jobs("a = x   #c\nb = y\t# c2\n")
+    assert jobs == [("a", "x"), ("b", "y")]
+
+
+def test_strip_inline_comment_edge_forms():
+    from flux_compute.sweep import strip_inline_comment
+    assert strip_inline_comment("") == ""
+    assert strip_inline_comment("#whole line") == ""
+    assert strip_inline_comment("   # indented") == ""
+    assert strip_inline_comment("value#glued") == "value#glued"
+    assert strip_inline_comment("value #detached") == "value"
+    assert strip_inline_comment("a = b # c # d") == "a = b"
+    assert strip_inline_comment('"#quoted"') == '"#quoted"'
+
+
+# --- job state: what --resume may launch --------------------------------------
+
+def test_job_state_distinguishes_pending_in_flight_and_collected(tmp_path):
+    from flux_compute.sweep import ATTACH_DIR, ATTACH_RECORD, JOB_LOG, job_state
+    into = str(tmp_path / "cloud-sweep")
+
+    assert job_state(into, "never_started") == "pending"
+
+    os.makedirs(os.path.join(into, "running", ATTACH_DIR))
+    open(os.path.join(into, "running", ATTACH_DIR, ATTACH_RECORD), "w").close()
+    assert job_state(into, "running") == "in_flight"
+
+    os.makedirs(os.path.join(into, "finished"))
+    open(os.path.join(into, "finished", JOB_LOG), "w").close()
+    assert job_state(into, "finished") == "collected"
+
+
+# --- upload excludes: the results tree must never re-enter an upload ----------
+
+def test_upload_excludes_covers_an_into_dir_inside_the_upload(tmp_path):
+    from flux_compute.sweep import _upload_excludes
+    src = str(tmp_path / "repo")
+    assert _upload_excludes(src, os.path.join(src, "cloud-sweep")) == ("/cloud-sweep",)
+    assert _upload_excludes(src, os.path.join(src, "outputs", "fleet")) == ("/outputs/fleet",)
+
+
+def test_upload_excludes_is_empty_when_into_is_outside_the_upload(tmp_path):
+    from flux_compute.sweep import _upload_excludes
+    src = str(tmp_path / "repo")
+    assert _upload_excludes(src, str(tmp_path / "elsewhere")) == ()
+
+
 def test_worst_case_cost():
     assert worst_case_eur(3, 0.80, 30) == pytest.approx(1.20)   # 3 * 0.80 * 0.5
     assert worst_case_eur(10, 0.80, 6) == pytest.approx(0.80)   # 10 * 0.80 * 0.1
@@ -184,10 +267,41 @@ def test_status_nonzero_job():
     assert rc == 3 and "nonzero" in status
 
 
-def test_status_remote_cap_kill_reads_as_timed_out():
-    for cap_rc in (124, 137):
-        rc, status = _status_for_outcome(PollOutcome(rc=cap_rc, reason="done", output_size=10))
-        assert rc == cap_rc and "timed out" in status
+def test_status_rc124_is_always_a_cap_timeout():
+    """124 is `timeout`'s own TERM code: unambiguous, no elapsed basis needed."""
+    rc, status = _status_for_outcome(PollOutcome(rc=124, reason="done", output_size=10))
+    assert rc == 124 and "timed out" in status
+
+
+def test_status_rc137_at_the_cap_is_a_timeout():
+    """137 that ran (almost) its whole cap IS the cap's kill-after escalation."""
+    rc, status = _status_for_outcome(
+        PollOutcome(rc=137, reason="done", output_size=10),
+        elapsed_s=1795, cap_seconds=1800)
+    assert rc == 137 and "timed out" in status
+
+
+def test_status_rc137_far_short_of_the_cap_is_never_called_a_timeout():
+    """The misclassification that sent an OOM hunt after phantom slow jobs: a
+    SIGKILL at 3 minutes of a 30-minute cap is not a timeout, whatever else it is."""
+    rc, status = _status_for_outcome(
+        PollOutcome(rc=137, reason="done", output_size=10),
+        elapsed_s=180, cap_seconds=1800)
+    assert rc == 137
+    assert "timed out" not in status and "timeout" not in status
+    assert "cause unknown" in status
+
+
+def test_status_rc137_with_confirmed_oom_says_so():
+    from flux_compute.provision import OomProbe
+    rc, status = _status_for_outcome(
+        PollOutcome(rc=137, reason="done", output_size=10),
+        elapsed_s=180, cap_seconds=1800,
+        oom=OomProbe(confirmed=True, summary="Out of memory: Killed process 941 (python)",
+                     read_ok=True))
+    assert rc == 137
+    assert "OOM-killed" in status and "oom-killer confirmed" in status
+    assert "timed out" not in status
 
 
 def test_status_local_deadline_is_a_failure_record():
@@ -232,22 +346,72 @@ def test_load_attach_records_empty_when_no_into_dir(tmp_path):
     assert _load_attach_records(str(tmp_path / "nope")) == []
 
 
-def test_finalize_pulls_log_always_and_artifacts_only_on_done(tmp_path, monkeypatch):
+def _wire_finalize(monkeypatch):
+    """Count the log pull, the strict fetch and the best-effort (partial) fetch."""
+    calls = {"log": 0, "fetch": 0, "partial": 0}
+    monkeypatch.setattr(sweep, "pull_job_log",
+                        lambda ip, kf, path: calls.__setitem__("log", calls["log"] + 1))
+    monkeypatch.setattr(sweep, "_rsync_down",
+                        lambda ip, kf, remote, local: calls.__setitem__("fetch", calls["fetch"] + 1))
+    monkeypatch.setattr(sweep, "rsync_down_best_effort",
+                        lambda ip, kf, remote, local: calls.__setitem__("partial", calls["partial"] + 1))
+    monkeypatch.setattr(sweep, "probe_oom_kill", lambda ip, kf: None)
+    return calls
+
+
+def test_finalize_clean_run_pulls_log_and_artifacts(tmp_path, monkeypatch):
     dest = str(tmp_path / "alpha")
     os.makedirs(dest, exist_ok=True)
-    calls = {"log": 0, "fetch": 0}
-    monkeypatch.setattr(sweep, "pull_job_log", lambda ip, kf, path: calls.__setitem__("log", calls["log"] + 1))
-    monkeypatch.setattr(sweep, "_rsync_down", lambda ip, kf, remote, local: calls.__setitem__("fetch", calls["fetch"] + 1))
+    calls = _wire_finalize(monkeypatch)
 
-    # Completed job: log + artifacts fetched.
     rc, status = _finalize("ip", "kf", dest, "out", PollOutcome(rc=0, reason="done", output_size=5))
     assert rc == 0 and status == "ok"
-    assert calls == {"log": 1, "fetch": 1}
+    assert calls == {"log": 1, "fetch": 1, "partial": 0}
 
-    # Local-deadline abort: log pulled best-effort, artifacts NOT fetched (partial).
-    rc, status = _finalize("ip", "kf", dest, "out", PollOutcome(rc=None, reason="deadline", output_size=5))
+
+def test_finalize_fetches_partial_artifacts_before_teardown_on_deadline(tmp_path, monkeypatch):
+    """A deadline abort used to fetch NOTHING, so every checkpoint the job had
+    already written died with the VM. It must fetch best-effort instead."""
+    dest = str(tmp_path / "alpha")
+    os.makedirs(dest, exist_ok=True)
+    calls = _wire_finalize(monkeypatch)
+
+    rc, status = _finalize("ip", "kf", dest, "out",
+                           PollOutcome(rc=None, reason="deadline", output_size=5))
     assert rc == -1 and "DEADLINE" in status
-    assert calls == {"log": 2, "fetch": 1}       # fetch not called again
+    assert calls == {"log": 1, "fetch": 0, "partial": 1}   # partial, never the strict fetch
+
+
+def test_finalize_fetches_partial_artifacts_on_a_nonzero_exit(tmp_path, monkeypatch):
+    dest = str(tmp_path / "alpha")
+    os.makedirs(dest, exist_ok=True)
+    calls = _wire_finalize(monkeypatch)
+
+    rc, status = _finalize("ip", "kf", dest, "out", PollOutcome(rc=2, reason="done", output_size=5))
+    assert rc == 2 and "nonzero" in status
+    assert calls == {"log": 1, "fetch": 0, "partial": 1}
+
+
+def test_finalize_probes_the_kernel_log_for_a_sub_cap_sigkill(tmp_path, monkeypatch):
+    """The OOM evidence dies with the instance, so the probe must happen here --
+    before teardown -- and only for the ambiguous sub-cap 137."""
+    from flux_compute.provision import OomProbe
+    dest = str(tmp_path / "alpha")
+    os.makedirs(dest, exist_ok=True)
+    _wire_finalize(monkeypatch)
+    probed = []
+    monkeypatch.setattr(sweep, "probe_oom_kill", lambda ip, kf: probed.append(ip) or OomProbe(
+        confirmed=True, summary="Out of memory: Killed process 941 (python)", read_ok=True))
+
+    rc, status = _finalize("ip", "kf", dest, "out", PollOutcome(rc=137, reason="done", output_size=5),
+                           elapsed_s=120, cap_seconds=3600)
+    assert probed == ["ip"] and "OOM-killed" in status
+
+    # A 137 that reached its cap needs no probe: the cap explains it.
+    probed.clear()
+    rc, status = _finalize("ip", "kf", dest, "out", PollOutcome(rc=137, reason="done", output_size=5),
+                           elapsed_s=3599, cap_seconds=3600)
+    assert probed == [] and "timed out" in status
 
 
 # --- multi-region sharding ----------------------------------------------------
@@ -409,3 +573,131 @@ def test_sweep_refuses_when_no_region_fits(monkeypatch, tmp_path):
 def test_region_drop_label_defaults_when_region_is_none():
     assert RegionDrop(region=None, reason="x").label == "(default region)"
     assert RegionDrop(region="DE1", reason="x").label == "DE1"
+
+
+# --- the record is written BEFORE boot (no unfetchable orphans) ---------------
+
+def test_pending_record_exists_before_the_instance_boots(tmp_path, monkeypatch):
+    """A launcher killed during boot must leave a record naming the VM, or the
+    instance becomes an orphan that no --resume can even find."""
+    from contextlib import contextmanager
+    from flux_compute.sweep import ATTACH_DIR, ATTACH_RECORD, _make_run_one
+    from flux_compute.detach import AttachRecord
+
+    into = str(tmp_path / "cloud-sweep")
+    seen = {}
+
+    @contextmanager
+    def fake_instance(conn, spec, name, ttl_minutes, keep=False):
+        path = os.path.join(into, "alpha", ATTACH_DIR, ATTACH_RECORD)
+        seen["existed_at_boot"] = os.path.isfile(path)
+        with open(path) as fh:
+            seen["rec"] = AttachRecord.from_json(fh.read())
+        raise RuntimeError("boot failed")       # never yields
+
+    monkeypatch.setattr(sweep, "connect", lambda cloud=None, region=None: object())
+    monkeypatch.setattr(sweep, "_gpu_instance", fake_instance)
+
+    shard = Shard(region="GRA11", spec=SimpleNamespace(flavor="b3-8"), vcpus=8, cap=1)
+    run_one = _make_run_one("flux-ovh", shard, [], "job.sh", "out", into, 30)
+    label, rc, status = run_one(("alpha", "--x 1"))
+
+    assert seen["existed_at_boot"] is True
+    assert seen["rec"].name.startswith("flux-compute-sweep-")   # the teardown handle
+    assert seen["rec"].attachable is False                      # no key yet, by design
+    assert rc == -1 and "boot failed" in status
+
+
+def test_a_teardown_strand_keeps_the_record_for_resume(tmp_path, monkeypatch):
+    """The record IS the handle --resume uses to finish a failed teardown, so a
+    strand must never clear it -- while an ordinary failure (teardown ran) must."""
+    from contextlib import contextmanager
+    from flux_compute.provision import TeardownStrandError
+    from flux_compute.sweep import _load_attach_records, _make_run_one
+
+    into = str(tmp_path / "cloud-sweep")
+
+    def _run_with(exc):
+        @contextmanager
+        def fake_instance(conn, spec, name, ttl_minutes, keep=False):
+            raise exc
+        monkeypatch.setattr(sweep, "connect", lambda cloud=None, region=None: object())
+        monkeypatch.setattr(sweep, "_gpu_instance", fake_instance)
+        shard = Shard(region="GRA11", spec=SimpleNamespace(flavor="b3-8"), vcpus=8, cap=1)
+        return _make_run_one("flux-ovh", shard, [], "job.sh", "out", into, 30)
+
+    _run_with(TeardownStrandError("stranded: srv-9 could not be deleted"))(("kept", "p"))
+    assert [r.label for r in _load_attach_records(into)] == ["kept"]
+
+    _run_with(RuntimeError("ssh never opened"))(("dropped", "p"))
+    assert [r.label for r in _load_attach_records(into)] == ["kept"]   # 'dropped' cleared
+
+
+# --- --resume continues the jobs file -----------------------------------------
+
+def _stub_resume(monkeypatch, launched):
+    monkeypatch.setattr(sweep, "_reattach_records", lambda *a, **kw: 0)
+    monkeypatch.setattr(sweep, "_launch_jobs",
+                        lambda **kw: launched.append(kw["jobs"]) or 0)
+
+
+def test_resume_without_a_jobs_file_only_reattaches(tmp_path, monkeypatch):
+    """Backward compatibility: the existing `sweep --resume --into X` invocation
+    must behave exactly as it did."""
+    launched = []
+    _stub_resume(monkeypatch, launched)
+    assert sweep.resume_sweep(into=str(tmp_path)) == 0
+    assert launched == []
+
+
+def test_resume_launches_only_the_jobs_that_never_started(tmp_path, monkeypatch):
+    from flux_compute.sweep import ATTACH_DIR, ATTACH_RECORD, JOB_LOG
+
+    into = tmp_path / "cloud-sweep"
+    (into / "done_one" ).mkdir(parents=True)
+    (into / "done_one" / JOB_LOG).write_text("collected")
+    (into / "in_flight" / ATTACH_DIR).mkdir(parents=True)
+    (into / "in_flight" / ATTACH_DIR / ATTACH_RECORD).write_text("{}")
+
+    jobs_file = tmp_path / "jobs.txt"
+    jobs_file.write_text("done_one = a\nin_flight = b\nnever_ran = c\nalso_new = d\n")
+
+    launched = []
+    _stub_resume(monkeypatch, launched)
+    rc = sweep.resume_sweep(into=str(into), jobs_file=str(jobs_file),
+                            script="job.sh", fetch="out")
+    assert rc == 0
+    assert launched == [[("never_ran", "c"), ("also_new", "d")]]
+
+
+def test_resume_with_a_fully_accounted_jobs_file_launches_nothing(tmp_path, monkeypatch):
+    from flux_compute.sweep import JOB_LOG
+    into = tmp_path / "cloud-sweep"
+    (into / "a").mkdir(parents=True)
+    (into / "a" / JOB_LOG).write_text("x")
+    jobs_file = tmp_path / "jobs.txt"
+    jobs_file.write_text("a = 1\n")
+
+    launched = []
+    _stub_resume(monkeypatch, launched)
+    assert sweep.resume_sweep(into=str(into), jobs_file=str(jobs_file),
+                              script="job.sh", fetch="out") == 0
+    assert launched == []
+
+
+def test_resume_needs_script_and_fetch_to_launch_the_remainder(tmp_path, monkeypatch):
+    jobs_file = tmp_path / "jobs.txt"
+    jobs_file.write_text("never_ran = c\n")
+    _stub_resume(monkeypatch, [])
+    with pytest.raises(RuntimeError, match="needs --script and --fetch"):
+        sweep.resume_sweep(into=str(tmp_path / "cloud-sweep"), jobs_file=str(jobs_file))
+
+
+def test_run_sweep_resume_passes_the_jobs_file_through(tmp_path, monkeypatch):
+    """`sweep --resume --jobs ...` must reach resume_sweep with the file."""
+    seen = {}
+    monkeypatch.setattr(sweep, "resume_sweep", lambda **kw: seen.update(kw) or 0)
+    run_sweep(resume=True, into="cloud-sweep", jobs_file="jobs.txt",
+              script="job.sh", fetch="out", regions="DE1,UK1")
+    assert seen["jobs_file"] == "jobs.txt" and seen["regions"] == "DE1,UK1"
+    assert seen["script"] == "job.sh" and seen["fetch"] == "out"

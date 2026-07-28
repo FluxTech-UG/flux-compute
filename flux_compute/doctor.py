@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from .auth import connect
+from .auth import connect, resolve_region_name
 from .flavors import classify, recommended_for_sim
 from .reap import warn_strays
 
@@ -71,10 +71,7 @@ def _print_group(title: str, verdicts) -> None:
 
 
 def _region_of(conn, region):
-    if region:
-        return region
-    cfg = getattr(conn, "config", None)
-    return getattr(cfg, "region_name", None) or os.environ.get("OS_REGION_NAME")
+    return resolve_region_name(conn, region)
 
 
 def _project_of(conn):
