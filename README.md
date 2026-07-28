@@ -294,13 +294,37 @@ avoid this in two halves (`flux_compute/detach.py`):
    artifacts are fetched, and the VM is torn down — the same success path as
    before.
 
-If SSH stops working for every job at once — the usual cause being the operator's
-**public IP moving** out of the one address each instance's security group allows
-— the poll loop says so instead of retrying in silence: after a few consecutive
-transport failures it prints `SSH unreachable since <time>`, re-reads the public
-IP, and opens ingress for the new one, after which polling recovers on its own.
-(A blackout used to be indistinguishable from a healthy long job, since both
-produce no output.)
+**Roaming: the fleet follows you to a new network.** Each instance's security
+group admits SSH from exactly one address — the public IP that launched it — so
+when the operator's IP moves (a different network overnight, a VPN toggling, an
+ISP re-lease), every job in the fleet becomes unreachable at once. Both paths
+repair it automatically, and both say so in one line:
+
+- **While following**, after a few consecutive transport failures the poll loop
+  prints `SSH unreachable since <time>`, re-reads the public IP, opens ingress
+  for the new one, and recovers on its own. A blackout is reported rather than
+  retried in silence, since no-output is also what a healthy long job looks like.
+- **On `--resume`**, the check runs *before the first SSH of every job*, which is
+  the moment the address is most likely to have changed — a fleet launched from
+  one network is routinely collected from another. The current /32 is read once
+  for the whole fleet and each VM's group is patched if it lacks it, so the first
+  poll works instead of burning a blackout-detection cycle per VM.
+
+The repair is **append-only**: the launch-time rule is left in place, so a
+flapping address never locks out the machine that started the run, and repeating
+it adds nothing. If the public-IP read itself fails the run continues and says
+why — the SSH attempt is the authority on whether the VM is actually reachable,
+and a failed lookup is never grounds to widen a group to `0.0.0.0/0`.
+
+> **Incident, 2026-07-28 (chen_wave2, 16 VMs).** The laptop changed networks
+> overnight (`89.12.102.142` → `77.11.189.44`), so `--resume` could reach none of
+> the fleet: 16 finished VMs sat idle-billing for hours while resume hung. Two
+> defects, both fixed above and in **Cost guardrails**: the ingress was never
+> re-checked on the resume path, and the follower's piped stdout was
+> block-buffered, so the log file stayed empty and the stall was invisible
+> without `PYTHONUNBUFFERED=1`. Progress output is now line-buffered at the CLI
+> entry point, so a piped or `tee`-d log reflects live state with nothing asked
+> of the caller.
 
 For the harder case — the process is fully killed (a sleep long enough to be
 terminated, a closed terminal) — each sweep job persists an **attach record** and
@@ -415,6 +439,13 @@ the stock image + per-job install.
   `run`, `sweep`, `bake`, `push`) first surfaces any stranded or kept instance
   with its accrued cost and points at `reap` — advisory only; no command other
   than `reap` ever deletes.
+- **Reachability**: an unreachable fleet is a billing problem, because a VM that
+  cannot be collected cannot be torn down. `--resume` therefore re-opens each
+  instance's SSH ingress for the caller's current public IP before reconnecting,
+  so a laptop that changed networks collects and tears down normally instead of
+  leaving finished VMs idle-billing behind a stale `/32` (see **Surviving laptop
+  sleep**). Progress output is line-buffered even through a pipe, so a `tee`-d
+  log shows a stall as it happens rather than after the fact.
 
 ## Tests
 

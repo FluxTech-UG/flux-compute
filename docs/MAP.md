@@ -163,49 +163,53 @@ _Provision a GPU instance, run work on it, and always tear it down._
 - ttl_minutes_for(cap_minutes)  ·L99 — TTL for a run with the given wall cap: cap + max(30 min, 25% of the cap).
 - ttl_metadata(ttl_minutes, keep=False, now=None)  ·L109 — The metadata stamped on every created server: provenance, expiry, and
 - const SSH_USER  ·L122
-- const _SSH_OPTS  ·L123
-- const _GPU_SMOKE  ·L129
-- const _CPU_SMOKE  ·L135
-- const _RSYNC_EXCLUDES  ·L152
-- class TeardownStrandError(RuntimeError)  ·L159 — Teardown could not verifiably delete a created server; it may still be
-- _region(conn, region)  ·L165
-- _cloud_name(conn)  ·L169
-- _delete_server_verified(conn, server, retries=3, wait=300, retry_delay=10)  ·L173 — Delete `server` and verify it is actually gone, retrying on failure.
-- _delete_sg_with_retry(conn, sg_id, attempts=6, delay=10)  ·L199 — Delete a security group, retrying 409s: the server's port can linger for
-- _stranded_banner(cloud, name, server_id, reason)  ·L216 — Print an unmissable multi-line stranded-instance banner to stderr with
-- _name(kind)  ·L239
-- _print_plan(spec)  ·L243
-- _smoke_command(gpu_model)  ·L248 — Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
-- _public_ip_cidr()  ·L256
-- _wait_ssh(host, port=22, timeout=180)  ·L265
-- _server_ipv4(server)  ·L276
-- _ssh_cmd(keyfile)  ·L284
-- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L288
-- _scp_up(local, ip, keyfile, remote)  ·L295
-- _scp_down(ip, keyfile, remote, local, timeout=120)  ·L299 — Copy a single home-relative remote file down to a local path. Used for the
-- parse_upload_spec(spec)  ·L307 — Parse one ``--upload`` value into ``(local_src, remote_dest)``.
-- _rsync_up(local, ip, keyfile, dest, extra_excludes=())  ·L344
-- _rsync_down(ip, keyfile, remote, local)  ·L367
-- rsync_down_best_effort(ip, keyfile, remote, local, _rsync=None)  ·L374 — Fetch artifacts without letting a failure abort the caller. Returns True
-- @dataclass class OomProbe  ·L401 — A read of the VM's kernel log looking for OOM-killer evidence.
-- oom_evidence(kernel_log)  ·L414 — Pure: scan a kernel-log excerpt for OOM-killer markers -> ``OomProbe``.
-- probe_oom_kill(ip, keyfile, _ssh=_ssh)  ·L423 — Read the VM's kernel log over SSH and look for the OOM-killer. Best-effort:
-- looks_like_cap_kill(elapsed_s, cap_seconds, *, fraction=CAP_KILL_MIN_FRACTION)  ·L434 — Did this run live long enough for its own wall cap to be the killer?
-- _elapsed_phrase(elapsed_s, cap_seconds)  ·L442
-- classify_exit(rc, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L449 — Explain a remote job's return code honestly -> a short status string.
-- explain_remote_kill(ip, keyfile, rc, *, elapsed_s, cap_seconds, _ssh=_ssh)  ·L480 — Classify a finished job, probing the VM's kernel log first when the return
-- @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L491
-- _make_poll_runner(ip, keyfile, connect_timeout=CONNECT_TIMEOUT_S, _ssh=_ssh)  ·L567 — Build the SSH-backed poll runner the detach loop calls each iteration.
-- _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix='', launch_timeout=90, _ssh=_ssh)  ·L591 — Upload the generated launcher and run it to start the job detached.
-- _sg_allows_ssh_from(conn, sg, cidr)  ·L621 — Does this security group already permit SSH ingress from `cidr`?
-- heal_ssh_ingress(conn, sg_name, _cidr=None)  ·L635 — Re-read the caller's public IP and open SSH ingress for it if it moved.
-- make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None)  ·L666 — Build the poll loop's `on_stuck` callback: say the host is unreachable, and
-- follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval, on_chunk=None, on_status=None, on_stuck=None, _ssh=_ssh)  ·L701 — Poll an already-launched detached job to completion (or a local abort).
-- pull_job_log(ip, keyfile, log_path, _ssh=_ssh)  ·L717 — Pull the full remote ~/job.out down to log_path (the authoritative final
-- _server_by_name_or_id(conn, name, server_id=None)  ·L729 — Find a server by id (preferred) or name, or None if it is already gone.
-- teardown_by_name(conn, name, server_id=None)  ·L744 — Delete a flux-compute instance and its same-named keypair + security group
-- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L772
-- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L795
+- const UNKNOWN_CIDR  ·L127
+- const _SSH_OPTS  ·L128
+- const _GPU_SMOKE  ·L134
+- const _CPU_SMOKE  ·L140
+- const _RSYNC_EXCLUDES  ·L157
+- class TeardownStrandError(RuntimeError)  ·L164 — Teardown could not verifiably delete a created server; it may still be
+- _region(conn, region)  ·L170
+- _cloud_name(conn)  ·L174
+- _delete_server_verified(conn, server, retries=3, wait=300, retry_delay=10)  ·L178 — Delete `server` and verify it is actually gone, retrying on failure.
+- _delete_sg_with_retry(conn, sg_id, attempts=6, delay=10)  ·L204 — Delete a security group, retrying 409s: the server's port can linger for
+- _stranded_banner(cloud, name, server_id, reason)  ·L221 — Print an unmissable multi-line stranded-instance banner to stderr with
+- _name(kind)  ·L244
+- _print_plan(spec)  ·L248
+- _smoke_command(gpu_model)  ·L253 — Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
+- _public_ip_cidr()  ·L261
+- current_ingress_cidr()  ·L270 — The /32 an instance's security group must admit for this caller to SSH in,
+- _wait_ssh(host, port=22, timeout=180)  ·L284
+- _server_ipv4(server)  ·L295
+- _ssh_cmd(keyfile)  ·L303
+- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L307
+- _scp_up(local, ip, keyfile, remote)  ·L314
+- _scp_down(ip, keyfile, remote, local, timeout=120)  ·L318 — Copy a single home-relative remote file down to a local path. Used for the
+- parse_upload_spec(spec)  ·L326 — Parse one ``--upload`` value into ``(local_src, remote_dest)``.
+- _rsync_up(local, ip, keyfile, dest, extra_excludes=())  ·L363
+- _rsync_down(ip, keyfile, remote, local)  ·L386
+- rsync_down_best_effort(ip, keyfile, remote, local, _rsync=None)  ·L393 — Fetch artifacts without letting a failure abort the caller. Returns True
+- @dataclass class OomProbe  ·L420 — A read of the VM's kernel log looking for OOM-killer evidence.
+- oom_evidence(kernel_log)  ·L433 — Pure: scan a kernel-log excerpt for OOM-killer markers -> ``OomProbe``.
+- probe_oom_kill(ip, keyfile, _ssh=_ssh)  ·L442 — Read the VM's kernel log over SSH and look for the OOM-killer. Best-effort:
+- looks_like_cap_kill(elapsed_s, cap_seconds, *, fraction=CAP_KILL_MIN_FRACTION)  ·L453 — Did this run live long enough for its own wall cap to be the killer?
+- _elapsed_phrase(elapsed_s, cap_seconds)  ·L461
+- classify_exit(rc, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L468 — Explain a remote job's return code honestly -> a short status string.
+- explain_remote_kill(ip, keyfile, rc, *, elapsed_s, cap_seconds, _ssh=_ssh)  ·L499 — Classify a finished job, probing the VM's kernel log first when the return
+- @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L510
+- _make_poll_runner(ip, keyfile, connect_timeout=CONNECT_TIMEOUT_S, _ssh=_ssh)  ·L586 — Build the SSH-backed poll runner the detach loop calls each iteration.
+- _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix='', launch_timeout=90, _ssh=_ssh)  ·L610 — Upload the generated launcher and run it to start the job detached.
+- _sg_allows_ssh_from(conn, sg, cidr)  ·L640 — Does this security group already permit SSH ingress from `cidr`?
+- @dataclass class IngressCheck  ·L655 — What `heal_ssh_ingress` found, and a line fit to print about it.
+  - __bool__(self)  ·L669 — Truthy only when a rule was actually added, so ``if check:`` reads as
+- heal_ssh_ingress(conn, sg_name, cidr=None)  ·L675 — Open SSH ingress for the caller's current address if the group lacks it.
+- make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None)  ·L718 — Build the poll loop's `on_stuck` callback: say the host is unreachable, and
+- follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval, on_chunk=None, on_status=None, on_stuck=None, _ssh=_ssh)  ·L755 — Poll an already-launched detached job to completion (or a local abort).
+- pull_job_log(ip, keyfile, log_path, _ssh=_ssh)  ·L771 — Pull the full remote ~/job.out down to log_path (the authoritative final
+- _server_by_name_or_id(conn, name, server_id=None)  ·L783 — Find a server by id (preferred) or name, or None if it is already gone.
+- teardown_by_name(conn, name, server_id=None)  ·L798 — Delete a flux-compute instance and its same-named keypair + security group
+- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L826
+- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L849
 
 ### flux_compute/reap.py
 _`flux-compute reap`: find flux-compute instances and delete the expired ones._
@@ -281,12 +285,13 @@ _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling.
 - job_state(into, label)  ·L493 — Where one job of the jobs file stands, from what is on local disk:
 - _status_for_outcome(outcome, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L510 — Map a follow outcome to the sweep's (rc, status) record fields.
 - _finalize(ip, keyfile, dest, fetch, outcome, *, elapsed_s=None, cap_seconds=None)  ·L524 — Collect a followed job: pull the authoritative job.log, then the artifacts.
-- _reattach_records(cloud, region, into, max_parallel) -> int  ·L551 — Re-attach to every persisted in-flight job under <into>, collect and tear
-- resume_sweep(cloud=None, region=None, regions=None, into='cloud-sweep', max_parallel=4, jobs_file=None, uploads=(), script=None, fetch=None, max_minutes=30, budget_eur=None, flavor=None, image=None, …  ·L613 — Continue an interrupted sweep: re-attach what is running, then launch what
-- _upload_excludes(src, into)  ·L665 — Exclude the sweep's own results dir when it lives inside an upload source.
-- _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes)  ·L680 — Build the per-job runner bound to one region shard (provision -> upload ->
-- _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L753 — Plan and run a list of jobs: shard across regions, guard the budget, fan
-- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L852
+- _heal_ingress_before_reattach(conn, rec, cidr, emit=print)  ·L551 — Make sure this VM's security group still admits us, BEFORE the first SSH.
+- _reattach_records(cloud, region, into, max_parallel) -> int  ·L579 — Re-attach to every persisted in-flight job under <into>, collect and tear
+- resume_sweep(cloud=None, region=None, regions=None, into='cloud-sweep', max_parallel=4, jobs_file=None, uploads=(), script=None, fetch=None, max_minutes=30, budget_eur=None, flavor=None, image=None, …  ·L652 — Continue an interrupted sweep: re-attach what is running, then launch what
+- _upload_excludes(src, into)  ·L704 — Exclude the sweep's own results dir when it lives inside an upload source.
+- _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes)  ·L719 — Build the per-job runner bound to one region shard (provision -> upload ->
+- _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L792 — Plan and run a list of jobs: shard across regions, guard the budget, fan
+- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L891
 
 ### tests/test_detach.py
 _Pure-logic tests for the detach-and-poll machinery. No network, no credentials._
@@ -517,11 +522,15 @@ _Pure-logic tests for provision helpers. No network, no credentials._
   - create_security_group_rule(self, **kw)  ·L394
 - _conn_with(rules, sg=SimpleNamespace(id='sg-1'))  ·L398
 - test_heal_opens_ingress_when_the_public_ip_moved(monkeypatch)  ·L402
-- test_heal_is_a_noop_when_ingress_is_already_open(monkeypatch)  ·L410 — Idempotent: a repeated escalation must not pile up duplicate rules.
-- test_heal_declines_when_the_public_ip_read_failed(monkeypatch)  ·L418 — 0.0.0.0/0 is _public_ip_cidr's failure value; never open the world on it.
-- test_heal_declines_when_the_security_group_is_gone(monkeypatch)  ·L426
-- test_stuck_handler_surfaces_the_blackout_and_tries_to_heal(monkeypatch)  ·L432
-- test_stuck_handler_reports_a_failed_heal_without_raising()  ·L443 — The follow loop's contract is that only the deadline aborts it, so the
+- test_heal_appends_and_never_replaces_the_launch_time_rule(monkeypatch)  ·L411 — The stale /32 stays: a flapping address (tethering, a VPN toggling back)
+- test_heal_is_a_noop_when_ingress_is_already_open(monkeypatch)  ·L422 — Idempotent: a repeated escalation must not pile up duplicate rules.
+- test_heal_declines_when_the_public_ip_read_failed(monkeypatch)  ·L431 — 0.0.0.0/0 is _public_ip_cidr's failure value; never open the world on it.
+- test_heal_declines_when_the_security_group_is_gone(monkeypatch)  ·L442
+- test_heal_uses_a_caller_supplied_cidr_without_re_reading(monkeypatch)  ·L449 — A fleet-wide repair resolves the address once and passes it down.
+- test_current_ingress_cidr_is_none_when_the_read_failed(monkeypatch)  ·L460
+- test_stuck_handler_surfaces_the_blackout_and_tries_to_heal(monkeypatch)  ·L467
+- test_stuck_handler_says_so_when_the_public_ip_could_not_be_read(monkeypatch)  ·L478 — The blackout report must not claim a healthy group when the check never ran.
+- test_stuck_handler_reports_a_failed_heal_without_raising()  ·L490 — The follow loop's contract is that only the deadline aborts it, so the
 
 ### tests/test_reap.py
 _Pure-logic tests for reap selection: expiry math, positive identification,_
@@ -597,83 +606,90 @@ _Tests for the live per-region occupancy view. The pure core (fits math,_
 
 ### tests/test_sweep.py
 _Pure-logic tests for the sweep helpers. No network, no credentials._
-- test_parse_label_equals_params()  ·L34
-- test_parse_skips_blanks_and_comments()  ·L39
-- test_parse_line_without_equals_is_label_and_params()  ·L44
-- test_duplicate_label_raises()  ·L48
-- test_label_with_slash_raises()  ·L53
-- test_empty_jobs_raises()  ·L58
-- test_parse_strips_an_inline_comment_from_the_params()  ·L65 — The incident: the comment reached the remote inside $FLUX_JOB, so the
-- test_parse_strips_an_inline_comment_from_a_bare_label()  ·L72
-- test_parse_strips_an_inline_comment_before_the_equals()  ·L77 — Stripping happens before the label/params split, so a comment containing
-- test_parse_keeps_an_uncommented_line_byte_for_byte()  ·L84 — The uncommented forms every existing jobs file uses must be untouched.
-- test_parse_keeps_a_hash_that_is_not_a_comment()  ·L90 — A '#' glued to a value is part of the value (the shell reads it that way
-- test_parse_strips_trailing_whitespace_left_by_a_comment()  ·L98
-- test_strip_inline_comment_edge_forms()  ·L103
-- test_job_state_distinguishes_pending_in_flight_and_collected(tmp_path)  ·L116
-- test_upload_excludes_covers_an_into_dir_inside_the_upload(tmp_path)  ·L133
-- test_upload_excludes_is_empty_when_into_is_outside_the_upload(tmp_path)  ·L140
-- test_worst_case_cost()  ·L146
-- test_worst_case_price_unknown_is_none()  ·L151
-- test_budget_guard_priced_under_budget_returns_worst_case()  ·L155
-- test_budget_guard_priced_over_budget_raises()  ·L161
-- test_budget_guard_unpriced_with_budget_refuses_and_names_flavor()  ·L166
-- test_budget_guard_unpriced_without_budget_returns_none()  ·L174
-- test_clamp_concurrency_bounded_by_core_quota()  ·L181
-- test_clamp_concurrency_bounded_by_instance_quota()  ·L187
-- test_clamp_concurrency_user_ceiling_wins_when_quota_is_ample()  ·L193
-- test_clamp_concurrency_no_core_headroom_raises()  ·L198
-- test_clamp_concurrency_no_instance_headroom_raises()  ·L205
-- test_clamp_concurrency_unlimited_quota_sentinel_is_no_bound()  ·L211
-- test_fan_out_bounds_concurrency_and_runs_every_job()  ·L222
-- test_failure_status_flags_quota_and_capacity()  ·L244
-- test_failure_status_generic_error_stays_generic()  ·L249
-- test_failure_status_flags_teardown_strand()  ·L253
-- test_status_ok_on_clean_exit()  ·L261
-- test_status_nonzero_job()  ·L265
-- test_status_rc124_is_always_a_cap_timeout()  ·L270 — 124 is `timeout`'s own TERM code: unambiguous, no elapsed basis needed.
-- test_status_rc137_at_the_cap_is_a_timeout()  ·L276 — 137 that ran (almost) its whole cap IS the cap's kill-after escalation.
-- test_status_rc137_far_short_of_the_cap_is_never_called_a_timeout()  ·L284 — The misclassification that sent an OOM hunt after phantom slow jobs: a
-- test_status_rc137_with_confirmed_oom_says_so()  ·L295
-- test_status_local_deadline_is_a_failure_record()  ·L307
-- _make_keyfile(tmp_path)  ·L314
-- test_attach_record_write_load_clear_round_trip(tmp_path)  ·L320
-- test_load_attach_records_empty_when_no_into_dir(tmp_path)  ·L345
-- _wire_finalize(monkeypatch)  ·L349 — Count the log pull, the strict fetch and the best-effort (partial) fetch.
-- test_finalize_clean_run_pulls_log_and_artifacts(tmp_path, monkeypatch)  ·L362
-- test_finalize_fetches_partial_artifacts_before_teardown_on_deadline(tmp_path, monkeypatch)  ·L372 — A deadline abort used to fetch NOTHING, so every checkpoint the job had
-- test_finalize_fetches_partial_artifacts_on_a_nonzero_exit(tmp_path, monkeypatch)  ·L385
-- test_finalize_probes_the_kernel_log_for_a_sub_cap_sigkill(tmp_path, monkeypatch)  ·L395 — The OOM evidence dies with the instance, so the probe must happen here --
-- test_parse_regions_orders_and_dedupes()  ·L419
-- test_parse_regions_empty_raises()  ·L424
-- test_allocate_concurrency_spreads_across_regions_before_stacking()  ·L430
-- test_allocate_concurrency_never_exceeds_a_regions_cap()  ·L437
-- test_allocate_concurrency_five_gpu_regions_at_two_each()  ·L443
-- test_allocate_concurrency_rejects_nonpositive_ceiling()  ·L448
-- test_shard_jobs_deals_in_proportion_to_concurrency()  ·L453
-- test_shard_jobs_skips_zero_weight_regions()  ·L460
-- test_shard_jobs_fewer_jobs_than_regions_spreads_out()  ·L467
-- test_shard_jobs_no_allocation_raises()  ·L472
-- test_budget_guard_shards_sums_across_regions()  ·L477
-- test_budget_guard_shards_over_budget_raises_on_the_total()  ·L484
-- test_budget_guard_shards_unpriced_region_named_when_budget_set()  ·L491
-- _fake_shard(region, cap=2)  ·L506
-- _wire_prepare(monkeypatch, fit_regions, drop_reason='RuntimeError: quota fits zero')  ·L513 — Drive _prepare_shards without network: `fit_regions` succeed, the rest
-- _jobs_file(tmp_path)  ·L525
-- test_prepare_shards_partitions_fit_and_unfit(monkeypatch)  ·L531
-- test_prepare_shards_clouds_yaml_pin_still_raises(monkeypatch)  ·L539
-- test_sweep_drops_unfit_regions_and_proceeds(monkeypatch, tmp_path, capsys)  ·L547
-- test_sweep_strict_regions_refuses_on_any_unfit(monkeypatch, tmp_path)  ·L559
-- test_sweep_refuses_when_no_region_fits(monkeypatch, tmp_path)  ·L566
-- test_region_drop_label_defaults_when_region_is_none()  ·L573
-- test_pending_record_exists_before_the_instance_boots(tmp_path, monkeypatch)  ·L580 — A launcher killed during boot must leave a record naming the VM, or the
-- test_a_teardown_strand_keeps_the_record_for_resume(tmp_path, monkeypatch)  ·L611 — The record IS the handle --resume uses to finish a failed teardown, so a
-- _stub_resume(monkeypatch, launched)  ·L638
-- test_resume_without_a_jobs_file_only_reattaches(tmp_path, monkeypatch)  ·L644 — Backward compatibility: the existing `sweep --resume --into X` invocation
-- test_resume_launches_only_the_jobs_that_never_started(tmp_path, monkeypatch)  ·L653
-- test_resume_with_a_fully_accounted_jobs_file_launches_nothing(tmp_path, monkeypatch)  ·L673
-- test_resume_needs_script_and_fetch_to_launch_the_remainder(tmp_path, monkeypatch)  ·L688
-- test_run_sweep_resume_passes_the_jobs_file_through(tmp_path, monkeypatch)  ·L696 — `sweep --resume --jobs ...` must reach resume_sweep with the file.
+- test_parse_label_equals_params()  ·L35
+- test_parse_skips_blanks_and_comments()  ·L40
+- test_parse_line_without_equals_is_label_and_params()  ·L45
+- test_duplicate_label_raises()  ·L49
+- test_label_with_slash_raises()  ·L54
+- test_empty_jobs_raises()  ·L59
+- test_parse_strips_an_inline_comment_from_the_params()  ·L66 — The incident: the comment reached the remote inside $FLUX_JOB, so the
+- test_parse_strips_an_inline_comment_from_a_bare_label()  ·L73
+- test_parse_strips_an_inline_comment_before_the_equals()  ·L78 — Stripping happens before the label/params split, so a comment containing
+- test_parse_keeps_an_uncommented_line_byte_for_byte()  ·L85 — The uncommented forms every existing jobs file uses must be untouched.
+- test_parse_keeps_a_hash_that_is_not_a_comment()  ·L91 — A '#' glued to a value is part of the value (the shell reads it that way
+- test_parse_strips_trailing_whitespace_left_by_a_comment()  ·L99
+- test_strip_inline_comment_edge_forms()  ·L104
+- test_job_state_distinguishes_pending_in_flight_and_collected(tmp_path)  ·L117
+- test_upload_excludes_covers_an_into_dir_inside_the_upload(tmp_path)  ·L134
+- test_upload_excludes_is_empty_when_into_is_outside_the_upload(tmp_path)  ·L141
+- test_worst_case_cost()  ·L147
+- test_worst_case_price_unknown_is_none()  ·L152
+- test_budget_guard_priced_under_budget_returns_worst_case()  ·L156
+- test_budget_guard_priced_over_budget_raises()  ·L162
+- test_budget_guard_unpriced_with_budget_refuses_and_names_flavor()  ·L167
+- test_budget_guard_unpriced_without_budget_returns_none()  ·L175
+- test_clamp_concurrency_bounded_by_core_quota()  ·L182
+- test_clamp_concurrency_bounded_by_instance_quota()  ·L188
+- test_clamp_concurrency_user_ceiling_wins_when_quota_is_ample()  ·L194
+- test_clamp_concurrency_no_core_headroom_raises()  ·L199
+- test_clamp_concurrency_no_instance_headroom_raises()  ·L206
+- test_clamp_concurrency_unlimited_quota_sentinel_is_no_bound()  ·L212
+- test_fan_out_bounds_concurrency_and_runs_every_job()  ·L223
+- test_failure_status_flags_quota_and_capacity()  ·L245
+- test_failure_status_generic_error_stays_generic()  ·L250
+- test_failure_status_flags_teardown_strand()  ·L254
+- test_status_ok_on_clean_exit()  ·L262
+- test_status_nonzero_job()  ·L266
+- test_status_rc124_is_always_a_cap_timeout()  ·L271 — 124 is `timeout`'s own TERM code: unambiguous, no elapsed basis needed.
+- test_status_rc137_at_the_cap_is_a_timeout()  ·L277 — 137 that ran (almost) its whole cap IS the cap's kill-after escalation.
+- test_status_rc137_far_short_of_the_cap_is_never_called_a_timeout()  ·L285 — The misclassification that sent an OOM hunt after phantom slow jobs: a
+- test_status_rc137_with_confirmed_oom_says_so()  ·L296
+- test_status_local_deadline_is_a_failure_record()  ·L308
+- _make_keyfile(tmp_path)  ·L315
+- test_attach_record_write_load_clear_round_trip(tmp_path)  ·L321
+- test_load_attach_records_empty_when_no_into_dir(tmp_path)  ·L346
+- _wire_finalize(monkeypatch)  ·L350 — Count the log pull, the strict fetch and the best-effort (partial) fetch.
+- test_finalize_clean_run_pulls_log_and_artifacts(tmp_path, monkeypatch)  ·L363
+- test_finalize_fetches_partial_artifacts_before_teardown_on_deadline(tmp_path, monkeypatch)  ·L373 — A deadline abort used to fetch NOTHING, so every checkpoint the job had
+- test_finalize_fetches_partial_artifacts_on_a_nonzero_exit(tmp_path, monkeypatch)  ·L386
+- test_finalize_probes_the_kernel_log_for_a_sub_cap_sigkill(tmp_path, monkeypatch)  ·L396 — The OOM evidence dies with the instance, so the probe must happen here --
+- test_parse_regions_orders_and_dedupes()  ·L420
+- test_parse_regions_empty_raises()  ·L425
+- test_allocate_concurrency_spreads_across_regions_before_stacking()  ·L431
+- test_allocate_concurrency_never_exceeds_a_regions_cap()  ·L438
+- test_allocate_concurrency_five_gpu_regions_at_two_each()  ·L444
+- test_allocate_concurrency_rejects_nonpositive_ceiling()  ·L449
+- test_shard_jobs_deals_in_proportion_to_concurrency()  ·L454
+- test_shard_jobs_skips_zero_weight_regions()  ·L461
+- test_shard_jobs_fewer_jobs_than_regions_spreads_out()  ·L468
+- test_shard_jobs_no_allocation_raises()  ·L473
+- test_budget_guard_shards_sums_across_regions()  ·L478
+- test_budget_guard_shards_over_budget_raises_on_the_total()  ·L485
+- test_budget_guard_shards_unpriced_region_named_when_budget_set()  ·L492
+- _fake_shard(region, cap=2)  ·L507
+- _wire_prepare(monkeypatch, fit_regions, drop_reason='RuntimeError: quota fits zero')  ·L514 — Drive _prepare_shards without network: `fit_regions` succeed, the rest
+- _jobs_file(tmp_path)  ·L526
+- test_prepare_shards_partitions_fit_and_unfit(monkeypatch)  ·L532
+- test_prepare_shards_clouds_yaml_pin_still_raises(monkeypatch)  ·L540
+- test_sweep_drops_unfit_regions_and_proceeds(monkeypatch, tmp_path, capsys)  ·L548
+- test_sweep_strict_regions_refuses_on_any_unfit(monkeypatch, tmp_path)  ·L560
+- test_sweep_refuses_when_no_region_fits(monkeypatch, tmp_path)  ·L567
+- test_region_drop_label_defaults_when_region_is_none()  ·L574
+- test_pending_record_exists_before_the_instance_boots(tmp_path, monkeypatch)  ·L581 — A launcher killed during boot must leave a record naming the VM, or the
+- test_a_teardown_strand_keeps_the_record_for_resume(tmp_path, monkeypatch)  ·L612 — The record IS the handle --resume uses to finish a failed teardown, so a
+- _rec(**kw)  ·L645
+- test_resume_heal_announces_a_reopened_group(monkeypatch)  ·L655
+- test_resume_heal_is_quiet_when_ingress_is_already_open(monkeypatch)  ·L664 — The common case (same network) must not add noise to a 100-job resume.
+- test_resume_heal_reports_an_unreadable_public_ip_and_continues(monkeypatch)  ·L673 — Cannot repair without knowing where we are -- say so, then let the SSH
+- test_resume_heal_surfaces_an_api_error_without_failing_the_reattach(monkeypatch)  ·L683 — A network-API hiccup must not abandon a live, billing VM: the check is
+- test_reattach_heals_every_group_before_any_ssh(tmp_path, monkeypatch, capsys)  ·L697 — End to end: the ingress repair for each VM lands BEFORE that VM's first
+- test_reattach_warns_once_when_the_public_ip_cannot_be_read(tmp_path, monkeypatch, capsys)  ·L738
+- _stub_resume(monkeypatch, launched)  ·L762
+- test_resume_without_a_jobs_file_only_reattaches(tmp_path, monkeypatch)  ·L768 — Backward compatibility: the existing `sweep --resume --into X` invocation
+- test_resume_launches_only_the_jobs_that_never_started(tmp_path, monkeypatch)  ·L777
+- test_resume_with_a_fully_accounted_jobs_file_launches_nothing(tmp_path, monkeypatch)  ·L797
+- test_resume_needs_script_and_fetch_to_launch_the_remainder(tmp_path, monkeypatch)  ·L812
+- test_run_sweep_resume_passes_the_jobs_file_through(tmp_path, monkeypatch)  ·L820 — `sweep --resume --jobs ...` must reach resume_sweep with the file.
 
 ## Other source files
 

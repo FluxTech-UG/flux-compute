@@ -402,31 +402,66 @@ def _conn_with(rules, sg=SimpleNamespace(id="sg-1")):
 def test_heal_opens_ingress_when_the_public_ip_moved(monkeypatch):
     monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "9.9.9.9/32")
     conn = _conn_with([_FakeRule("1.2.3.4/32")])
-    msg = heal_ssh_ingress(conn, "flux-compute-sweep-abcd")
-    assert msg and "9.9.9.9/32" in msg
+    check = heal_ssh_ingress(conn, "flux-compute-sweep-abcd")
+    assert check and check.status == "healed" and "9.9.9.9/32" in check.message
     assert conn.network.created[0]["remote_ip_prefix"] == "9.9.9.9/32"
+    assert conn.network.created[0]["port_range_min"] == 22
+
+
+def test_heal_appends_and_never_replaces_the_launch_time_rule(monkeypatch):
+    """The stale /32 stays: a flapping address (tethering, a VPN toggling back)
+    must not lock out the very machine that launched the fleet."""
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "9.9.9.9/32")
+    original = _FakeRule("1.2.3.4/32")
+    conn = _conn_with([original])
+    assert heal_ssh_ingress(conn, "sg")
+    assert original in conn.network.rules            # untouched, still present
+    assert len(conn.network.created) == 1            # added, not swapped
 
 
 def test_heal_is_a_noop_when_ingress_is_already_open(monkeypatch):
     """Idempotent: a repeated escalation must not pile up duplicate rules."""
     monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
     conn = _conn_with([_FakeRule("1.2.3.4/32")])
-    assert heal_ssh_ingress(conn, "sg") is None
+    check = heal_ssh_ingress(conn, "sg")
+    assert not check and check.status == "open"
     assert conn.network.created == []
 
 
 def test_heal_declines_when_the_public_ip_read_failed(monkeypatch):
-    """0.0.0.0/0 is _public_ip_cidr's failure value; never open the world on it."""
-    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "0.0.0.0/0")
+    """0.0.0.0/0 is _public_ip_cidr's failure value; never open the world on it.
+    The status must say the check did not run, not that the group looked fine."""
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: provision.UNKNOWN_CIDR)
     conn = _conn_with([_FakeRule("1.2.3.4/32")])
-    assert heal_ssh_ingress(conn, "sg") is None
+    check = heal_ssh_ingress(conn, "sg")
+    assert not check and check.status == "unknown-ip"
+    assert "public IP" in check.message
     assert conn.network.created == []
 
 
 def test_heal_declines_when_the_security_group_is_gone(monkeypatch):
     monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "9.9.9.9/32")
     conn = _conn_with([], sg=None)
-    assert heal_ssh_ingress(conn, "sg") is None
+    check = heal_ssh_ingress(conn, "sg")
+    assert not check and check.status == "no-group"
+
+
+def test_heal_uses_a_caller_supplied_cidr_without_re_reading(monkeypatch):
+    """A fleet-wide repair resolves the address once and passes it down."""
+    def _boom():
+        raise AssertionError("must not re-read the public IP")
+
+    monkeypatch.setattr(provision, "_public_ip_cidr", _boom)
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    assert heal_ssh_ingress(conn, "sg", "5.5.5.5/32")
+    assert conn.network.created[0]["remote_ip_prefix"] == "5.5.5.5/32"
+
+
+def test_current_ingress_cidr_is_none_when_the_read_failed(monkeypatch):
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: provision.UNKNOWN_CIDR)
+    assert provision.current_ingress_cidr() is None
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "7.7.7.7/32")
+    assert provision.current_ingress_cidr() == "7.7.7.7/32"
 
 
 def test_stuck_handler_surfaces_the_blackout_and_tries_to_heal(monkeypatch):
@@ -438,6 +473,18 @@ def test_stuck_handler_surfaces_the_blackout_and_tries_to_heal(monkeypatch):
     assert "SSH unreachable since" in text and "[alpha]" in text
     assert "9.9.9.9/32" in text                       # healed, and said so
     assert conn.network.created                       # the rule really was added
+
+
+def test_stuck_handler_says_so_when_the_public_ip_could_not_be_read(monkeypatch):
+    """The blackout report must not claim a healthy group when the check never ran."""
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: provision.UNKNOWN_CIDR)
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    lines = []
+    make_stuck_handler(conn, "sg", emit=lines.append)(4, 60.0)
+    text = "\n".join(lines)
+    assert "could not read" in text
+    assert "ingress still open" not in text        # the misleading old claim
+    assert conn.network.created == []
 
 
 def test_stuck_handler_reports_a_failed_heal_without_raising():

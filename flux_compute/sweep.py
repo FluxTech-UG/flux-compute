@@ -32,9 +32,9 @@ from .provision import (
     LOCAL_GRACE_S, POLL_INTERVAL_SWEEP_S, RC_SIGKILL, RESUME_MIN_DEADLINE_S,
     TeardownStrandError, _gpu_instance, _launch_detached, _print_plan, _region,
     _rsync_down, _rsync_up, _scp_up, _server_by_name_or_id, classify_exit,
-    follow_detached_job, looks_like_cap_kill, make_stuck_handler,
-    parse_upload_spec, probe_oom_kill, pull_job_log, rsync_down_best_effort,
-    teardown_by_name, ttl_minutes_for,
+    current_ingress_cidr, follow_detached_job, heal_ssh_ingress,
+    looks_like_cap_kill, make_stuck_handler, parse_upload_spec, probe_oom_kill,
+    pull_job_log, rsync_down_best_effort, teardown_by_name, ttl_minutes_for,
 )
 from .reap import warn_strays
 
@@ -548,6 +548,34 @@ def _finalize(ip, keyfile, dest, fetch, outcome, *, elapsed_s=None, cap_seconds=
                                cap_seconds=cap_seconds, oom=oom)
 
 
+def _heal_ingress_before_reattach(conn, rec, cidr, emit=print):
+    """Make sure this VM's security group still admits us, BEFORE the first SSH.
+
+    A resume is the moment the caller is most likely to be somewhere else: the
+    fleet was launched from one network and is being collected from another
+    (overnight, a commute, a VPN). Each instance's group admits exactly the /32
+    that launched it, so a moved address locks the operator out of every job at
+    once -- and a re-attach that just starts polling reads as a healthy long job,
+    since silence is what both look like. Checking up front turns hours of silent
+    unreachability into one printed line and a first poll that works.
+
+    Precautionary, so it never fails the re-attach: the authority on whether the
+    VM is reachable is the SSH attempt that follows, and abandoning a live,
+    billing instance over a network-API hiccup would be a far worse outcome than
+    a redundant check. Anything unexpected is therefore surfaced loudly and
+    stepped past, never swallowed.
+    """
+    try:
+        check = heal_ssh_ingress(conn, rec.name, cidr)
+    except Exception as exc:
+        emit(f"  [{rec.label}] WARNING: could not check SSH ingress on security "
+             f"group {rec.name} ({type(exc).__name__}: {str(exc)[:100]}); "
+             "re-attaching anyway.")
+        return
+    if check or check.status == "unknown-ip":
+        emit(f"  [{rec.label}] {check.message}")
+
+
 def _reattach_records(cloud, region, into, max_parallel) -> int:
     """Re-attach to every persisted in-flight job under <into>, collect and tear
     down. Returns 0 when all of them ended cleanly."""
@@ -561,6 +589,15 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
         warn_strays(connect(cloud=cloud, region=region))
     except Exception as exc:
         print(f"note: stray check skipped ({type(exc).__name__}: {str(exc)[:80]})")
+
+    # Resolved ONCE for the whole fleet: every job's group is compared against
+    # the same address, and 16 re-attaches do not make 16 identical lookups.
+    # None (the read failed) still flows down, so each job says so and continues.
+    cidr = current_ingress_cidr()
+    if cidr is None:
+        print("note: could not read this machine's public IP; SSH ingress cannot "
+              "be re-checked. If every job below goes unreachable, that is the "
+              "first thing to suspect.")
 
     def _resume_one(rec):
         dest = os.path.join(rec.into, rec.label)
@@ -582,6 +619,8 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
                 return (rec.label, -1,
                         "orphan: instance booted but the launcher died before "
                         "recording its key; torn down (results unrecoverable)")
+            # Before the first SSH: re-open ingress if we are on a new network.
+            _heal_ingress_before_reattach(conn, rec, cidr)
             # The original deadline may already have elapsed while the orchestrator
             # was down, yet the job (or its remote-cap kill) may have finished and
             # just needs collecting -- so floor the follow at RESUME_MIN_DEADLINE_S.

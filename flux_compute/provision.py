@@ -120,6 +120,11 @@ def ttl_metadata(ttl_minutes, keep=False, now=None):
     return md
 
 SSH_USER = "ubuntu"
+# What `_public_ip_cidr` returns when it cannot read the caller's address. At
+# launch it means "could not lock the group down", and it is NEVER a value to
+# repair an existing group with: adding it would open SSH to the whole internet
+# on the strength of a failed lookup.
+UNKNOWN_CIDR = "0.0.0.0/0"
 _SSH_OPTS = [
     "-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null",
@@ -259,7 +264,21 @@ def _public_ip_cidr():
         socket.inet_aton(ip)
         return f"{ip}/32"
     except Exception:
-        return "0.0.0.0/0"
+        return UNKNOWN_CIDR
+
+
+def current_ingress_cidr():
+    """The /32 an instance's security group must admit for this caller to SSH in,
+    or None when the address could not be read.
+
+    The ONE public-IP read in the package: `_public_ip_cidr` is what the launch
+    path uses to build a new group's original ingress rule, so every later repair
+    must ask the same question the same way, or it would compare against a
+    different notion of "here". A caller repairing many groups at once resolves
+    this once and passes it down rather than re-reading per group.
+    """
+    cidr = _public_ip_cidr()
+    return None if cidr == UNKNOWN_CIDR else cidr
 
 
 def _wait_ssh(host, port=22, timeout=180):
@@ -632,35 +651,68 @@ def _sg_allows_ssh_from(conn, sg, cidr):
     return False
 
 
-def heal_ssh_ingress(conn, sg_name, _cidr=None):
-    """Re-read the caller's public IP and open SSH ingress for it if it moved.
+@dataclass(frozen=True)
+class IngressCheck:
+    """What `heal_ssh_ingress` found, and a line fit to print about it.
+
+    The status is carried separately because the three non-repairing outcomes are
+    different news: ``open`` means the group was checked and is fine, while
+    ``unknown-ip`` and ``no-group`` mean the check could not be completed at all.
+    A caller that cannot tell them apart reports a healthy group when nothing was
+    verified -- the exact ambiguity that leaves an operator staring at a silent
+    log wondering whether the fleet is reachable.
+    """
+
+    status: str          # "healed" | "open" | "unknown-ip" | "no-group"
+    message: str
+
+    def __bool__(self):
+        """Truthy only when a rule was actually added, so ``if check:`` reads as
+        "did we change anything"."""
+        return self.status == "healed"
+
+
+def heal_ssh_ingress(conn, sg_name, cidr=None):
+    """Open SSH ingress for the caller's current address if the group lacks it.
 
     Every instance's security group is created allowing SSH from ONE address --
     the launcher's public IP at boot (`_public_ip_cidr`). If that address changes
     while a fleet is running (a different network, a VPN toggling, an ISP
-    re-lease), every SSH to every job starts timing out at once and the poll loop
-    retries forever in silence: the fleet is alive, the work is fine, and nothing
-    can be collected. Re-opening ingress for the new address is the fix, and it is
-    the one repair worth attempting automatically, because the failure is global
-    and self-inflicted rather than a property of any job.
+    re-lease), every SSH to every job starts timing out at once: the fleet is
+    alive, the work is fine, and nothing can be collected. Re-opening ingress for
+    the new address is the fix, and it is the one repair worth attempting
+    automatically, because the failure is global and self-inflicted rather than a
+    property of any job.
 
-    Returns a short description of what it did, or None when the address is
-    unchanged (in which case the blackout is something else). Additive only: the
-    stale rule is left in place, so a flapping address does not lock anyone out.
+    `cidr` defaults to a fresh read (`current_ingress_cidr`); a caller sweeping
+    many groups resolves it once and passes it in. Additive only: the stale rule
+    is left in place, so a flapping address does not lock anyone out, and a
+    repeat call is a no-op rather than a pile of duplicate rules. Returns an
+    `IngressCheck`; an unexpected API error is NOT caught here -- the caller
+    decides whether its own contract can absorb one.
     """
-    cidr = _cidr or _public_ip_cidr()
-    if cidr == "0.0.0.0/0":
-        return None            # the public-IP read itself failed; nothing to trust
+    cidr = cidr or current_ingress_cidr()
+    if cidr is None or cidr == UNKNOWN_CIDR:
+        # The public-IP read failed. Never widen a group on a guess -- report the
+        # gap and let the SSH attempt itself say what the real state is.
+        return IngressCheck(
+            "unknown-ip",
+            "could not read this machine's public IP, so SSH ingress could not be "
+            f"checked on security group {sg_name}; continuing anyway")
     sg = conn.network.find_security_group(sg_name)
     if sg is None:
-        return None
+        return IngressCheck(
+            "no-group", f"security group {sg_name} no longer exists")
     if _sg_allows_ssh_from(conn, sg, cidr):
-        return None
+        return IngressCheck(
+            "open", f"SSH ingress from {cidr} is already open on {sg_name}")
     conn.network.create_security_group_rule(
         security_group_id=sg.id, direction="ingress", protocol="tcp",
         port_range_min=22, port_range_max=22, remote_ip_prefix=cidr,
         ethertype="IPv4")
-    return f"public IP moved: opened SSH ingress from {cidr} on security group {sg_name}"
+    return IngressCheck(
+        "healed",
+        f"public IP moved: opened SSH ingress from {cidr} on security group {sg_name}")
 
 
 def make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None):
@@ -683,17 +735,19 @@ def make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None):
              "the job itself may be fine and still running -- checking whether our "
              "public IP moved out of the instance's allowed range ...")
         try:
-            healed = heal_ssh_ingress(conn, sg_name)
+            check = heal_ssh_ingress(conn, sg_name)
         except Exception as exc:
             emit(f"         {tag}ingress re-check failed "
                  f"({type(exc).__name__}: {str(exc)[:100]}); still retrying.")
             return
-        if healed:
-            emit(f"         {tag}{healed}; polling should recover.")
-        else:
+        if check:
+            emit(f"         {tag}{check.message}; polling should recover.")
+        elif check.status == "open":
             emit(f"         {tag}public IP unchanged and ingress still open; "
                  "the instance or the network is the cause. Retrying until the "
                  "local deadline.")
+        else:
+            emit(f"         {tag}{check.message}. Retrying until the local deadline.")
 
     return _on_stuck
 

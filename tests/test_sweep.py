@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from flux_compute import sweep
-from flux_compute.detach import PollOutcome
+from flux_compute.detach import AttachRecord, PollOutcome
+from flux_compute.provision import IngressCheck
 from flux_compute.sweep import (
     RegionDrop,
     Shard,
@@ -631,6 +632,129 @@ def test_a_teardown_strand_keeps_the_record_for_resume(tmp_path, monkeypatch):
 
     _run_with(RuntimeError("ssh never opened"))(("dropped", "p"))
     assert [r.label for r in _load_attach_records(into)] == ["kept"]   # 'dropped' cleared
+
+
+# --- --resume heals SSH ingress before it reconnects --------------------------
+#
+# The roaming incident: a 16-VM fleet was launched from one network and resumed
+# from another, so every per-VM security group still admitted only the old /32.
+# Every re-attach hung, the fleet sat FINISHED and idle-billing for hours, and
+# the log said nothing because silence is also what a healthy long job looks
+# like. The repair below runs before the first SSH of every re-attach.
+
+def _rec(**kw):
+    base = dict(label="alpha", cloud="flux-ovh", region="UK1",
+                name="flux-compute-sweep-abcd1234", remote_script="job.sh",
+                fetch="out", into="cloud-sweep", cap_seconds=1800,
+                launch_epoch=time.time(), server_id="srv-1", ip="1.2.3.4",
+                keyfile="/tmp/id_key")
+    base.update(kw)
+    return AttachRecord(**base)
+
+
+def test_resume_heal_announces_a_reopened_group(monkeypatch):
+    monkeypatch.setattr(sweep, "heal_ssh_ingress",
+                        lambda conn, sg, cidr: IngressCheck("healed", f"opened {cidr} on {sg}"))
+    lines = []
+    sweep._heal_ingress_before_reattach(None, _rec(), "9.9.9.9/32", emit=lines.append)
+    assert len(lines) == 1
+    assert "opened 9.9.9.9/32" in lines[0] and "[alpha]" in lines[0]
+
+
+def test_resume_heal_is_quiet_when_ingress_is_already_open(monkeypatch):
+    """The common case (same network) must not add noise to a 100-job resume."""
+    monkeypatch.setattr(sweep, "heal_ssh_ingress",
+                        lambda conn, sg, cidr: IngressCheck("open", "already open"))
+    lines = []
+    sweep._heal_ingress_before_reattach(None, _rec(), "1.2.3.4/32", emit=lines.append)
+    assert lines == []
+
+
+def test_resume_heal_reports_an_unreadable_public_ip_and_continues(monkeypatch):
+    """Cannot repair without knowing where we are -- say so, then let the SSH
+    attempt be the authority on whether it actually matters."""
+    monkeypatch.setattr(sweep, "heal_ssh_ingress",
+                        lambda conn, sg, cidr: IngressCheck("unknown-ip", "could not read public IP"))
+    lines = []
+    sweep._heal_ingress_before_reattach(None, _rec(), None, emit=lines.append)
+    assert len(lines) == 1 and "could not read public IP" in lines[0]
+
+
+def test_resume_heal_surfaces_an_api_error_without_failing_the_reattach(monkeypatch):
+    """A network-API hiccup must not abandon a live, billing VM: the check is
+    precautionary, so it is surfaced loudly and stepped past."""
+    def _boom(conn, sg, cidr):
+        raise RuntimeError("neutron 503")
+
+    monkeypatch.setattr(sweep, "heal_ssh_ingress", _boom)
+    lines = []
+    sweep._heal_ingress_before_reattach(None, _rec(), "9.9.9.9/32", emit=lines.append)
+    assert len(lines) == 1
+    assert "WARNING" in lines[0] and "neutron 503" in lines[0]
+    assert "flux-compute-sweep-abcd1234" in lines[0]     # names the group
+
+
+def test_reattach_heals_every_group_before_any_ssh(tmp_path, monkeypatch, capsys):
+    """End to end: the ingress repair for each VM lands BEFORE that VM's first
+    poll, and the address is read once for the whole fleet rather than per job."""
+    events, reads = [], []
+
+    monkeypatch.setattr(sweep, "_load_attach_records",
+                        lambda into: [_rec(label="a", name="sg-a"),
+                                      _rec(label="b", name="sg-b")])
+    monkeypatch.setattr(sweep, "connect", lambda **kw: SimpleNamespace())
+    monkeypatch.setattr(sweep, "warn_strays", lambda conn: None)
+    monkeypatch.setattr(sweep, "_server_by_name_or_id",
+                        lambda conn, name, sid: SimpleNamespace(id=sid))
+    monkeypatch.setattr(sweep, "current_ingress_cidr",
+                        lambda: reads.append(1) or "9.9.9.9/32")
+
+    def _heal(conn, sg, cidr):
+        assert cidr == "9.9.9.9/32"
+        events.append(("heal", sg))
+        return IngressCheck("healed", f"opened {cidr} on {sg}")
+
+    def _follow(ip, keyfile, cap, **kw):
+        events.append(("ssh", kw.get("on_stuck") is not None))
+        return PollOutcome(rc=0, reason="done", output_size=0)
+
+    monkeypatch.setattr(sweep, "heal_ssh_ingress", _heal)
+    monkeypatch.setattr(sweep, "follow_detached_job", _follow)
+    monkeypatch.setattr(sweep, "make_stuck_handler", lambda *a, **kw: (lambda n, s: None))
+    monkeypatch.setattr(sweep, "_finalize", lambda *a, **kw: (0, "ok"))
+    monkeypatch.setattr(sweep, "teardown_by_name", lambda conn, name, sid: None)
+    monkeypatch.setattr(sweep, "_clear_attach_record", lambda dest: None)
+
+    assert sweep._reattach_records(None, None, str(tmp_path), 1) == 0
+
+    # Both VMs healed, each before its own SSH, and one public-IP read in total.
+    assert [e for e in events if e[0] == "heal"] == [("heal", "sg-a"), ("heal", "sg-b")]
+    assert events[0][0] == "heal" and events[1][0] == "ssh"
+    assert events[2][0] == "heal" and events[3][0] == "ssh"
+    assert len(reads) == 1
+    assert "opened 9.9.9.9/32 on sg-a" in capsys.readouterr().out
+
+
+def test_reattach_warns_once_when_the_public_ip_cannot_be_read(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sweep, "_load_attach_records", lambda into: [_rec()])
+    monkeypatch.setattr(sweep, "connect", lambda **kw: SimpleNamespace())
+    monkeypatch.setattr(sweep, "warn_strays", lambda conn: None)
+    monkeypatch.setattr(sweep, "_server_by_name_or_id",
+                        lambda conn, name, sid: SimpleNamespace(id=sid))
+    monkeypatch.setattr(sweep, "current_ingress_cidr", lambda: None)
+    monkeypatch.setattr(sweep, "heal_ssh_ingress",
+                        lambda conn, sg, cidr: IngressCheck("unknown-ip", "could not read public IP"))
+    monkeypatch.setattr(sweep, "follow_detached_job",
+                        lambda *a, **kw: PollOutcome(rc=0, reason="done", output_size=0))
+    monkeypatch.setattr(sweep, "make_stuck_handler", lambda *a, **kw: (lambda n, s: None))
+    monkeypatch.setattr(sweep, "_finalize", lambda *a, **kw: (0, "ok"))
+    monkeypatch.setattr(sweep, "teardown_by_name", lambda conn, name, sid: None)
+    monkeypatch.setattr(sweep, "_clear_attach_record", lambda dest: None)
+
+    assert sweep._reattach_records(None, None, str(tmp_path), 1) == 0
+    out = capsys.readouterr().out
+    assert "could not read this machine's public IP" in out   # the fleet-wide note
+    assert "first thing to suspect" in out
 
 
 # --- --resume continues the jobs file -----------------------------------------

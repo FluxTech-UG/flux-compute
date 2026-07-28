@@ -115,7 +115,14 @@ results are the last trace of the work and the instance is about to be deleted.
   the single definition of what reaches `$FLUX_JOB`, so never add a compensating
   strip in a consumer's job script. `_launch_jobs` is the shared launch path, used
   both by a fresh sweep and by `--resume --jobs`, which continues the jobs file by
-  launching whatever `job_state` finds neither in flight nor collected.
+  launching whatever `job_state` finds neither in flight nor collected. `--resume`
+  heals SSH ingress **before the first SSH of each re-attach**
+  (`_heal_ingress_before_reattach`): a fleet launched from one network is
+  routinely collected from another, and a stale `/32` makes every job unreachable
+  at once. The address is resolved once per resume
+  (`provision.current_ingress_cidr`) and passed down. The check is precautionary,
+  so an API error is printed and stepped past rather than abandoning a live,
+  billing VM — the SSH attempt that follows is the authority.
   `--max-parallel` is the GLOBAL live-instance ceiling; each region
   is additionally clamped to its own headroom. The region pre-flight is
   **graceful-degrade by default**: `_prepare_shards` returns `(shards, drops)`,
