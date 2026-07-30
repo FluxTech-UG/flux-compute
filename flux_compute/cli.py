@@ -296,6 +296,12 @@ def main(argv=None) -> int:
                            "work: it exists so a runaway fleet can be stopped from a script or a "
                            "non-tty session without piping `yes`, which is indiscriminate and "
                            "answers prompts nobody read. Implies --yes.")
+    reap.add_argument("--sweep-local", action="append", default=None, metavar="DIR",
+                      help="Also reconcile persisted .flux_attach* records (record.json + the "
+                           "copied ephemeral SSH key) under DIR against the live listings, and "
+                           "remove those whose instance is verifiably gone from a scanned "
+                           "region. Live, unscanned-region, and unreadable records are left "
+                           "alone. Repeatable.")
 
     push = sub.add_parser(
         "push",
@@ -375,7 +381,8 @@ def main(argv=None) -> int:
         if args.command == "reap":
             from .reap import run_reap
             return run_reap(cloud=args.cloud, region=args.region, regions=args.regions,
-                            yes=args.yes, take_all=args.take_all, force=args.force)
+                            yes=args.yes, take_all=args.take_all, force=args.force,
+                            sweep_local=args.sweep_local or ())
 
         if args.command == "push":
             from .objstore import run_push

@@ -213,20 +213,26 @@ _Provision a GPU instance, run work on it, and always tear it down._
 
 ### flux_compute/reap.py
 _`flux-compute reap`: find flux-compute instances and delete the expired ones._
-- const AUTO_BUCKET  ·L45
-- parse_utc(s)  ·L48 — Parse an ISO-8601 UTC timestamp (Z or offset) to an aware datetime, or
-- @dataclass class Candidate  ·L63 — One flux-compute instance and the decision basis for its bucket.
-  - @property auto_reapable(self) -> bool  ·L76
-  - @property is_stray(self) -> bool  ·L80 — Strays drive the nonzero exit and the per-command warnings: a
-- assess(server_id, name, metadata, created_at, flavor_name, now) -> Candidate | None  ·L87 — Classify one server, or return None when it is not positively
-- _server_flavor_name(server)  ·L126
-- find_candidates(servers, now)  ·L135 — Assess every server; only positively identified flux-compute instances
-- describe(c: Candidate) -> str  ·L148
-- warn_strays(conn, full=False, now=None)  ·L156 — Advisory stray check run at the start of every CLI command that
-- _confirm(prompt) -> bool  ·L190
-- _reap_one(conn, c: Candidate) -> bool  ·L198 — Delete one candidate's server (verified) plus its same-named keypair and
-- run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False, force=False) -> int  ·L219 — Hunt strays across regions, because servers and quota are BOTH per region.
-- _reap_region(cloud, region, yes, take_all, force=False) -> int  ·L263
+- const AUTO_BUCKET  ·L57
+- const ATTACH_DIR_PREFIX  ·L63
+- const ATTACH_RECORD_NAME  ·L64
+- const ATTACH_KEY_NAME  ·L65
+- parse_utc(s)  ·L68 — Parse an ISO-8601 UTC timestamp (Z or offset) to an aware datetime, or
+- @dataclass class Candidate  ·L83 — One flux-compute instance and the decision basis for its bucket.
+  - @property auto_reapable(self) -> bool  ·L96
+  - @property is_stray(self) -> bool  ·L100 — Strays drive the nonzero exit and the per-command warnings: a
+- assess(server_id, name, metadata, created_at, flavor_name, now) -> Candidate | None  ·L107 — Classify one server, or return None when it is not positively
+- _server_flavor_name(server)  ·L146
+- find_candidates(servers, now)  ·L155 — Assess every server; only positively identified flux-compute instances
+- describe(c: Candidate) -> str  ·L168
+- warn_strays(conn, full=False, now=None)  ·L176 — Advisory stray check run at the start of every CLI command that
+- @dataclass class LocalAttach  ·L211 — One persisted `.flux_attach*` directory found under a --sweep-local root.
+- find_local_attach_dirs(roots)  ·L223 — Every `.flux_attach*` dir holding a record.json under the given roots.
+- sweep_local_attach(entries, live_by_region, emit=print, union_ok=False) -> int  ·L255 — Reconcile persisted attach dirs against the live per-region listings.
+- _confirm(prompt) -> bool  ·L304
+- _reap_one(conn, c: Candidate) -> bool  ·L312 — Delete one candidate's server (verified) plus its same-named keypair and
+- run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False, force=False, sweep_local=()) -> int  ·L333 — Hunt strays across regions, because servers and quota are BOTH per region.
+- _reap_region(cloud, region, yes, take_all, force=False, live_out=None) -> int  ·L396
 
 ### flux_compute/regions.py
 _`flux-compute regions`: a live, read-only per-region occupancy view._
@@ -563,16 +569,22 @@ _Pure-logic tests for reap selection: expiry math, positive identification,_
 - test_run_reap_all_confirmed_takes_extra_buckets_but_never_foreign(monkeypatch)  ·L252
 - test_run_reap_non_interactive_without_yes_deletes_nothing(monkeypatch)  ·L261
 - test_run_reap_exit_zero_when_only_keep_flagged_remains(monkeypatch)  ·L273
-- test_run_reap_scans_every_configured_region_by_default(monkeypatch)  ·L283 — With no --region/--regions, reap must sweep ALL configured regions: a
-- test_run_reap_explicit_region_scans_only_that_one(monkeypatch)  ·L300
-- test_run_reap_unscannable_region_does_not_mask_the_others(monkeypatch)  ·L309 — One dead region must not abort the sweep -- the remaining regions are
-- test_run_reap_empty_regions_string_raises()  ·L330
-- test_force_with_all_takes_within_ttl_instances_without_a_prompt(monkeypatch)  ·L343
-- test_force_implies_yes_for_the_expired_bucket(monkeypatch)  ·L351
-- test_force_without_all_is_refused(monkeypatch)  ·L358 — --force alone would be a confusing synonym for --yes; make it say so.
-- test_all_without_force_still_prompts(monkeypatch)  ·L367 — The interactive default is unchanged: declining leaves everything extra.
-- test_reap_dedupes_a_repeated_region(monkeypatch)  ·L377 — reap and regions each re-implemented the comma parser WITHOUT sweep's
-- test_configured_regions_refuses_to_degrade_to_one_region(monkeypatch)  ·L387 — An unreadable config used to silently become a single-region scan -- the
+- _attach_dir(root, rel, *, region='DE1', server_id='sid-1', name='flux-compute-sweep-ab12cd34', key=True, corrupt=False)  ·L288
+- test_find_local_attach_dirs_matches_prefix_and_requires_record(tmp_path)  ·L303
+- test_find_local_attach_dirs_refuses_a_missing_root(tmp_path)  ·L315
+- test_sweep_local_removes_only_verifiably_dead_records(tmp_path)  ·L320
+- test_sweep_local_null_region_needs_an_exhaustive_scan(tmp_path)  ·L335
+- test_sweep_local_matches_liveness_by_name_as_well_as_id(tmp_path)  ·L349
+- test_run_reap_scans_every_configured_region_by_default(monkeypatch)  ·L362 — With no --region/--regions, reap must sweep ALL configured regions: a
+- test_run_reap_explicit_region_scans_only_that_one(monkeypatch)  ·L380
+- test_run_reap_unscannable_region_does_not_mask_the_others(monkeypatch)  ·L390 — One dead region must not abort the sweep -- the remaining regions are
+- test_run_reap_empty_regions_string_raises()  ·L411
+- test_force_with_all_takes_within_ttl_instances_without_a_prompt(monkeypatch)  ·L424
+- test_force_implies_yes_for_the_expired_bucket(monkeypatch)  ·L432
+- test_force_without_all_is_refused(monkeypatch)  ·L439 — --force alone would be a confusing synonym for --yes; make it say so.
+- test_all_without_force_still_prompts(monkeypatch)  ·L448 — The interactive default is unchanged: declining leaves everything extra.
+- test_reap_dedupes_a_repeated_region(monkeypatch)  ·L458 — reap and regions each re-implemented the comma parser WITHOUT sweep's
+- test_configured_regions_refuses_to_degrade_to_one_region(monkeypatch)  ·L469 — An unreadable config used to silently become a single-region scan -- the
 
 ### tests/test_regions.py
 _Tests for the live per-region occupancy view. The pure core (fits math,_

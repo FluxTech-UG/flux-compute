@@ -21,9 +21,21 @@ only; everything --all adds needs a confirmation of its own -- interactive by
 default, or `--all --force` for the non-interactive case (stopping a runaway
 fleet from a script or a session with no tty).
 Exit is nonzero when expired-stamped or unstamped-legacy strays remain.
+
+`--sweep-local DIR` (repeatable) additionally reconciles the persisted
+`.flux_attach*` records under DIR against the live listings: sweep persists a
+per-job record plus a copy of the ephemeral SSH private key so a killed
+orchestrator can re-attach, and a clean teardown deletes them -- so an
+orchestrator that dies and is never resumed leaves record + key on disk
+indefinitely. The sweep removes every attach dir whose instance is verifiably
+absent from its (scanned) region; a record in an unscanned region, a live
+instance's record, and an unreadable record are all left alone and said so.
 """
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,6 +55,14 @@ from .provision import (
 )
 
 AUTO_BUCKET = "expired-stamped"
+
+# Local attach-state layout, shared with sweep.py (the writer): a per-job
+# directory <into>/<label>/.flux_attach/ holding record.json and the persisted
+# ephemeral key id_key. Renamed variants (".flux_attach_stopped") are swept by
+# the same prefix match.
+ATTACH_DIR_PREFIX = ".flux_attach"
+ATTACH_RECORD_NAME = "record.json"
+ATTACH_KEY_NAME = "id_key"
 
 
 def parse_utc(s):
@@ -187,6 +207,100 @@ def warn_strays(conn, full=False, now=None):
     return noisy
 
 
+@dataclass(frozen=True)
+class LocalAttach:
+    """One persisted `.flux_attach*` directory found under a --sweep-local root."""
+
+    path: str                     # the attach dir itself
+    label: str | None
+    region: str | None
+    server_id: str | None
+    name: str | None
+    has_key: bool                 # an id_key private-key copy is present
+    parse_error: str | None = None  # set when record.json could not be read
+
+
+def find_local_attach_dirs(roots):
+    """Every `.flux_attach*` dir holding a record.json under the given roots.
+
+    A root that is not a directory raises (fail fast: a typo'd path must not
+    read as "nothing to sweep"). A record that cannot be parsed comes back with
+    `parse_error` set -- surfaced and left alone by the sweep, never guessed at.
+    """
+    out = []
+    for root in roots:
+        root = os.path.abspath(root)
+        if not os.path.isdir(root):
+            raise RuntimeError(f"--sweep-local: not a directory: {root}")
+        for dirpath, dirnames, filenames in os.walk(root):
+            if not os.path.basename(dirpath).startswith(ATTACH_DIR_PREFIX):
+                continue
+            dirnames[:] = []      # an attach dir has no nested attach dirs
+            if ATTACH_RECORD_NAME not in filenames:
+                continue
+            has_key = ATTACH_KEY_NAME in filenames
+            try:
+                with open(os.path.join(dirpath, ATTACH_RECORD_NAME)) as fh:
+                    rec = json.load(fh)
+            except (OSError, ValueError) as exc:
+                out.append(LocalAttach(dirpath, None, None, None, None, has_key,
+                                       parse_error=f"{type(exc).__name__}: {str(exc)[:120]}"))
+                continue
+            out.append(LocalAttach(
+                dirpath, rec.get("label") or None, rec.get("region") or None,
+                rec.get("server_id") or None, rec.get("name") or None, has_key))
+    return sorted(out, key=lambda e: e.path)
+
+
+def sweep_local_attach(entries, live_by_region, emit=print, union_ok=False) -> int:
+    """Reconcile persisted attach dirs against the live per-region listings.
+
+    An attach dir whose instance is absent from its region's listing is
+    finished-or-lost bookkeeping holding a now-useless private key: the whole
+    dir is removed, matching the clean-teardown semantics of
+    `sweep._clear_attach_record` (job_state then reads collected/pending from
+    what was actually fetched). Three cases are never removed, each said out
+    loud: a record whose region carries no evidence this run (not scanned, or
+    recorded as null by an older schema when the scan was partial), a record
+    whose instance is LIVE (an in-flight job -- collect it with
+    `sweep --resume`, do not strip its key), and an unreadable record.
+
+    `union_ok=True` asserts the scan was exhaustive -- every configured region
+    listed successfully -- which is the one condition under which a
+    null-region record may be judged against the union of all listings (a
+    server can only exist in some region, and every region was looked at).
+    Returns the number of dirs removed.
+    """
+    removed = 0
+    for e in entries:
+        if e.parse_error:
+            emit(f"sweep-local: unreadable record left alone: {e.path} ({e.parse_error})")
+            continue
+        if e.region is None:
+            if not union_ok:
+                emit(f"sweep-local: left alone (no region recorded, and this run did "
+                     f"not scan every configured region): {e.path}")
+                continue
+            live = set().union(*live_by_region.values()) if live_by_region else set()
+            where = "every scanned region"
+        elif e.region not in live_by_region:
+            emit(f"sweep-local: left alone (region {e.region!r} not scanned this run): {e.path}")
+            continue
+        else:
+            live = live_by_region[e.region]
+            where = e.region
+        if (e.server_id and e.server_id in live) or (e.name and e.name in live):
+            emit(f"sweep-local: instance {e.name or e.server_id} is LIVE; left alone "
+                 f"(in-flight job -- collect with `sweep --resume`): {e.path}")
+            continue
+        shutil.rmtree(e.path)
+        removed += 1
+        what = "record + id_key" if e.has_key else "record"
+        emit(f"sweep-local: removed {e.path} ({what}; instance "
+             f"{e.name or e.server_id or '?'} gone from {where})")
+    return removed
+
+
 def _confirm(prompt) -> bool:
     try:
         ans = input(prompt)
@@ -217,7 +331,7 @@ def _reap_one(conn, c: Candidate) -> bool:
 
 
 def run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False,
-             force=False) -> int:
+             force=False, sweep_local=()) -> int:
     """Hunt strays across regions, because servers and quota are BOTH per region.
 
     With no --region/--regions, every region the cloud entry is configured for is
@@ -229,6 +343,10 @@ def run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False,
 
     `force` is the explicit non-interactive confirmation for the --all buckets
     (see `_reap_region`).
+
+    `sweep_local` roots are reconciled AFTER the region scans, against what those
+    scans actually saw (`sweep_local_attach`): only a scanned region's absence
+    counts as evidence that a persisted attach record's instance is gone.
     """
     if regions:
         targets = parse_region_list(regions)
@@ -243,40 +361,72 @@ def run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False,
             "bucket is already non-interactive via --yes. Use `--all --force` to take "
             "within-TTL / keep-flagged / legacy instances without a prompt.")
 
+    live_by_region = {}
     if len(targets) == 1:
-        return _reap_region(cloud, targets[0], yes, take_all, force)
+        rc = _reap_region(cloud, targets[0], yes, take_all, force,
+                          live_out=live_by_region)
+    else:
+        print(f"reap: scanning {len(targets)} configured region(s): {', '.join(targets)}\n")
+        rc = 0
+        for r in targets:
+            print(f"--- region {r}")
+            try:
+                rc |= _reap_region(cloud, r, yes, take_all, force,
+                                   live_out=live_by_region)
+            except Exception as exc:
+                print(f"reap: region {r} could not be scanned: "
+                      f"{type(exc).__name__}: {str(exc)[:160]}", file=sys.stderr)
+                rc = 1
+            print()
 
-    print(f"reap: scanning {len(targets)} configured region(s): {', '.join(targets)}\n")
-    rc = 0
-    for r in targets:
-        print(f"--- region {r}")
-        try:
-            rc |= _reap_region(cloud, r, yes, take_all, force)
-        except Exception as exc:
-            print(f"reap: region {r} could not be scanned: "
-                  f"{type(exc).__name__}: {str(exc)[:160]}", file=sys.stderr)
-            rc = 1
-        print()
+    if sweep_local:
+        # A null-region record (older schema) may be judged against the union of
+        # listings only when this run scanned EVERY configured region cleanly.
+        exhaustive = (not regions and not region
+                      and set(live_by_region) == set(targets))
+        entries = find_local_attach_dirs(sweep_local)
+        if not entries:
+            print("sweep-local: no attach records found; nothing to sweep.")
+        else:
+            n = sweep_local_attach(entries, live_by_region, union_ok=exhaustive)
+            print(f"sweep-local: {n} of {len(entries)} attach record(s) removed.")
     return rc
 
 
-def _reap_region(cloud, region, yes, take_all, force=False) -> int:
+def _reap_region(cloud, region, yes, take_all, force=False, live_out=None) -> int:
     conn = connect(cloud=cloud, region=region)
     now = datetime.now(timezone.utc)
     servers = list(conn.compute.servers(details=True))
     cands = find_candidates(servers, now)
     foreign = len(servers) - len(cands)
+    reaped = set()
+
+    def _record_live():
+        # What this scan leaves alive, by id AND name (attach records may carry
+        # either), for the --sweep-local reconciliation. Written even when the
+        # region has zero servers: an empty listing is positive evidence.
+        if live_out is None:
+            return
+        live = set()
+        for s in servers:
+            if s.id in reaped:
+                continue
+            live.add(s.id)
+            n = getattr(s, "name", "") or ""
+            if n:
+                live.add(n)
+        live_out[region] = live
 
     print(f"flux-compute reap: {len(cands)} flux-compute instance(s), "
           f"{foreign} foreign server(s) (never touched).")
     for c in cands:
         print(f"  - {describe(c)}")
     if not cands:
+        _record_live()
         return 0
 
     auto = [c for c in cands if c.auto_reapable]
     extra = [c for c in cands if not c.auto_reapable] if take_all else []
-    reaped = set()
 
     if auto:
         if yes or force or _confirm(f"Delete {len(auto)} expired-stamped instance(s)? [y/N] "):
@@ -307,6 +457,7 @@ def _reap_region(cloud, region, yes, take_all, force=False) -> int:
         else:
             print("reap: --all candidates left in place (not confirmed).")
 
+    _record_live()
     strays_left = [c for c in cands if c.is_stray and c.server_id not in reaped]
     if strays_left:
         print(f"reap: {len(strays_left)} stray(s) remain and are still billing:", file=sys.stderr)

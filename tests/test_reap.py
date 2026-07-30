@@ -278,6 +278,85 @@ def test_run_reap_exit_zero_when_only_keep_flagged_remains(monkeypatch):
     assert rc == 0                                   # kept instance is deliberate, not a stray
 
 
+# --- --sweep-local: persisted attach records vs the live listings -------------
+
+import json as _json
+
+from flux_compute.reap import find_local_attach_dirs, sweep_local_attach
+
+
+def _attach_dir(root, rel, *, region="DE1", server_id="sid-1",
+                name="flux-compute-sweep-ab12cd34", key=True, corrupt=False):
+    d = root / rel
+    d.mkdir(parents=True)
+    if corrupt:
+        (d / "record.json").write_text("{not json")
+    else:
+        (d / "record.json").write_text(_json.dumps(
+            {"label": rel.split("/")[0], "region": region,
+             "server_id": server_id, "name": name}))
+    if key:
+        (d / "id_key").write_text("PRIVATE")
+    return d
+
+
+def test_find_local_attach_dirs_matches_prefix_and_requires_record(tmp_path):
+    a = _attach_dir(tmp_path, "jobA/.flux_attach")
+    b = _attach_dir(tmp_path, "jobB/.flux_attach_stopped", key=False)
+    (tmp_path / "jobC" / ".flux_attach").mkdir(parents=True)   # no record.json
+    (tmp_path / "jobD" / "results").mkdir(parents=True)        # not an attach dir
+
+    found = find_local_attach_dirs([str(tmp_path)])
+    assert [e.path for e in found] == [str(a), str(b)]
+    assert found[0].has_key and not found[1].has_key
+    assert found[0].region == "DE1" and found[0].parse_error is None
+
+
+def test_find_local_attach_dirs_refuses_a_missing_root(tmp_path):
+    with pytest.raises(RuntimeError, match="not a directory"):
+        find_local_attach_dirs([str(tmp_path / "typo")])
+
+
+def test_sweep_local_removes_only_verifiably_dead_records(tmp_path):
+    dead = _attach_dir(tmp_path, "dead/.flux_attach", server_id="sid-dead")
+    live = _attach_dir(tmp_path, "live/.flux_attach", server_id="sid-live")
+    other = _attach_dir(tmp_path, "other/.flux_attach", region="UK1",
+                        server_id="sid-other")           # region not scanned
+    bad = _attach_dir(tmp_path, "bad/.flux_attach", corrupt=True)
+
+    entries = find_local_attach_dirs([str(tmp_path)])
+    removed = sweep_local_attach(entries, {"DE1": {"sid-live"}}, emit=lambda *_: None)
+
+    assert removed == 1
+    assert not dead.exists()                             # gone: record + key together
+    assert live.exists() and other.exists() and bad.exists()
+
+
+def test_sweep_local_null_region_needs_an_exhaustive_scan(tmp_path):
+    # Older records carry region: null. Without union_ok they are evidence-free
+    # and stay; with union_ok (every configured region scanned) absence from the
+    # union of listings is enough.
+    d = _attach_dir(tmp_path, "old/.flux_attach", region=None, server_id="sid-old")
+    entries = find_local_attach_dirs([str(tmp_path)])
+    assert sweep_local_attach(entries, {"DE1": set()}, emit=lambda *_: None) == 0
+    assert d.exists()
+    entries = find_local_attach_dirs([str(tmp_path)])
+    assert sweep_local_attach(entries, {"DE1": set(), "UK1": {"sid-x"}},
+                              emit=lambda *_: None, union_ok=True) == 1
+    assert not d.exists()
+
+
+def test_sweep_local_matches_liveness_by_name_as_well_as_id(tmp_path):
+    # A pending (pre-boot) record carries a name but no server_id; a live
+    # instance found by name must not be stripped of its record.
+    d = _attach_dir(tmp_path, "pend/.flux_attach", server_id="",
+                    name="flux-compute-sweep-pend", key=False)
+    entries = find_local_attach_dirs([str(tmp_path)])
+    removed = sweep_local_attach(
+        entries, {"DE1": {"flux-compute-sweep-pend"}}, emit=lambda *_: None)
+    assert removed == 0 and d.exists()
+
+
 # --- multi-region stray hunt --------------------------------------------------
 
 def test_run_reap_scans_every_configured_region_by_default(monkeypatch):
@@ -290,7 +369,8 @@ def test_run_reap_scans_every_configured_region_by_default(monkeypatch):
     monkeypatch.setattr(reap_mod, "configured_regions",
                         lambda cloud: ["GRA11", "DE1", "UK1"])
     monkeypatch.setattr(reap_mod, "_reap_region",
-                        lambda cloud, region, yes, take_all, force: seen.append(region) or 0)
+                        lambda cloud, region, yes, take_all, force, live_out=None:
+                        seen.append(region) or 0)
 
     rc = reap_mod.run_reap(cloud="flux-ovh")
     assert rc == 0
@@ -301,7 +381,8 @@ def test_run_reap_explicit_region_scans_only_that_one(monkeypatch):
     from flux_compute import reap as reap_mod
     seen = []
     monkeypatch.setattr(reap_mod, "_reap_region",
-                        lambda cloud, region, yes, take_all, force: seen.append(region) or 0)
+                        lambda cloud, region, yes, take_all, force, live_out=None:
+                        seen.append(region) or 0)
     reap_mod.run_reap(cloud="flux-ovh", region="DE1")
     assert seen == ["DE1"]
 
@@ -312,7 +393,7 @@ def test_run_reap_unscannable_region_does_not_mask_the_others(monkeypatch):
     from flux_compute import reap as reap_mod
     seen = []
 
-    def _fake(cloud, region, yes, take_all, force):
+    def _fake(cloud, region, yes, take_all, force, live_out=None):
         seen.append(region)
         if region == "DE1":
             raise RuntimeError("no compute endpoint")
@@ -379,7 +460,8 @@ def test_reap_dedupes_a_repeated_region(monkeypatch):
     de-duplication, so `--regions DE1,DE1` scanned DE1 twice."""
     seen = []
     monkeypatch.setattr(reap_mod, "_reap_region",
-                        lambda cloud, region, yes, take_all, force: seen.append(region) or 0)
+                        lambda cloud, region, yes, take_all, force, live_out=None:
+                        seen.append(region) or 0)
     reap_mod.run_reap(cloud="flux-ovh", regions="DE1,DE1,GRA11,DE1")
     assert seen == ["DE1", "GRA11"]
 

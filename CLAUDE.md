@@ -67,7 +67,13 @@ expiry (keep-flagged and unstamped name-prefix matches are report-only, taken
 only via `--all` + confirmation, and unidentifiable servers are never touched),
 and every command that connects surfaces strays with accrued cost before doing
 its own work. Do not add a provisioning path that bypasses the TTL stamp or the
-verified teardown.
+verified teardown. The teardown also owns the local attach state: sweep persists
+`<into>/<label>/.flux_attach/` (record.json + a copy of the ephemeral SSH key)
+so a killed orchestrator can `--resume`, and a clean teardown deletes it — an
+orchestrator that dies and is never resumed leaves keys on disk, which
+`flux-compute reap --sweep-local DIR` cleans up by removing every attach dir
+whose instance is verifiably gone from a scanned region (live, unscanned-region,
+and unreadable records are left alone).
 
 **`--budget` caps the WHOLE sweep, not one job.** The guard is
 `(total jobs) × (EUR/hr) × (--max-minutes)` — every job at its full wall cap — and
