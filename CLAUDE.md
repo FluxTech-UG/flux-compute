@@ -126,9 +126,14 @@ results are the last trace of the work and the instance is about to be deleted.
   (`_heal_ingress_before_reattach`): a fleet launched from one network is
   routinely collected from another, and a stale `/32` makes every job unreachable
   at once. The address is resolved once per resume
-  (`provision.current_ingress_cidr`) and passed down. The check is precautionary,
-  so an API error is printed and stepped past rather than abandoning a live,
-  billing VM — the SSH attempt that follows is the authority.
+  (`provision.current_ingress_cidr`) and passed down. The check, the repair and
+  the reporting are `provision.ensure_ssh_ingress`, shared with the steady-state
+  poll loop's stuck handler so the same fault is fixed the same way and described
+  in the same words whichever path notices it; it never raises, because the check
+  is precautionary and the SSH attempt that follows is the authority — abandoning
+  a live, billing VM over a neutron hiccup would be the worse outcome. It returns
+  a status rather than a bare bool so a caller can tell "verified open" from
+  "could not check", which is what the follower's fail-fast bound rests on.
   `--max-parallel` is the GLOBAL live-instance ceiling; each region
   is additionally clamped to its own headroom. The region pre-flight is
   **graceful-degrade by default**: `_prepare_shards` returns `(shards, drops)`,
@@ -149,10 +154,23 @@ results are the last trace of the work and the instance is about to be deleted.
   allocator tuning** (arena cap + trim threshold, opportunistic tcmalloc preload),
   so the host-RAM OOM mitigation belongs to every job rather than being re-derived
   in each consumer's job script; a job script's own `export` still overrides.
-  `poll_until_done` is the reconnect-tolerant follow loop: only the local deadline
-  aborts it, and `on_stuck` escalates a sustained SSH blackout (see
-  `provision.make_stuck_handler`, which re-opens security-group ingress when the
-  caller's public IP has moved — the one failure that breaks every job at once).
+  `poll_until_done` is the reconnect-tolerant follow loop, and `on_stuck`
+  escalates a sustained SSH blackout to `provision.make_stuck_handler`, which
+  re-opens security-group ingress when the caller's public IP has moved — the one
+  failure that breaks every job at once. The handler hands its `IngressCheck`
+  back, and `classify_blackout` (pure) turns that status into the loop's decision.
+  **The discriminator is who is disconnected.** An unreadable public IP means WE
+  are offline (the closed-lid case the whole design exists for) and is never
+  fatal, however long it lasts; a blackout where we are verifiably online AND the
+  group verifiably admits us is the instance's fault and ends the follow with
+  `reason="unreachable"` past `provision.UNREACHABLE_ABORT_S`, rather than letting
+  a dead VM burn its whole wall cap in silence. A status that means the check
+  never ran (`error`, `no-group`) never licenses that conclusion. A sleep that
+  overshoots in wall-clock time is a system suspend, and a wake forces the ingress
+  check on the next failure instead of after another `STUCK_AFTER_POLLS`. The
+  loop's must-not-miss lines go to `on_warn`, which falls back to stderr: a
+  failing self-heal reported only when a status sink happened to be wired is what
+  made a four-hour fleet-wide lockout invisible.
   `AttachRecord` is written in two stages, the first **before the instance boots**,
   so a launcher killed mid-boot leaves a VM `--resume` can name and tear down.
 - `flux_compute/cli.py`: argparse entry point (`doctor`, `preflight`, `run`,
@@ -163,7 +181,12 @@ results are the last trace of the work and the instance is about to be deleted.
   take the same requirement flags (`--ram-gb`, `--device`, `--batchable`,
   `--batch-width`, `--requirements FILE`): when given and `--flavor` is absent, the
   planner chooses the flavor; an explicit `--flavor` always overrides, and with no
-  requirement the behavior is unchanged.
+  requirement the behavior is unchanged. `sweep --detach --log FILE` runs the
+  sweep as a `setsid` daemon (`_detach_into_background`) writing to `FILE`
+  (`_redirect_output`, at the fd level so the rsync/ssh subprocesses land there
+  too), which exists so no caller — human or launcher — needs to wrap the command
+  in `nohup … > log 2>&1 &`. `--detach` without `--log` is refused: output that
+  goes nowhere is indistinguishable from a run that never started.
 - `examples/clouds.yaml.example`: OVH application-credential template.
 
 ## Tests

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from flux_compute import sweep
+from flux_compute import provision, sweep
 from flux_compute.detach import AttachRecord, PollOutcome
 from flux_compute.provision import IngressCheck
 from flux_compute.sweep import (
@@ -308,6 +308,15 @@ def test_status_rc137_with_confirmed_oom_says_so():
 def test_status_local_deadline_is_a_failure_record():
     rc, status = _status_for_outcome(PollOutcome(rc=None, reason="deadline", output_size=10))
     assert rc == -1 and "DEADLINE" in status
+
+
+def test_status_unreachable_names_the_instance_as_the_cause():
+    """Distinct from a deadline: the job did not merely run out of local time,
+    the instance stopped answering while we were demonstrably able to reach it."""
+    rc, status = _status_for_outcome(
+        PollOutcome(rc=None, reason="unreachable", output_size=10))
+    assert rc == -1 and "UNREACHABLE" in status
+    assert "instance is the cause" in status
 
 
 # --- attach-record persistence (the sweep --resume handoff) -------------------
@@ -653,7 +662,7 @@ def _rec(**kw):
 
 
 def test_resume_heal_announces_a_reopened_group(monkeypatch):
-    monkeypatch.setattr(sweep, "heal_ssh_ingress",
+    monkeypatch.setattr(provision, "heal_ssh_ingress",
                         lambda conn, sg, cidr: IngressCheck("healed", f"opened {cidr} on {sg}"))
     lines = []
     sweep._heal_ingress_before_reattach(None, _rec(), "9.9.9.9/32", emit=lines.append)
@@ -663,7 +672,7 @@ def test_resume_heal_announces_a_reopened_group(monkeypatch):
 
 def test_resume_heal_is_quiet_when_ingress_is_already_open(monkeypatch):
     """The common case (same network) must not add noise to a 100-job resume."""
-    monkeypatch.setattr(sweep, "heal_ssh_ingress",
+    monkeypatch.setattr(provision, "heal_ssh_ingress",
                         lambda conn, sg, cidr: IngressCheck("open", "already open"))
     lines = []
     sweep._heal_ingress_before_reattach(None, _rec(), "1.2.3.4/32", emit=lines.append)
@@ -673,7 +682,7 @@ def test_resume_heal_is_quiet_when_ingress_is_already_open(monkeypatch):
 def test_resume_heal_reports_an_unreadable_public_ip_and_continues(monkeypatch):
     """Cannot repair without knowing where we are -- say so, then let the SSH
     attempt be the authority on whether it actually matters."""
-    monkeypatch.setattr(sweep, "heal_ssh_ingress",
+    monkeypatch.setattr(provision, "heal_ssh_ingress",
                         lambda conn, sg, cidr: IngressCheck("unknown-ip", "could not read public IP"))
     lines = []
     sweep._heal_ingress_before_reattach(None, _rec(), None, emit=lines.append)
@@ -686,7 +695,7 @@ def test_resume_heal_surfaces_an_api_error_without_failing_the_reattach(monkeypa
     def _boom(conn, sg, cidr):
         raise RuntimeError("neutron 503")
 
-    monkeypatch.setattr(sweep, "heal_ssh_ingress", _boom)
+    monkeypatch.setattr(provision, "heal_ssh_ingress", _boom)
     lines = []
     sweep._heal_ingress_before_reattach(None, _rec(), "9.9.9.9/32", emit=lines.append)
     assert len(lines) == 1
@@ -718,7 +727,7 @@ def test_reattach_heals_every_group_before_any_ssh(tmp_path, monkeypatch, capsys
         events.append(("ssh", kw.get("on_stuck") is not None))
         return PollOutcome(rc=0, reason="done", output_size=0)
 
-    monkeypatch.setattr(sweep, "heal_ssh_ingress", _heal)
+    monkeypatch.setattr(provision, "heal_ssh_ingress", _heal)
     monkeypatch.setattr(sweep, "follow_detached_job", _follow)
     monkeypatch.setattr(sweep, "make_stuck_handler", lambda *a, **kw: (lambda n, s: None))
     monkeypatch.setattr(sweep, "_finalize", lambda *a, **kw: (0, "ok"))
@@ -742,7 +751,7 @@ def test_reattach_warns_once_when_the_public_ip_cannot_be_read(tmp_path, monkeyp
     monkeypatch.setattr(sweep, "_server_by_name_or_id",
                         lambda conn, name, sid: SimpleNamespace(id=sid))
     monkeypatch.setattr(sweep, "current_ingress_cidr", lambda: None)
-    monkeypatch.setattr(sweep, "heal_ssh_ingress",
+    monkeypatch.setattr(provision, "heal_ssh_ingress",
                         lambda conn, sg, cidr: IngressCheck("unknown-ip", "could not read public IP"))
     monkeypatch.setattr(sweep, "follow_detached_job",
                         lambda *a, **kw: PollOutcome(rc=0, reason="done", output_size=0))

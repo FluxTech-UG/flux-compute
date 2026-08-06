@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 from dataclasses import asdict, dataclass
 
@@ -42,6 +43,64 @@ RS = "\x1e"
 # backoff-doubled retries): long enough not to fire on a single network flap,
 # short enough that a real blackout is surfaced in minutes rather than hours.
 STUCK_AFTER_POLLS = 4
+
+# A sleep that overshoots its intended duration by more than this many seconds
+# means the machine was SUSPENDED, not merely slow: ``time.monotonic`` freezes
+# across a suspend on both macOS and Linux while wall-clock time keeps running,
+# so the gap between the two is a direct suspend detector.
+#
+# A wake is the single likeliest moment for the caller's public IP to have
+# changed (the lid closed at the office and opened at home), and it is also the
+# moment the poll loop is least entitled to conclude anything: it has been blind.
+# So a detected wake forces the ingress check on the NEXT failure rather than
+# after another ``STUCK_AFTER_POLLS`` of them.
+WAKE_JUMP_MARGIN_S = 90.0
+
+
+# The verdicts ``classify_blackout`` returns, and what the poll loop does with
+# each. They are the whole decision surface of the self-heal, kept as plain
+# strings so the pure function is trivially testable without importing the
+# OpenStack side.
+BLACKOUT_HEALED = "healed"          # ingress was reopened; keep polling, reset the clock
+BLACKOUT_OFFLINE = "offline"        # WE are disconnected; never abort, keep polling
+BLACKOUT_RETRY = "retry"            # inconclusive; keep polling
+BLACKOUT_UNREACHABLE = "unreachable"  # verified online + ingress open + past the bound
+
+
+def classify_blackout(status, seconds_unreachable, *, abort_after_s):
+    """Decide what a sustained SSH blackout means, given the ingress check's verdict.
+
+    This is the whole self-heal decision, isolated from both the OpenStack API and
+    the SSH transport so it can be tested directly. ``status`` is the
+    ``IngressCheck.status`` the caller's repair attempt produced
+    (``"healed"`` / ``"open"`` / ``"unknown-ip"`` / ``"no-group"`` / ``"error"``).
+
+    The discriminator that matters is **who is disconnected**. The poll loop's
+    reconnect tolerance exists because a closed laptop lid must not kill a healthy
+    remote job, so a blackout can never be fatal while we cannot even read our own
+    public address (``unknown-ip``): that is us being offline, and the job is
+    almost certainly fine. Once we can see our own address AND the instance's
+    group demonstrably admits it (``open``), the remaining explanation is the
+    instance, and a fail-fast rule applies -- silence past ``abort_after_s`` is
+    reported as the unreachability it is instead of being retried until the wall
+    cap expires hours later.
+
+    ``no-group`` is also not fatal here: the group is gone, so the instance is
+    almost certainly gone too, but the teardown path is the authority on that and
+    it runs on the caller's schedule, not this loop's.
+
+    ``abort_after_s`` of ``None`` disables the bound entirely (retry until the
+    local deadline, the historical behavior).
+    """
+    if status == "healed":
+        return BLACKOUT_HEALED
+    if status == "unknown-ip":
+        # We cannot see our own public IP: the network we are on is the broken
+        # thing. Never conclude anything about the instance from here.
+        return BLACKOUT_OFFLINE
+    if status == "open" and abort_after_s is not None and seconds_unreachable >= abort_after_s:
+        return BLACKOUT_UNREACHABLE
+    return BLACKOUT_RETRY
 
 # Home-relative remote filenames the launcher writes and the poller reads.
 REMOTE_OUT = "job.out"        # combined stdout+stderr, tailed by the poller
@@ -196,10 +255,21 @@ class PollAttempt:
 class PollOutcome:
     """The result of following a detached job to its end (or to a local abort).
 
-    ``reason`` is ``"done"`` when the remote ``job.rc`` appeared (``rc`` is the
-    job's return code, including 124/137 for a remote-cap kill) or ``"deadline"``
-    when the local wall-clock deadline aborted the follow before completion
-    (``rc`` is ``None``)."""
+    ``reason`` is one of:
+
+    ``"done"``
+        The remote ``job.rc`` appeared; ``rc`` is the job's return code
+        (including 124/137 for a remote-cap kill).
+    ``"deadline"``
+        The local wall-clock deadline aborted the follow before completion.
+    ``"unreachable"``
+        SSH stayed dead past the blackout bound while the caller was verifiably
+        online and the instance's security group verifiably admitted it -- so the
+        instance, not the network, is the cause. Reported rather than retried to
+        the deadline, because a dead VM should not consume its whole wall cap in
+        silence.
+
+    ``rc`` is ``None`` for everything but ``"done"``."""
 
     rc: int | None
     reason: str
@@ -208,30 +278,47 @@ class PollOutcome:
 
 def poll_until_done(run_poll, *, poll_interval, deadline_s,
                     backoff_base=5.0, backoff_max=60.0,
-                    clock=time.monotonic, sleep=time.sleep,
-                    on_chunk=None, on_status=None,
-                    on_stuck=None, stuck_after=STUCK_AFTER_POLLS):
+                    clock=time.monotonic, sleep=time.sleep, wall_clock=time.time,
+                    on_chunk=None, on_status=None, on_warn=None,
+                    on_stuck=None, stuck_after=STUCK_AFTER_POLLS,
+                    unreachable_abort_s=None):
     """Poll a detached remote job to completion, tolerant of reconnection.
 
     ``run_poll(next_byte) -> PollAttempt`` performs one poll (a fresh short SSH in
     production). A failed attempt (connection error: the laptop just woke, a
     network flap) is retried with exponential backoff -- ``backoff_base`` doubling
-    per consecutive failure, capped at ``backoff_max`` -- and is NEVER fatal. The
-    single abort is the local wall-clock ``deadline_s`` measured from the first
-    poll. Returns a ``PollOutcome``.
+    per consecutive failure, capped at ``backoff_max``. Returns a ``PollOutcome``.
 
-    ``clock``/``sleep`` are injected for deterministic tests. ``on_chunk(str)``
-    receives each new ``job.out`` fragment (for a live local log / stream);
-    ``on_status(str)`` receives a short human progress line per poll.
+    ``clock``/``sleep``/``wall_clock`` are injected for deterministic tests.
+    ``on_chunk(str)`` receives each new ``job.out`` fragment (for a live local log
+    / stream); ``on_status(str)`` receives a short human progress line per poll.
+    ``on_warn(str)`` receives the things an operator must not miss even when no
+    status sink is wired -- it defaults to ``on_status`` and, failing that, to
+    stderr, because the one report that was silently dropped here (a self-heal
+    that itself raised) is exactly the report that explains a frozen fleet.
 
-    ``on_stuck(n_failures, seconds_unreachable)`` fires once every
-    ``stuck_after`` CONSECUTIVE ssh-transport failures, so a caller can escalate a
-    sustained blackout rather than retrying in silence: print that SSH has been
-    unreachable, and re-check the things that silently break every job at once
-    (the caller's public IP having moved out of the security group's allowed
-    CIDR). Only genuine connection failures count toward it -- a connected read
-    whose status trailer was garbled is a live SSH and resets the counter -- so it
-    is a true "the host is unreachable" signal, never a parse hiccup.
+    **Escalation and self-heal.** ``on_stuck(n_failures, seconds_unreachable)``
+    fires once every ``stuck_after`` CONSECUTIVE ssh-transport failures so a
+    caller can repair the one fault that breaks every job at once -- the caller's
+    public IP having moved out of the security group's allowed CIDR. Only genuine
+    connection failures count toward it (a connected read whose status trailer was
+    garbled is a live SSH and resets the counter), so it is a true "the host is
+    unreachable" signal, never a parse hiccup. The handler may return an
+    ``IngressCheck``-shaped object (anything with a ``.status``); its verdict is
+    put through ``classify_blackout`` to decide what the blackout means.
+
+    **Waking counts as a reconnect.** A sleep that overshoots its intended
+    duration by more than ``WAKE_JUMP_MARGIN_S`` of wall-clock time means the
+    machine was suspended. That is the likeliest moment for the public IP to have
+    moved and the moment the loop knows least, so the next failure escalates
+    immediately instead of waiting for another ``stuck_after`` failures.
+
+    **The bound.** ``unreachable_abort_s`` (``None`` = no bound) is how long a
+    blackout may persist *while the caller is verifiably online and the group
+    verifiably admits it* before the follow gives up with ``reason="unreachable"``.
+    It is deliberately not a blanket timeout: a blackout during which we cannot
+    read our own public IP is US being offline (the closed-lid case the whole
+    detach design exists for) and never counts against it.
     """
     next_byte = 1
     size_seen = 0
@@ -239,9 +326,29 @@ def poll_until_done(run_poll, *, poll_interval, deadline_s,
     consecutive_failures = 0
     ssh_failures = 0            # consecutive TRANSPORT failures (the stuck signal)
     unreachable_since = None
+    escalate_now = False        # set by a detected wake: check ingress at once
+
+    if on_warn is None:
+        on_warn = on_status if on_status is not None else (
+            lambda msg: print(msg, file=sys.stderr))
 
     def _remaining():
         return deadline_s - (clock() - start)
+
+    def _sleep_watching_for_wake(seconds):
+        """Sleep, then report whether the machine was suspended while we did.
+
+        ``clock`` (monotonic) freezes across a system suspend while ``wall_clock``
+        keeps running, so an overshoot between the two is the suspend.
+        """
+        nonlocal escalate_now
+        wall_before = wall_clock()
+        sleep(seconds)
+        overshoot = (wall_clock() - wall_before) - seconds
+        if overshoot > WAKE_JUMP_MARGIN_S:
+            escalate_now = True
+            on_warn(f"woke after ~{int(overshoot)}s suspended; "
+                    "re-checking SSH ingress before trusting a failed poll")
 
     while True:
         if _remaining() <= 0:
@@ -256,21 +363,48 @@ def poll_until_done(run_poll, *, poll_interval, deadline_s,
                 unreachable_since = clock()
             if on_status is not None:
                 on_status(f"poll failed ({attempt.error}); retry #{consecutive_failures}")
-            if (on_stuck is not None and stuck_after > 0
-                    and ssh_failures % stuck_after == 0):
-                # Best-effort escalation: a self-heal that itself fails must never
-                # break the follow loop, whose whole contract is that only the
-                # local deadline aborts it.
+
+            due = (on_stuck is not None and stuck_after > 0
+                   and (escalate_now or ssh_failures % stuck_after == 0))
+            if due:
+                escalate_now = False
+                blackout_s = clock() - unreachable_since
+                # A self-heal that itself fails must never break the follow loop,
+                # whose contract is that only the deadline and the verified-dead
+                # bound end it -- but it must never be SILENT either. Reporting it
+                # only when a status sink happened to be wired is what let a
+                # fleet-wide lockout look exactly like a healthy long job.
                 try:
-                    on_stuck(ssh_failures, clock() - unreachable_since)
+                    check = on_stuck(ssh_failures, blackout_s)
                 except Exception as exc:      # noqa: BLE001 - advisory hook
-                    if on_status is not None:
-                        on_status(f"stuck handler failed: {type(exc).__name__}: {str(exc)[:80]}")
-            backoff = min(backoff_max, backoff_base * (2 ** (consecutive_failures - 1)))
+                    on_warn(f"stuck handler failed: {type(exc).__name__}: {str(exc)[:80]}")
+                    check = None
+                verdict = classify_blackout(
+                    getattr(check, "status", None), blackout_s,
+                    abort_after_s=unreachable_abort_s)
+                if verdict == BLACKOUT_UNREACHABLE:
+                    on_warn(f"giving up: SSH unreachable for {int(blackout_s)}s while this "
+                            "machine was online and the instance's security group admitted "
+                            "it -- the instance, not the network, is the cause")
+                    return PollOutcome(rc=None, reason="unreachable", output_size=size_seen)
+                if verdict == BLACKOUT_HEALED:
+                    # The lockout was ours and it is repaired: the blackout clock
+                    # restarts so the freshly reopened path gets a full grace
+                    # period before anything is concluded from its silence.
+                    unreachable_since = clock()
+
+            # The doubling is clamped before it is applied, not after. The result
+            # is capped at `backoff_max` either way, but `2 ** n` on an unbounded
+            # n becomes an integer too large to convert to float and raises
+            # OverflowError out of the follow loop -- at roughly 1024 consecutive
+            # failures, which a long wall cap reaches during exactly the kind of
+            # multi-hour blackout this loop exists to survive.
+            backoff = min(backoff_max,
+                          backoff_base * (2 ** min(consecutive_failures - 1, 32)))
             remaining = _remaining()
             if remaining <= 0:
                 return PollOutcome(rc=None, reason="deadline", output_size=size_seen)
-            sleep(min(backoff, remaining))
+            _sleep_watching_for_wake(min(backoff, remaining))
             continue
 
         # The connection is live: whatever the payload, SSH is reachable again.
@@ -287,7 +421,7 @@ def poll_until_done(run_poll, *, poll_interval, deadline_s,
             remaining = _remaining()
             if remaining <= 0:
                 return PollOutcome(rc=None, reason="deadline", output_size=size_seen)
-            sleep(min(poll_interval, remaining))
+            _sleep_watching_for_wake(min(poll_interval, remaining))
             continue
 
         consecutive_failures = 0
@@ -304,7 +438,7 @@ def poll_until_done(run_poll, *, poll_interval, deadline_s,
         remaining = _remaining()
         if remaining <= 0:
             return PollOutcome(rc=None, reason="deadline", output_size=size_seen)
-        sleep(min(poll_interval, remaining))
+        _sleep_watching_for_wake(min(poll_interval, remaining))
 
 
 @dataclass(frozen=True)

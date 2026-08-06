@@ -106,7 +106,8 @@ end-to-end "is the API working?" check.
   interrupted run (see *Surviving laptop sleep* below). Add
   **`--regions A,B,C`** to shard one sweep across several regions at once (see
   *Multi-region sweeps* below) — the way to run a fleet wider than one region's
-  quota.
+  quota — and **`--detach --log FILE`** to run the whole sweep as a background
+  daemon with no shell wrapper (see *Launching without a shell* below).
 
 ### The jobs file
 
@@ -304,17 +305,56 @@ repair it automatically, and both say so in one line:
   prints `SSH unreachable since <time>`, re-reads the public IP, opens ingress
   for the new one, and recovers on its own. A blackout is reported rather than
   retried in silence, since no-output is also what a healthy long job looks like.
+- **On waking**, the check runs immediately rather than after another few
+  failures. A sleep that overshoots its intended duration in wall-clock time is a
+  system suspend (`time.monotonic` freezes across one), and waking is both the
+  likeliest moment for the address to have moved and the moment the follower
+  knows least — so the next failed poll escalates at once instead of spending
+  minutes re-deriving what a wake already implies.
 - **On `--resume`**, the check runs *before the first SSH of every job*, which is
   the moment the address is most likely to have changed — a fleet launched from
   one network is routinely collected from another. The current /32 is read once
   for the whole fleet and each VM's group is patched if it lacks it, so the first
   poll works instead of burning a blackout-detection cycle per VM.
 
+All three go through one function (`provision.ensure_ssh_ingress`), so the same
+fault is repaired the same way and reported in the same words whichever path
+notices it.
+
 The repair is **append-only**: the launch-time rule is left in place, so a
 flapping address never locks out the machine that started the run, and repeating
 it adds nothing. If the public-IP read itself fails the run continues and says
 why — the SSH attempt is the authority on whether the VM is actually reachable,
 and a failed lookup is never grounds to widen a group to `0.0.0.0/0`.
+
+**When the repair is not the answer.** A blackout that ingress cannot explain is
+bounded, because "retry quietly until the wall cap" is how a dead VM consumes
+hours. The bound turns on *who is disconnected*, which is the only honest
+discriminator available:
+
+| What the check found | What it means | What the follower does |
+|---|---|---|
+| public IP moved | our lockout, repaired | keep polling; the blackout clock restarts |
+| our public IP unreadable | **we** are offline (a closed lid) | keep polling to the deadline, however long |
+| ingress verified open | we are online and admitted; the instance is silent | give up after 30 min with `UNREACHABLE` |
+| the check itself failed | nothing was verified | keep polling; never conclude from an unrun check |
+
+Only a verified-open group licenses the conclusion that the instance is at fault,
+which is why the check reports *why* it could not repair something rather than a
+bare success/failure. A run that gives up this way still pulls whatever artifacts
+it can reach before teardown, exactly like the local-deadline path.
+
+> **Incident, 2026-08-05 (9 VMs).** A home IP rotated at ~19:00 and the
+> steady-state poller was locked out of the whole fleet for four hours in
+> silence, with results at risk of expiring with the instance TTLs; a manual
+> `sweep --resume` recovered everything, because the resume path already did the
+> repair the follower did not. Three defects, all fixed above: the follower's
+> report of a *failed* self-heal was emitted only when a status sink happened to
+> be wired, and the steady-state sweep wires none — so the one message that
+> explains a frozen fleet was the one message nobody could see; there was no
+> bound on a blackout, so the fleet could sit unreachable for the entire wall
+> cap; and a wake was treated as an ordinary retry rather than as the reconnect
+> it is. IP rotation is a daily commute event here, not an edge case.
 
 > **Incident, 2026-07-28 (chen_wave2, 16 VMs).** The laptop changed networks
 > overnight (`89.12.102.142` → `77.11.189.44`), so `--resume` could reach none of
@@ -358,6 +398,40 @@ which is generated locally), so a launcher killed mid-boot leaves a VM that
 the console. Such a VM can be killed but not collected — its ephemeral key was
 never persisted — and `--resume` reports exactly that.
 
+### Launching without a shell (`--detach`, `--log`)
+
+A sweep runs for hours, so it belongs in the background with its output on disk.
+`--detach` and `--log` do that inside the CLI:
+
+```bash
+flux-compute sweep --cloud flux-ovh --regions GRA11,DE1,UK1,WAW1 \
+    --jobs jobs.txt --script job.sh --fetch out \
+    --max-parallel 16 --budget 40 \
+    --detach --log fleet.log
+```
+
+This returns immediately, printing the daemon's pid, the log path, and the
+`--resume` command that recovers the run if the daemon is ever lost.
+
+- **`--log FILE`** appends all output to `FILE`. The redirect is done at the file
+  descriptor level, so it captures the `rsync`/`scp`/`ssh` subprocesses too — the
+  lines that say why an upload or a fetch failed — and not merely Python's
+  prints. It appends rather than truncates, so a `--resume` can be pointed at the
+  log of the run it continues and the two read as one story. Used without
+  `--detach` it prints one line to the terminal naming the log, then redirects.
+- **`--detach`** re-launches the sweep under `setsid`, in a new session with no
+  controlling terminal and stdin on `/dev/null` — the same guarantee the remote
+  launcher gives each job on its VM, applied to the orchestrator itself. It
+  requires `--log`: a detached run without one would send its output nowhere,
+  which is indistinguishable from never having started. The log is opened before
+  the fork, so an unwritable path fails in the foreground where you can still see
+  it.
+
+Together these replace wrapping the command in `nohup … > log 2>&1 &`. That
+matters beyond typing: a launcher driving this CLI programmatically has no shell
+to wrap it with, and every piece of that idiom is a way for a fleet to end up
+running with its output discarded.
+
 ### When a job dies: what the status line means
 
 `sweep` records one line per job, and the return code is explained rather than
@@ -371,6 +445,7 @@ guessed:
 | 137 far short of its cap, kernel log confirms | `OOM-killed (rc=137, kernel oom-killer confirmed ...)` |
 | 137 far short of its cap, no evidence | `killed (rc=137, SIGKILL ...) - cause unknown` |
 | other nonzero | `job nonzero` |
+| never answered again | `UNREACHABLE (...)` — SSH stayed dead while this machine was online and the security group admitted it |
 
 137 is `128 + SIGKILL` and is genuinely ambiguous: the wall cap's kill-after
 escalation and the kernel OOM-killer both produce it. Reading every 137 as a
@@ -440,12 +515,16 @@ the stock image + per-job install.
   with its accrued cost and points at `reap` — advisory only; no command other
   than `reap` ever deletes.
 - **Reachability**: an unreachable fleet is a billing problem, because a VM that
-  cannot be collected cannot be torn down. `--resume` therefore re-opens each
-  instance's SSH ingress for the caller's current public IP before reconnecting,
-  so a laptop that changed networks collects and tears down normally instead of
+  cannot be collected cannot be torn down. Every path that connects therefore
+  re-opens each instance's SSH ingress for the caller's current public IP —
+  `--resume` before reconnecting, the follower on a blackout or a wake — so a
+  laptop that changed networks collects and tears down normally instead of
   leaving finished VMs idle-billing behind a stale `/32` (see **Surviving laptop
-  sleep**). Progress output is line-buffered even through a pipe, so a `tee`-d
-  log shows a stall as it happens rather than after the fact.
+  sleep**). A blackout that ingress cannot explain is bounded rather than retried
+  to the wall cap, so a dead VM stops costing money at 30 minutes instead of at
+  its `--max-minutes`. Progress output is line-buffered even through a pipe, so a
+  `tee`-d log — or a `--log` file — shows a stall as it happens rather than after
+  the fact.
 
 ## Tests
 

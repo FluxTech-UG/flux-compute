@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,7 +33,7 @@ from .provision import (
     LOCAL_GRACE_S, POLL_INTERVAL_SWEEP_S, RC_SIGKILL, RESUME_MIN_DEADLINE_S,
     TeardownStrandError, _gpu_instance, _launch_detached, _print_plan, _region,
     _rsync_down, _rsync_up, _scp_up, _server_by_name_or_id, classify_exit,
-    current_ingress_cidr, follow_detached_job, heal_ssh_ingress,
+    current_ingress_cidr, ensure_ssh_ingress, follow_detached_job,
     looks_like_cap_kill, make_stuck_handler, parse_upload_spec, probe_oom_kill,
     pull_job_log, rsync_down_best_effort, teardown_by_name, ttl_minutes_for,
 )
@@ -517,6 +518,10 @@ def _status_for_outcome(outcome, *, elapsed_s=None, cap_seconds=None, oom=None):
     if outcome.reason == "deadline":
         return -1, ("LOCAL DEADLINE (job unfinished; server torn down; "
                     "partial artifacts fetched)")
+    if outcome.reason == "unreachable":
+        return -1, ("UNREACHABLE (SSH stayed dead while this machine was online "
+                    "and the security group admitted it, so the instance is the "
+                    "cause; server torn down, partial artifacts fetched if any)")
     rc = outcome.rc
     return rc, classify_exit(rc, elapsed_s=elapsed_s, cap_seconds=cap_seconds, oom=oom)
 
@@ -548,6 +553,20 @@ def _finalize(ip, keyfile, dest, fetch, outcome, *, elapsed_s=None, cap_seconds=
                                cap_seconds=cap_seconds, oom=oom)
 
 
+def _job_warn(label):
+    """A labelled stderr sink for the poll loop's must-not-miss lines.
+
+    A sweep fans many jobs across threads, so an unlabelled "woke after 4h" or
+    "giving up" line is unattributable in the merged log. These are warnings only
+    -- the per-poll progress chatter stays off, because 24 jobs x one line every
+    15s is a log nobody reads, and an unread log is how a fleet-wide lockout went
+    unnoticed for four hours in the first place.
+    """
+    def _warn(msg):
+        print(f"  [{label}] {msg}", file=sys.stderr)
+    return _warn
+
+
 def _heal_ingress_before_reattach(conn, rec, cidr, emit=print):
     """Make sure this VM's security group still admits us, BEFORE the first SSH.
 
@@ -559,21 +578,11 @@ def _heal_ingress_before_reattach(conn, rec, cidr, emit=print):
     since silence is what both look like. Checking up front turns hours of silent
     unreachability into one printed line and a first poll that works.
 
-    Precautionary, so it never fails the re-attach: the authority on whether the
-    VM is reachable is the SSH attempt that follows, and abandoning a live,
-    billing instance over a network-API hiccup would be a far worse outcome than
-    a redundant check. Anything unexpected is therefore surfaced loudly and
-    stepped past, never swallowed.
+    The check, the repair and the reporting are `ensure_ssh_ingress`, shared with
+    the steady-state poll loop's stuck handler so a re-attach and a mid-flight
+    blackout repair the same fault the same way and say so in the same words.
     """
-    try:
-        check = heal_ssh_ingress(conn, rec.name, cidr)
-    except Exception as exc:
-        emit(f"  [{rec.label}] WARNING: could not check SSH ingress on security "
-             f"group {rec.name} ({type(exc).__name__}: {str(exc)[:100]}); "
-             "re-attaching anyway.")
-        return
-    if check or check.status == "unknown-ip":
-        emit(f"  [{rec.label}] {check.message}")
+    return ensure_ssh_ingress(conn, rec.name, cidr=cidr, label=rec.label, emit=emit)
 
 
 def _reattach_records(cloud, region, into, max_parallel) -> int:
@@ -629,6 +638,7 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
             outcome = follow_detached_job(
                 rec.ip, rec.keyfile, rec.cap_seconds,
                 deadline_s=deadline, poll_interval=POLL_INTERVAL_SWEEP_S,
+                on_warn=_job_warn(rec.label),
                 on_stuck=make_stuck_handler(conn, rec.name, label=rec.label))
             rc, status = _finalize(
                 rec.ip, rec.keyfile, dest, rec.fetch, outcome,
@@ -768,6 +778,7 @@ def _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes):
                     ip, keyfile, cap_seconds,
                     deadline_s=cap_seconds + LOCAL_GRACE_S,
                     poll_interval=POLL_INTERVAL_SWEEP_S,
+                    on_warn=_job_warn(label),
                     on_stuck=make_stuck_handler(conn, name, label=label))
 
                 rc, status = _finalize(ip, keyfile, dest, fetch, outcome,

@@ -12,8 +12,13 @@ import pytest
 
 from flux_compute import detach, provision
 from flux_compute.detach import (
+    BLACKOUT_HEALED,
+    BLACKOUT_OFFLINE,
+    BLACKOUT_RETRY,
+    BLACKOUT_UNREACHABLE,
     AttachRecord,
     PollAttempt,
+    classify_blackout,
     launcher_script,
     parse_poll_output,
     poll_command,
@@ -166,6 +171,20 @@ def test_loop_retries_transient_connection_failures_with_backoff():
     assert sum("retry #" in s for s in stat) == 3
 
 
+def test_loop_survives_a_blackout_long_enough_to_overflow_the_backoff():
+    """The doubling term is `2 ** consecutive_failures`, which becomes an integer
+    too large to convert to float at ~1024 failures and used to raise
+    OverflowError straight out of the follow loop. A long `--max-minutes` reaches
+    that during exactly the multi-hour blackout this loop exists to survive."""
+    clk = _Clock()
+    out = poll_until_done(
+        lambda n: PollAttempt.failed("host down"),
+        poll_interval=10, deadline_s=200_000, backoff_base=5.0, backoff_max=60.0,
+        clock=clk.now, sleep=clk.sleep,
+    )
+    assert out.reason == "deadline"            # ended on the deadline, not a crash
+
+
 def test_loop_backoff_is_capped():
     # Six straight failures then success: backoff caps at backoff_max, not 5*2^5.
     clk, out = _run(
@@ -222,6 +241,211 @@ def test_loop_unparseable_read_is_a_soft_retry_not_an_advance():
                           clock=clk.now, sleep=clk.sleep)
     assert out.rc == 0
     assert seen == [1, 1]            # cursor not advanced by the garbled read
+
+
+# --- the blackout verdict: who is disconnected, us or the instance? -----------
+#
+# The incident (2026-08-05): a home IP rotated at ~19:00 and the steady-state
+# poller was locked out of all 9 VMs for four hours without a word, because a
+# blackout had exactly one meaning ("retry until the deadline") and no way to
+# reach a different conclusion. `classify_blackout` is that missing conclusion,
+# kept pure so the whole decision is testable without a cloud or an SSH.
+
+def test_blackout_verdict_is_healed_when_the_repair_reopened_the_group():
+    assert classify_blackout("healed", 9999.0, abort_after_s=60) == BLACKOUT_HEALED
+
+
+def test_blackout_verdict_is_offline_when_our_own_ip_could_not_be_read():
+    """The load-bearing case. A failed public-IP read means WE are off the
+    network -- the closed-lid commute the whole detach design exists to survive
+    -- so it can never be fatal, no matter how long it lasts."""
+    assert classify_blackout("unknown-ip", 10 * 3600, abort_after_s=60) == BLACKOUT_OFFLINE
+
+
+def test_blackout_verdict_is_unreachable_only_when_verified_open_and_past_the_bound():
+    # Verified: we can see our own address AND the group admits it. Past the
+    # bound, the only remaining explanation is the instance.
+    assert classify_blackout("open", 61.0, abort_after_s=60) == BLACKOUT_UNREACHABLE
+
+
+def test_blackout_verdict_retries_while_under_the_bound():
+    assert classify_blackout("open", 59.0, abort_after_s=60) == BLACKOUT_RETRY
+
+
+def test_blackout_verdict_never_aborts_on_an_unfinished_check():
+    """`error` (the API call failed) and `no-group` mean nothing was verified.
+    Concluding "the instance is dead" from a check that never ran is exactly the
+    false confidence the status field exists to prevent."""
+    for status in ("error", "no-group", None):
+        assert classify_blackout(status, 10 * 3600, abort_after_s=60) == BLACKOUT_RETRY
+
+
+def test_blackout_bound_of_none_disables_the_abort_entirely():
+    assert classify_blackout("open", 10 * 3600, abort_after_s=None) == BLACKOUT_RETRY
+
+
+# --- the loop acts on the verdict ---------------------------------------------
+
+class _Check:
+    """An IngressCheck-shaped stand-in: the loop reads only `.status`."""
+
+    def __init__(self, status):
+        self.status = status
+
+
+def test_loop_gives_up_on_a_verified_unreachable_instance():
+    """Fail fast: an SSH failure that is NOT an IP mismatch must surface as the
+    error it is, not burn the job's whole wall cap in silence."""
+    warns = []
+    clk = _Clock()
+    out = poll_until_done(
+        lambda n: PollAttempt.failed("ssh 255"),
+        poll_interval=10, deadline_s=100000, backoff_base=5.0, backoff_max=60.0,
+        clock=clk.now, sleep=clk.sleep, on_warn=warns.append,
+        on_stuck=lambda n, s: _Check("open"), unreachable_abort_s=120,
+    )
+    assert out.reason == "unreachable" and out.rc is None
+    assert any("giving up" in w for w in warns)
+    assert clk.t < 100000                      # ended on the bound, not the deadline
+
+
+def test_loop_never_gives_up_while_we_are_the_disconnected_party():
+    """The sleep-proofing guarantee, unchanged: a blackout we cannot rule
+    ourselves out of runs to the deadline, however long the bound is."""
+    clk = _Clock()
+    out = poll_until_done(
+        lambda n: PollAttempt.failed("ssh 255"),
+        poll_interval=10, deadline_s=5000, backoff_base=5.0, backoff_max=60.0,
+        clock=clk.now, sleep=clk.sleep,
+        on_stuck=lambda n, s: _Check("unknown-ip"), unreachable_abort_s=60,
+    )
+    assert out.reason == "deadline"
+
+
+def test_loop_restarts_the_blackout_clock_after_a_repair():
+    """A freshly reopened path gets a full grace period: the seconds spent locked
+    out must not immediately re-trip the bound against the repaired route."""
+    healed = []
+
+    def _stuck(n, seconds_unreachable):
+        healed.append(seconds_unreachable)
+        return _Check("healed" if len(healed) == 1 else "open")
+
+    clk = _Clock()
+    out = poll_until_done(
+        lambda n: PollAttempt.failed("ssh 255"),
+        poll_interval=10, deadline_s=100000, backoff_base=5.0, backoff_max=60.0,
+        clock=clk.now, sleep=clk.sleep, on_stuck=_stuck, unreachable_abort_s=120,
+    )
+    assert out.reason == "unreachable"
+    # The second escalation's blackout age is measured from the repair, not from
+    # the original lockout -- so it is smaller than the elapsed clock.
+    assert healed[1] < clk.t
+
+
+def test_loop_reports_a_failing_stuck_handler_even_with_no_status_sink():
+    """The regression that made the four-hour lockout invisible: the report of a
+    self-heal that itself raised was emitted only `if on_status is not None`, and
+    the steady-state sweep poller passes no on_status. The one message that
+    explains a frozen fleet was the one message conditioned on a sink nobody
+    wired."""
+    warns = []
+
+    def _boom(n, s):
+        raise RuntimeError("neutron 503")
+
+    clk = _Clock()
+    out = poll_until_done(
+        lambda n: PollAttempt.failed("ssh 255"),
+        poll_interval=10, deadline_s=300, backoff_base=5.0, backoff_max=60.0,
+        clock=clk.now, sleep=clk.sleep, on_stuck=_boom, on_warn=warns.append,
+        unreachable_abort_s=60,
+    )
+    assert out.reason == "deadline"            # a failed heal is still not fatal
+    assert any("stuck handler failed" in w and "neutron 503" in w for w in warns)
+
+
+def test_loop_defaults_its_warnings_to_stderr_when_nothing_is_wired(capsys):
+    """With neither on_warn nor on_status -- the historical sweep call -- the
+    must-not-miss lines still have to land somewhere a human can read."""
+    clk = _Clock()
+    poll_until_done(
+        lambda n: PollAttempt.failed("ssh 255"),
+        poll_interval=10, deadline_s=100, backoff_base=5.0, backoff_max=60.0,
+        clock=clk.now, sleep=clk.sleep,
+        on_stuck=lambda n, s: (_ for _ in ()).throw(RuntimeError("api down")),
+    )
+    assert "stuck handler failed" in capsys.readouterr().err
+
+
+# --- waking from suspend counts as a reconnect --------------------------------
+
+class _WallClock:
+    """A wall clock the test jumps forward independently of the monotonic one --
+    which is exactly what a system suspend does to the two in production."""
+
+    def __init__(self):
+        self.t = 1_000_000.0
+        self.jump_next = 0.0
+
+    def now(self):
+        t = self.t + self.jump_next
+        self.t = t
+        self.jump_next = 0.0
+        return t
+
+
+def test_a_suspend_forces_the_ingress_check_on_the_very_next_failure():
+    """Waking somewhere else is the likeliest moment for the IP to have moved,
+    and the moment the loop knows least. It must not wait out another four
+    consecutive failures before it even looks."""
+    escalations, warns = [], []
+    clk, wall = _Clock(), _WallClock()
+
+    def _sleep(s):
+        clk.sleep(s)
+        wall.t += s                 # normal time passes ...
+        if len(escalations) == 0 and clk.t >= 10:
+            wall.jump_next += 4 * 3600      # ... and then the lid was closed
+
+    def _stuck(n, s):
+        escalations.append(n)
+        return _Check("healed")
+
+    out = poll_until_done(
+        lambda n: (PollAttempt.connected("x\x1eSIZE=1;RC=") if not escalations and clk.t < 10
+                   else PollAttempt.failed("ssh 255")),
+        poll_interval=10, deadline_s=400, backoff_base=5.0, backoff_max=60.0,
+        clock=clk.now, sleep=_sleep, wall_clock=wall.now,
+        on_warn=warns.append, on_stuck=_stuck, stuck_after=4,
+        unreachable_abort_s=None,
+    )
+    assert out.reason == "deadline"
+    assert any("woke after" in w for w in warns)
+    # The FIRST failure after the wake escalated -- not the fourth.
+    assert escalations and escalations[0] == 1
+
+
+def test_an_ordinary_sleep_is_not_mistaken_for_a_suspend():
+    """A poll interval that elapses normally must not trip the wake detector, or
+    every loop would escalate on every single failure."""
+    escalations, warns = [], []
+    clk, wall = _Clock(), _WallClock()
+
+    def _sleep(s):
+        clk.sleep(s)
+        wall.t += s + 1.0            # a second of jitter, nowhere near the margin
+
+    out = poll_until_done(
+        lambda n: PollAttempt.failed("ssh 255"),
+        poll_interval=10, deadline_s=40, backoff_base=5.0, backoff_max=60.0,
+        clock=clk.now, sleep=_sleep, wall_clock=wall.now,
+        on_warn=warns.append, on_stuck=lambda n, s: escalations.append(n),
+        stuck_after=4, unreachable_abort_s=None,
+    )
+    assert out.reason == "deadline"
+    assert not any("woke after" in w for w in warns)
+    assert escalations == [4]        # the normal cadence, not one per failure
 
 
 # --- the SSH-command poll runner maps transport errors to retryable failures ---

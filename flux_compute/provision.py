@@ -67,6 +67,22 @@ BACKOFF_MAX_S = 60.0
 # original deadline may already have passed while the orchestrator was down.
 RESUME_MIN_DEADLINE_S = 300
 
+# How long SSH may stay dead -- while this machine is verifiably online AND the
+# instance's security group verifiably admits it -- before the follow gives up
+# with `reason="unreachable"` instead of polling to the wall cap in silence.
+#
+# It is not a blanket unreachability timeout, and the qualifiers are the whole
+# point: a blackout during which the public-IP read fails is US being offline (a
+# closed lid, the case the entire detach design exists to survive) and never
+# counts against this bound. Only a blackout we have positively excluded both
+# ourselves and the security group from does.
+#
+# 30 minutes is chosen to sit well clear of the things that legitimately silence
+# a healthy VM for a while -- a reboot, a swap storm, an OVH network blip -- while
+# still being a small fraction of a multi-hour wall cap, which is what a dead VM
+# used to consume before anything was said about it.
+UNREACHABLE_ABORT_S = 1800
+
 # Remote exit codes of the `timeout --signal=TERM --kill-after=N CAP ...` wrapper
 # the detached launcher wraps every job in (detach.launcher_script).
 #
@@ -653,17 +669,18 @@ def _sg_allows_ssh_from(conn, sg, cidr):
 
 @dataclass(frozen=True)
 class IngressCheck:
-    """What `heal_ssh_ingress` found, and a line fit to print about it.
+    """What an ingress check found, and a line fit to print about it.
 
-    The status is carried separately because the three non-repairing outcomes are
+    The status is carried separately because the non-repairing outcomes are
     different news: ``open`` means the group was checked and is fine, while
-    ``unknown-ip`` and ``no-group`` mean the check could not be completed at all.
-    A caller that cannot tell them apart reports a healthy group when nothing was
-    verified -- the exact ambiguity that leaves an operator staring at a silent
-    log wondering whether the fleet is reachable.
+    ``unknown-ip``, ``no-group`` and ``error`` mean the check could not be
+    completed at all. A caller that cannot tell them apart reports a healthy group
+    when nothing was verified -- the exact ambiguity that leaves an operator
+    staring at a silent log wondering whether the fleet is reachable. Only
+    ``open`` licenses any conclusion about the instance itself.
     """
 
-    status: str          # "healed" | "open" | "unknown-ip" | "no-group"
+    status: str          # "healed" | "open" | "unknown-ip" | "no-group" | "error"
     message: str
 
     def __bool__(self):
@@ -715,14 +732,66 @@ def heal_ssh_ingress(conn, sg_name, cidr=None):
         f"public IP moved: opened SSH ingress from {cidr} on security group {sg_name}")
 
 
+def ensure_ssh_ingress(conn, sg_name, *, cidr=None, label=None, emit=None,
+                       indent="  ", announce_open=False):
+    """Check-and-repair a group's SSH ingress, report it, and never raise.
+
+    The single entry point for "can we still reach this instance's port 22, and
+    if not because we moved, fix it". Both callers that need it go through here:
+    the re-attach path checks before its first SSH, and the steady-state poll
+    loop checks when a blackout escalates. They used to wrap `heal_ssh_ingress`
+    in their own try/except with their own message wording, which is how the two
+    drifted into reporting the same event differently -- and the repair is the
+    same repair whether the fleet went quiet overnight or ten minutes ago.
+
+    Never raises: an OpenStack API error comes back as an ``error`` check with the
+    exception in its message. That is not leniency about failure, it is about
+    *authority* -- this call is precautionary, and the SSH attempt that follows is
+    what actually decides whether the instance is reachable. Abandoning a live,
+    billing VM because a network-API call hiccuped would be the worse outcome. The
+    status is preserved so the caller can tell "verified open" from "could not
+    check", which is the distinction the poll loop's fail-fast bound rests on.
+
+    `cidr` defaults to a fresh public-IP read; a caller sweeping many groups at
+    once resolves it via `current_ingress_cidr` and passes the same value down.
+    `announce_open` also prints the reassuring no-op case (the poll loop wants it:
+    mid-blackout, "ingress is fine" is the informative half of the answer).
+    """
+    emit = emit or (lambda msg: print(msg, file=sys.stderr))
+    tag = f"[{label}] " if label else ""
+    try:
+        check = heal_ssh_ingress(conn, sg_name, cidr)
+    except Exception as exc:      # noqa: BLE001 - precautionary; SSH is the authority
+        check = IngressCheck(
+            "error",
+            f"could not check SSH ingress on security group {sg_name} "
+            f"({type(exc).__name__}: {str(exc)[:100]})")
+        emit(f"{indent}{tag}WARNING: {check.message}; continuing anyway.")
+        return check
+    if check.status == "healed":
+        emit(f"{indent}{tag}{check.message}")
+    elif check.status == "open":
+        if announce_open:
+            emit(f"{indent}{tag}public IP unchanged and ingress still open; "
+                 "the instance or the network is the cause.")
+    else:
+        emit(f"{indent}{tag}{check.message}")
+    return check
+
+
 def make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None):
-    """Build the poll loop's `on_stuck` callback: say the host is unreachable, and
-    try the one repair that fixes it fleet-wide (`heal_ssh_ingress`).
+    """Build the poll loop's `on_stuck` callback: say the host is unreachable, try
+    the one repair that fixes it fleet-wide, and hand the verdict back.
 
     Visibility is half the point. A sustained SSH blackout used to look exactly
     like a healthy long job -- no output either way -- so a fleet sat frozen for
     hours before anyone suspected it. This prints an escalating, timestamped
     "SSH unreachable since ..." line instead.
+
+    The returned `IngressCheck` is the other half: the poll loop reads its status
+    through `detach.classify_blackout` to decide whether the silence is us being
+    offline (never fatal), a lockout it just repaired, or an instance that is
+    genuinely gone and should stop consuming its wall cap.
     """
     emit = emit or (lambda msg: print(msg, file=sys.stderr))
     clock = now or time.time
@@ -734,38 +803,35 @@ def make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None):
              f"({n_failures} consecutive failed polls, {int(seconds_unreachable)}s); "
              "the job itself may be fine and still running -- checking whether our "
              "public IP moved out of the instance's allowed range ...")
-        try:
-            check = heal_ssh_ingress(conn, sg_name)
-        except Exception as exc:
-            emit(f"         {tag}ingress re-check failed "
-                 f"({type(exc).__name__}: {str(exc)[:100]}); still retrying.")
-            return
-        if check:
-            emit(f"         {tag}{check.message}; polling should recover.")
-        elif check.status == "open":
-            emit(f"         {tag}public IP unchanged and ingress still open; "
-                 "the instance or the network is the cause. Retrying until the "
-                 "local deadline.")
-        else:
-            emit(f"         {tag}{check.message}. Retrying until the local deadline.")
+        return ensure_ssh_ingress(conn, sg_name, label=label, emit=emit,
+                                  indent="         ", announce_open=True)
 
     return _on_stuck
 
 
 def follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval,
-                        on_chunk=None, on_status=None, on_stuck=None, _ssh=_ssh):
+                        on_chunk=None, on_status=None, on_warn=None, on_stuck=None,
+                        unreachable_abort_s=UNREACHABLE_ABORT_S, _ssh=_ssh):
     """Poll an already-launched detached job to completion (or a local abort).
 
-    Returns the `PollOutcome`. Reconnection-tolerant: a failed poll is retried with
-    backoff and never fatal; only `deadline_s` (measured from the first poll)
-    aborts. `on_chunk` receives new job.out fragments for a live log/stream;
-    `on_stuck` (see `make_stuck_handler`) escalates a sustained SSH blackout.
+    Returns the `PollOutcome`. Reconnection-tolerant: a failed poll is retried
+    with backoff, and a blackout we cannot rule ourselves out of is never fatal.
+    `on_chunk` receives new job.out fragments for a live log/stream; `on_stuck`
+    (see `make_stuck_handler`) escalates a sustained SSH blackout and repairs the
+    security-group ingress when the caller's public IP has moved.
+
+    Two things end the follow short of completion: `deadline_s` (measured from
+    the first poll), and `unreachable_abort_s` -- a blackout that persisted that
+    long with this machine online and the group open, which is the instance being
+    dead rather than the network being between us. Pass `None` to disable the
+    latter and retry to the deadline.
     """
     run_poll = _make_poll_runner(ip, keyfile, _ssh=_ssh)
     return detach.poll_until_done(
         run_poll, poll_interval=poll_interval, deadline_s=deadline_s,
         backoff_base=BACKOFF_BASE_S, backoff_max=BACKOFF_MAX_S,
-        on_chunk=on_chunk, on_status=on_status, on_stuck=on_stuck)
+        on_chunk=on_chunk, on_status=on_status, on_warn=on_warn, on_stuck=on_stuck,
+        unreachable_abort_s=unreachable_abort_s)
 
 
 def pull_job_log(ip, keyfile, log_path, _ssh=_ssh):
@@ -864,6 +930,7 @@ def run_job(cloud=None, region=None, flavor=None, uploads=(), script=None,
 
         rc = 0
         deadline_hit = False
+        abandoned = ""          # why the job was given up on, set with deadline_hit
         if script:
             remote = os.path.basename(script)
             _scp_up(script, ip, keyfile, remote)
@@ -883,13 +950,21 @@ def run_job(cloud=None, region=None, flavor=None, uploads=(), script=None,
                 on_chunk=_emit,
                 on_stuck=make_stuck_handler(conn, name))
             elapsed = time.time() - started
-            if outcome.reason == "deadline":
+            if outcome.reason in ("deadline", "unreachable"):
                 # Do NOT raise yet: the artifacts below are the only surviving
                 # trace of the work, and the instance is about to be torn down.
+                # Both of these carry rc=None, which must never reach the return
+                # below -- `SystemExit(None)` exits 0, reporting a fleet we lost
+                # as a clean run.
                 deadline_hit = True
                 rc = -1
-                print(f"\nlocal deadline reached without the job finishing (remote cap {cap}s "
-                      "+ grace); fetching whatever exists before teardown ...", file=sys.stderr)
+                abandoned = (
+                    f"local deadline reached without the job finishing (remote cap {cap}s + grace)"
+                    if outcome.reason == "deadline" else
+                    "the instance stopped answering SSH while this machine was online and its "
+                    "security group admitted it")
+                print(f"\n{abandoned}; fetching whatever exists before teardown ...",
+                      file=sys.stderr)
             else:
                 rc = outcome.rc
                 print(f"\njob exited {rc}: "
@@ -909,7 +984,6 @@ def run_job(cloud=None, region=None, flavor=None, uploads=(), script=None,
 
         if deadline_hit:
             raise RuntimeError(
-                f"local deadline reached without the job finishing (remote cap {exec_timeout}s "
-                "+ grace); ~/job.rc never appeared -- the VM may be wedged (torn down now). "
-                "Any artifacts that existed were fetched first.")
+                f"{abandoned}; ~/job.rc never appeared -- the VM may be wedged "
+                "(torn down now). Any artifacts that existed were fetched first.")
         return rc

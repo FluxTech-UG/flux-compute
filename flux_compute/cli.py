@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 
@@ -121,6 +122,62 @@ def _stream_output():
             stream.reconfigure(line_buffering=True)
         except (AttributeError, ValueError):
             pass          # already unbuffered, detached, or a non-TextIO stand-in
+
+
+def _redirect_output(log_path):
+    """Point this process's stdout AND stderr at ``log_path`` (appending).
+
+    The redirect is done at the FILE DESCRIPTOR level (``dup2``), not by rebinding
+    ``sys.stdout``, because a sweep's output is not only Python prints: rsync, scp
+    and ssh are subprocesses that inherit fds 1 and 2 and write to them directly.
+    A Python-level tee would silently drop every one of those lines, which are
+    exactly the lines that say why an upload or a fetch failed.
+
+    Opened in append mode so a ``--resume`` can be pointed at the same log as the
+    run it continues, and the two read as one story rather than the second
+    truncating the evidence for the first.
+    """
+    fh = open(log_path, "a", buffering=1)
+    os.dup2(fh.fileno(), sys.stdout.fileno())
+    os.dup2(fh.fileno(), sys.stderr.fileno())
+    if fh.fileno() not in (sys.stdout.fileno(), sys.stderr.fileno()):
+        fh.close()
+    _stream_output()      # the new fds need line buffering too
+
+
+def _detach_into_background(log_path):
+    """Re-launch this process as a background daemon writing to ``log_path``.
+
+    Returns the child's pid in the PARENT (which should report it and exit), and
+    ``None`` in the CHILD (which should carry on and do the work).
+
+    This exists to delete a shell idiom from every call site. A sweep runs for
+    hours, so it was always invoked as ``nohup flux-compute sweep ... > log 2>&1
+    &`` -- four pieces of shell that each have a way to go wrong, and that a
+    launcher driving the CLI programmatically cannot use at all. ``setsid`` gives
+    the same guarantee the remote launcher relies on (``detach.launcher_script``):
+    a new session with no controlling terminal, so a closed terminal window cannot
+    HUP the fleet mid-flight.
+
+    The log is opened BEFORE the fork, deliberately: an unwritable path then fails
+    in the foreground where the operator is still watching, rather than in a child
+    that has already lost its terminal and can only report the error into the file
+    it could not open.
+    """
+    if not hasattr(os, "fork"):
+        raise RuntimeError(
+            "--detach needs POSIX fork, which this platform does not provide; "
+            "run without --detach and background it with the shell instead")
+    open(log_path, "a").close()          # fail here, in the foreground, if at all
+    pid = os.fork()
+    if pid > 0:
+        return pid
+    os.setsid()                          # new session: no controlling terminal
+    devnull = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(devnull, 0)                  # stdin can never be the terminal again
+    os.close(devnull)
+    _redirect_output(log_path)
+    return None
 
 
 def main(argv=None) -> int:
@@ -245,6 +302,17 @@ def main(argv=None) -> int:
                             "instance of the chosen flavor (exact-width mode). Default: drop "
                             "unfit regions with a warning (naming their occupants and headroom) "
                             "and run the sweep on the regions that do fit.")
+    sweep.add_argument("--log", default=None, metavar="FILE",
+                       help="Append all output (this process AND the rsync/ssh subprocesses it "
+                            "runs) to FILE instead of the terminal. Required with --detach, "
+                            "which has no terminal to write to.")
+    sweep.add_argument("--detach", action="store_true",
+                       help="Run the sweep as a background daemon (setsid, no controlling "
+                            "terminal) and return immediately, printing its pid. Needs --log. "
+                            "This replaces wrapping the command in "
+                            "`nohup ... > log 2>&1 &`: a closed terminal cannot HUP the fleet, "
+                            "and a launcher driving this CLI needs no shell at all. Follow it "
+                            "with `tail -f` on the log, and `sweep --resume` if it is ever lost.")
 
     bake = sub.add_parser(
         "bake",
@@ -313,6 +381,27 @@ def main(argv=None) -> int:
     push.add_argument("--prefix", default="", help="Optional object-name prefix within the container.")
 
     args = parser.parse_args(argv)
+
+    # Backgrounding and log redirection happen BEFORE dispatch, so everything the
+    # command prints -- including the pre-flight plan and any refusal -- lands in
+    # the log rather than half on a terminal that is about to be abandoned.
+    if getattr(args, "detach", False):
+        if not args.log:
+            parser.error("--detach needs --log FILE: a detached sweep has no "
+                         "terminal, so without a log its output would be lost")
+        pid = _detach_into_background(args.log)
+        if pid is not None:
+            print(f"flux-compute {args.command}: detached as pid {pid}; "
+                  f"output -> {args.log}")
+            print(f"  follow:  tail -f {args.log}")
+            print(f"  recover: flux-compute {args.command} --resume --into "
+                  f"{getattr(args, 'into', 'cloud-sweep')}")
+            return 0
+    elif getattr(args, "log", None):
+        # Say where the output went on the terminal the operator is still
+        # watching; after this line there is nothing more to see here.
+        print(f"flux-compute {args.command}: output -> {args.log}", file=sys.stderr)
+        _redirect_output(args.log)
 
     try:
         if args.command == "doctor":

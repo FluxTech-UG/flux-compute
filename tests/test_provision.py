@@ -488,12 +488,87 @@ def test_stuck_handler_says_so_when_the_public_ip_could_not_be_read(monkeypatch)
 
 
 def test_stuck_handler_reports_a_failed_heal_without_raising():
-    """The follow loop's contract is that only the deadline aborts it, so the
-    handler must swallow its own failure."""
+    """The follow loop tolerates a blackout it cannot explain, so the handler must
+    swallow its own failure -- and still hand back a status saying the check never
+    ran, so the loop cannot mistake an unchecked group for a verified-open one."""
     class _Boom:
         def find_security_group(self, name):
             raise RuntimeError("network API down")
 
     lines = []
-    make_stuck_handler(SimpleNamespace(network=_Boom()), "sg", emit=lines.append)(4, 60.0)
-    assert any("ingress re-check failed" in ln for ln in lines)
+    check = make_stuck_handler(
+        SimpleNamespace(network=_Boom()), "sg", emit=lines.append)(4, 60.0)
+    assert check.status == "error"
+    assert any("could not check SSH ingress" in ln and "network API down" in ln
+               for ln in lines)
+
+
+def test_stuck_handler_hands_the_verdict_back_to_the_poll_loop(monkeypatch):
+    """The loop cannot decide what a blackout means without knowing whether the
+    group was verified open, repaired, or never actually checked."""
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    check = make_stuck_handler(conn, "sg", emit=lambda _m: None)(4, 60.0)
+    assert check.status == "open"
+
+
+# --- ensure_ssh_ingress: the one check-and-repair both callers share ----------
+#
+# The re-attach path and the steady-state poll loop each used to wrap
+# heal_ssh_ingress in their own try/except with their own wording, so the same
+# event was reported two different ways depending on which one noticed it.
+
+def test_ensure_reports_a_repair_and_returns_the_healed_status(monkeypatch):
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "9.9.9.9/32")
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    lines = []
+    check = provision.ensure_ssh_ingress(conn, "sg", label="alpha", emit=lines.append)
+    assert check.status == "healed"
+    assert len(lines) == 1 and "9.9.9.9/32" in lines[0] and "[alpha]" in lines[0]
+    assert conn.network.created                     # the rule really was added
+
+
+def test_ensure_is_silent_on_the_common_no_op(monkeypatch):
+    """Same network, nothing to do: a 100-job resume must not print 100 lines."""
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
+    lines = []
+    check = provision.ensure_ssh_ingress(
+        _conn_with([_FakeRule("1.2.3.4/32")]), "sg", emit=lines.append)
+    assert check.status == "open" and lines == []
+
+
+def test_ensure_announces_the_no_op_when_the_caller_asks(monkeypatch):
+    """Mid-blackout, "ingress is fine" is the informative half of the answer, so
+    the poll loop opts into hearing it."""
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
+    lines = []
+    provision.ensure_ssh_ingress(
+        _conn_with([_FakeRule("1.2.3.4/32")]), "sg",
+        emit=lines.append, announce_open=True)
+    assert len(lines) == 1 and "ingress still open" in lines[0]
+
+
+def test_ensure_turns_an_api_error_into_a_status_and_never_raises():
+    """The check is precautionary; the SSH attempt that follows is the authority.
+    Abandoning a live, billing VM over a neutron hiccup would be far worse."""
+    class _Boom:
+        def find_security_group(self, name):
+            raise RuntimeError("neutron 503")
+
+    lines = []
+    check = provision.ensure_ssh_ingress(
+        SimpleNamespace(network=_Boom()), "sg-xyz", cidr="9.9.9.9/32", emit=lines.append)
+    assert check.status == "error"                  # NOT "open": nothing was verified
+    assert len(lines) == 1
+    assert "WARNING" in lines[0] and "neutron 503" in lines[0] and "sg-xyz" in lines[0]
+
+
+def test_ensure_uses_the_caller_supplied_cidr_without_re_reading(monkeypatch):
+    """A fleet-wide resume resolves the address once and passes it down; every
+    group must be compared against that same notion of "here"."""
+    monkeypatch.setattr(provision, "_public_ip_cidr",
+                        lambda: pytest.fail("re-read the public IP per group"))
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    check = provision.ensure_ssh_ingress(conn, "sg", cidr="9.9.9.9/32", emit=lambda _m: None)
+    assert check.status == "healed"
+    assert conn.network.created[0]["remote_ip_prefix"] == "9.9.9.9/32"
