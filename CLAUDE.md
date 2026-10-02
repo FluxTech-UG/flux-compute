@@ -4,9 +4,10 @@ The shared cloud-compute package for the FluxTech family: provision OVH Public
 Cloud GPU instances and run the simulation repos on them. Consumers (`1DSim3`,
 `LumpedSim2`, future sims) import it; it imports nothing back from them.
 
-The family conventions (one-way dependency, git rules, the no-em-dashes /
-fail-fast / plain-declarative house values) live in the parent `CLAUDE.md` and
-are not restated here. This file carries only what is specific to this package.
+The family conventions (one-way dependency, git rules, fail fast, living
+documents, no em dashes) live in the family-root `CLAUDE.md` and the universal
+rules it imports, and are not restated here. This file carries only what is
+specific to this package.
 
 ## What this is
 
@@ -33,7 +34,7 @@ is refused by default; do not add a path that launches an x64 sim on it silently
 The default sim flavor is `t2-le-45` (V100S 32GB, available across EU regions);
 plain V100 (`t1-le`) is BHS5-only, so `recommended_for_sim` picks the cheapest
 fp64-healthy GPU actually present in the region. When in doubt, validate a card
-with 1DSim3's `scripts/gpu_check.py` before committing to it.
+with 1DSim3's `scripts/diag/gpu_check.py` before committing to it.
 
 ### Quota is PER REGION, and regions are the fleet-width lever.
 Each OVH region carries its own compute quota — **64 vCPUs / 50 instances /
@@ -80,8 +81,8 @@ and unreadable records are left alone).
 with `--regions` the shards' worst cases are summed against that single number.
 It is therefore **independent of the region count**: regions buy wall-clock, not
 spend. An unpriced flavor is refused rather than skipping the guard. Say this
-plainly wherever budget is documented; a "per job" reading has propagated into a
-consumer repo before.
+plainly wherever budget is documented: "per job" is the natural misreading, and
+it understates the guard by the job count.
 
 ### A job's outcome is reported, never guessed.
 The remote wrapper's rc=137 is `128 + SIGKILL` and is genuinely ambiguous: the
@@ -168,9 +169,9 @@ results are the last trace of the work and the instance is about to be deleted.
   never ran (`error`, `no-group`) never licenses that conclusion. A sleep that
   overshoots in wall-clock time is a system suspend, and a wake forces the ingress
   check on the next failure instead of after another `STUCK_AFTER_POLLS`. The
-  loop's must-not-miss lines go to `on_warn`, which falls back to stderr: a
-  failing self-heal reported only when a status sink happened to be wired is what
-  made a four-hour fleet-wide lockout invisible.
+  loop's must-not-miss lines go to `on_warn`, which falls back to stderr, so a
+  failing self-heal is visible even when no status sink is wired; unreported, a
+  fleet-wide lockout runs for hours unseen.
   `AttachRecord` is written in two stages, the first **before the instance boots**,
   so a launcher killed mid-boot leaves a VM `--resume` can name and tear down.
 - `flux_compute/cli.py`: argparse entry point (`doctor`, `preflight`, `run`,
