@@ -11,7 +11,7 @@ license = "LicenseRef-Proprietary"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [
-    { name = "John Patrick Therrien", email = "john@flux-tech.de" },
+    { name = "Patrick John Therrien", email = "john@flux-tech.de" },
 ]
 keywords = ["OVHcloud", "OpenStack", "GPU", "JAX", "simulation", "orchestration"]
 classifiers = [
