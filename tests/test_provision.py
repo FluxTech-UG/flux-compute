@@ -487,10 +487,11 @@ def test_stuck_handler_says_so_when_the_public_ip_could_not_be_read(monkeypatch)
     assert conn.network.created == []
 
 
-def test_stuck_handler_reports_a_failed_heal_without_raising():
+def test_stuck_handler_reports_a_failed_heal_without_raising(monkeypatch):
     """The follow loop tolerates a blackout it cannot explain, so the handler must
     swallow its own failure -- and still hand back a status saying the check never
     ran, so the loop cannot mistake an unchecked group for a verified-open one."""
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
     class _Boom:
         def find_security_group(self, name):
             raise RuntimeError("network API down")

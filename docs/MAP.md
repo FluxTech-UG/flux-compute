@@ -310,6 +310,11 @@ _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling.
 - _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L803 — Plan and run a list of jobs: shard across regions, guard the budget, fan
 - run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L902
 
+### tests/conftest.py
+_Suite-wide guard: the tests are hermetic and touch no network._
+- class NetworkAccessInTests(BaseException)  ·L13 — A BaseException so that production code's broad `except Exception` (the
+- @pytest.fixture _no_network(monkeypatch)  ·L20
+
 ### tests/test_cli.py
 _Tests for the command-line entry point. No network, no credentials._
 - _run_cli(*args, cwd=None)  ·L19 — Run the CLI as a real process and return the CompletedProcess.
@@ -575,13 +580,13 @@ _Pure-logic tests for provision helpers. No network, no credentials._
 - test_current_ingress_cidr_is_none_when_the_read_failed(monkeypatch)  ·L460
 - test_stuck_handler_surfaces_the_blackout_and_tries_to_heal(monkeypatch)  ·L467
 - test_stuck_handler_says_so_when_the_public_ip_could_not_be_read(monkeypatch)  ·L478 — The blackout report must not claim a healthy group when the check never ran.
-- test_stuck_handler_reports_a_failed_heal_without_raising()  ·L490 — The follow loop tolerates a blackout it cannot explain, so the handler must
-- test_stuck_handler_hands_the_verdict_back_to_the_poll_loop(monkeypatch)  ·L506 — The loop cannot decide what a blackout means without knowing whether the
-- test_ensure_reports_a_repair_and_returns_the_healed_status(monkeypatch)  ·L521
-- test_ensure_is_silent_on_the_common_no_op(monkeypatch)  ·L531 — Same network, nothing to do: a 100-job resume must not print 100 lines.
-- test_ensure_announces_the_no_op_when_the_caller_asks(monkeypatch)  ·L540 — Mid-blackout, "ingress is fine" is the informative half of the answer, so
-- test_ensure_turns_an_api_error_into_a_status_and_never_raises()  ·L551 — The check is precautionary; the SSH attempt that follows is the authority.
-- test_ensure_uses_the_caller_supplied_cidr_without_re_reading(monkeypatch)  ·L566 — A fleet-wide resume resolves the address once and passes it down; every
+- test_stuck_handler_reports_a_failed_heal_without_raising(monkeypatch)  ·L490 — The follow loop tolerates a blackout it cannot explain, so the handler must
+- test_stuck_handler_hands_the_verdict_back_to_the_poll_loop(monkeypatch)  ·L507 — The loop cannot decide what a blackout means without knowing whether the
+- test_ensure_reports_a_repair_and_returns_the_healed_status(monkeypatch)  ·L522
+- test_ensure_is_silent_on_the_common_no_op(monkeypatch)  ·L532 — Same network, nothing to do: a 100-job resume must not print 100 lines.
+- test_ensure_announces_the_no_op_when_the_caller_asks(monkeypatch)  ·L541 — Mid-blackout, "ingress is fine" is the informative half of the answer, so
+- test_ensure_turns_an_api_error_into_a_status_and_never_raises()  ·L552 — The check is precautionary; the SSH attempt that follows is the authority.
+- test_ensure_uses_the_caller_supplied_cidr_without_re_reading(monkeypatch)  ·L567 — A fleet-wide resume resolves the address once and passes it down; every
 
 ### tests/test_reap.py
 _Pure-logic tests for reap selection: expiry math, positive identification,_

@@ -192,8 +192,9 @@ results are the last trace of the work and the instance is about to be deleted.
 
 ## Tests
 
-`python -m pytest tests/ -v`. The flavor-policy tests are pure logic and need no
-network or credentials.
+`python -m pytest tests/ -v` (about 2 s). The suite is hermetic: it needs no network
+or credentials, and the autouse guard in `tests/conftest.py` makes any outbound socket
+connection fail the test, so a network call a test forgot to stub surfaces as an error.
 
 ## Shared rules
 
