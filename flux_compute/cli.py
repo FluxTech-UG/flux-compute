@@ -338,7 +338,7 @@ def main(argv=None) -> int:
                              help="Show these regions (comma-separated). Default: every region "
                                   "the cloud entry is configured for.")
     regions_cmd.add_argument("--flavor", default=None, metavar="NAME",
-                             help="Flavor for the 'fits' column — how many fit each region's "
+                             help="Flavor for the 'fits' column: how many fit each region's "
                                   "remaining headroom (default b3-32).")
     regions_cmd.add_argument("--json", action="store_true", dest="as_json",
                              help="Emit machine-readable JSON (for the frontend button / agents).")

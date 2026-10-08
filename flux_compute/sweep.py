@@ -325,11 +325,11 @@ class RegionDrop:
 def _prepare_shards(cloud, regions, flavor, image, max_parallel):
     """Resolve every requested region; return (shards, drops).
 
-    A region that cannot host the sweep — no credit-eligible fp64-healthy GPU, no
-    quota headroom for even one instance, no compute endpoint — becomes a
+    A region that cannot host the sweep (no credit-eligible fp64-healthy GPU, no
+    quota headroom for even one instance, no compute endpoint) becomes a
     `RegionDrop` carrying the reason instead of a shard, rather than raising. The
     caller decides between graceful-degrade (drop unfit regions with a warning
-    and run on the rest — the default) and refuse-the-whole-sweep
+    and run on the rest, the default) and refuse-the-whole-sweep
     (`--strict-regions`). A clouds.yaml region pin is one global config fault
     (fixing it fixes every region), so it still surfaces whole and at once.
     """

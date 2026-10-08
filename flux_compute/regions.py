@@ -4,8 +4,8 @@ For each region it reports the compute quota (vCPU / instances / RAM used vs the
 region's own total), the running flux-compute instances occupying it (name,
 flavor, age and TTL bucket, via the same positive-identification `reap` uses)
 plus a count of foreign servers, and how many of a given flavor still fit the
-remaining headroom. Everything here is **read-only** — `get_compute_limits`,
-`compute.servers`, `compute.find_flavor` — so it is safe to run against live
+remaining headroom. Everything here is **read-only** (`get_compute_limits`,
+`compute.servers`, `compute.find_flavor`), so it is safe to run against live
 fleets. It is the one surface both the sweep pre-flight (graceful-degrade: drop
 regions that cannot fit the work) and the frontend region-status button read;
 `--json` is the machine-readable shape for those programmatic consumers.
@@ -87,7 +87,7 @@ def fits_count(spec, quota: RegionQuota) -> int | None:
     """How many VMs of `spec` fit `quota`'s remaining headroom, over all axes.
 
     The binding axis wins (min across cores/instances/RAM). Returns 0 when the
-    headroom holds none — never raises, unlike the launch-path `_region_cap`, so
+    headroom holds none and never raises, unlike the launch-path `_region_cap`, so
     the occupancy view can report a full region as `fits 0` rather than an error.
     None only when every axis is unbounded (no binding axis to count against)."""
     bounds = [
@@ -155,7 +155,7 @@ def _one_region_status(cloud, region, flavor, now) -> RegionStatus:
             spec = live_flavor_spec(flavor_obj) if flavor_obj is not None else None
         return build_region_status(reg, flavor=flavor, spec=spec, quota=quota,
                                    servers=servers, now=now)
-    except Exception as exc:                      # noqa: BLE001 — surfaced as a row
+    except Exception as exc:                      # noqa: BLE001: surfaced as a row
         if "refused by the local clouds.yaml" in str(exc):
             raise
         return RegionStatus(
@@ -187,7 +187,7 @@ def occupancy_summary(status: RegionStatus) -> str | None:
 
 def occupancy_line(cloud, region) -> str | None:
     """Best-effort one-line occupancy for `region`, for a drop warning. Read-only;
-    never raises (a region that cannot be read yields None) — the caller already
+    never raises (a region that cannot be read yields None); the caller already
     knows the region is being dropped and only wants the 'who' when it is cheap."""
     try:
         st = _one_region_status(cloud, region, None, datetime.now(timezone.utc))
@@ -212,9 +212,9 @@ def _quota_cells(q: RegionQuota):
 
 def format_regions(statuses, flavor=DEFAULT_FITS_FLAVOR) -> str:
     """Render the region statuses as a human-readable block. Pure: returns a
-    string, never prints — the CLI prints it, a consumer can reuse it."""
+    string, never prints; the CLI prints it, a consumer can reuse it."""
     lines = [
-        "flux-compute regions — live per-region occupancy (read-only):",
+        "flux-compute regions: live per-region occupancy (read-only):",
         f"  fits column: how many {flavor} fit each region's remaining headroom.",
         "",
     ]

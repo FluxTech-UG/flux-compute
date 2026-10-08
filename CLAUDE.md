@@ -37,14 +37,14 @@ fp64-healthy GPU actually present in the region. When in doubt, validate a card
 with 1DSim3's `scripts/diag/gpu_check.py` before committing to it.
 
 ### Quota is PER REGION, and regions are the fleet-width lever.
-Each OVH region carries its own compute quota — **64 vCPUs / 50 instances /
+Each OVH region carries its own compute quota: **64 vCPUs / 50 instances /
 496 GiB** (the CS16091787 increase, granted 2026-07-19, in effect as measured
 live 2026-07-27 in DE1/UK1/WAW1/SBG5). A V100S (`t2-le-45`) is 15 vCPU, so one
 region fits **4 concurrent V100S**; BHS5's plain V100 (`t1-le-45`) is 8 vCPU and
 fits 8. Across the five GPU regions (GRA11, DE1, UK1, WAW1, BHS5) that is **24
 concurrent GPU instances**, which is what `sweep --regions` exists to reach. The
 other four regions (SBG5, RBX-A, EU-WEST-PAR, EU-SOUTH-MIL) are CPU-only but
-carry the same 64 vCPU each — ~576 vCPUs project-wide for CPU fan-out.
+carry the same 64 vCPU each, ~576 vCPUs project-wide for CPU fan-out.
 
 The code never trusts these numbers: preflight and sweep read live quota from
 the API and clamp to real headroom, per region. Treat this section as
@@ -70,14 +70,14 @@ and every command that connects surfaces strays with accrued cost before doing
 its own work. Do not add a provisioning path that bypasses the TTL stamp or the
 verified teardown. The teardown also owns the local attach state: sweep persists
 `<into>/<label>/.flux_attach/` (record.json + a copy of the ephemeral SSH key)
-so a killed orchestrator can `--resume`, and a clean teardown deletes it — an
+so a killed orchestrator can `--resume`, and a clean teardown deletes it. An
 orchestrator that dies and is never resumed leaves keys on disk, which
 `flux-compute reap --sweep-local DIR` cleans up by removing every attach dir
 whose instance is verifiably gone from a scanned region (live, unscanned-region,
 and unreadable records are left alone).
 
 **`--budget` caps the WHOLE sweep, not one job.** The guard is
-`(total jobs) × (EUR/hr) × (--max-minutes)` — every job at its full wall cap — and
+`(total jobs) × (EUR/hr) × (--max-minutes)` (every job at its full wall cap), and
 with `--regions` the shards' worst cases are summed against that single number.
 It is therefore **independent of the region count**: regions buy wall-clock, not
 spend. An unpriced flavor is refused rather than skipping the guard. Say this
@@ -89,7 +89,7 @@ The remote wrapper's rc=137 is `128 + SIGKILL` and is genuinely ambiguous: the
 wall cap's kill-after escalation and the kernel OOM-killer both produce it. A
 sub-cap 137 triggers a kernel-log read on the still-live VM before teardown
 (`provision.explain_remote_kill`) and is reported as an OOM kill, a cap timeout,
-or an honest "cause unknown" — never blanket-labelled a timeout. Absence of
+or an honest "cause unknown", never blanket-labelled a timeout. Absence of
 evidence is reported as unknown, not as innocence. Artifacts are fetched on
 **every** teardown path, including the local-deadline and killed paths: partial
 results are the last trace of the work and the instance is about to be deleted.
@@ -109,16 +109,16 @@ results are the last trace of the work and the instance is about to be deleted.
   K, wave count, worst-case EUR, spare slots). Split like the rest of the package:
   `plan_fleet_core` is pure (region caps + specs -> plan, unit-tested), `plan_fleet`
   is the offline facade over the catalog tables, `plan_fleet_live` gathers real
-  per-region quota/availability. **It contains zero simulation concepts** — it
+  per-region quota/availability. **It contains zero simulation concepts**: it
   routes on generic resource fields only, per the family package invariant.
 - `flux_compute/auth.py`: `connect()` to the OVH project from clouds.yaml / OS_* env.
   A clouds.yaml pinned to a single `region_name:` refuses every other region
-  *locally*, before any request — `connect` detects that and raises the
+  *locally*, before any request; `connect` detects that and raises the
   `regions:`-list fix, because the pin silently caps fleet width.
 - `flux_compute/sweep.py`: the fan-out, including per-region sharding
   (`parse_regions` / `allocate_concurrency` / `shard_jobs` / `Shard`, all pure
   and tested). `parse_jobs` owns the jobs-file format and strips comments
-  (whole-line AND inline, quote-aware) from both label and params — the parse is
+  (whole-line AND inline, quote-aware) from both label and params: the parse is
   the single definition of what reaches `$FLUX_JOB`, so never add a compensating
   strip in a consumer's job script. `_launch_jobs` is the shared launch path, used
   both by a fresh sweep and by `--resume --jobs`, which continues the jobs file by
@@ -131,7 +131,7 @@ results are the last trace of the work and the instance is about to be deleted.
   the reporting are `provision.ensure_ssh_ingress`, shared with the steady-state
   poll loop's stuck handler so the same fault is fixed the same way and described
   in the same words whichever path notices it; it never raises, because the check
-  is precautionary and the SSH attempt that follows is the authority — abandoning
+  is precautionary and the SSH attempt that follows is the authority; abandoning
   a live, billing VM over a neutron hiccup would be the worse outcome. It returns
   a status rather than a bare bool so a caller can tell "verified open" from
   "could not check", which is what the follower's fail-fast bound rests on.
@@ -151,13 +151,13 @@ results are the last trace of the work and the instance is about to be deleted.
 - `flux_compute/doctor.py`: `flux-compute doctor`, the API health check.
 - `flux_compute/detach.py`: the sleep-survival machinery, all pure and unit-tested
   (`provision.py` wires it to real SSH). `launcher_script` emits the detached
-  `setsid` + `timeout` launcher — which also applies the **universal glibc
+  `setsid` + `timeout` launcher, which also applies the **universal glibc
   allocator tuning** (arena cap + trim threshold, opportunistic tcmalloc preload),
   so the host-RAM OOM mitigation belongs to every job rather than being re-derived
   in each consumer's job script; a job script's own `export` still overrides.
   `poll_until_done` is the reconnect-tolerant follow loop, and `on_stuck`
   escalates a sustained SSH blackout to `provision.make_stuck_handler`, which
-  re-opens security-group ingress when the caller's public IP has moved — the one
+  re-opens security-group ingress when the caller's public IP has moved, the one
   failure that breaks every job at once. The handler hands its `IngressCheck`
   back, and `classify_blackout` (pure) turns that status into the loop's decision.
   **The discriminator is who is disconnected.** An unreadable public IP means WE
@@ -185,7 +185,7 @@ results are the last trace of the work and the instance is about to be deleted.
   requirement the behavior is unchanged. `sweep --detach --log FILE` runs the
   sweep as a `setsid` daemon (`_detach_into_background`) writing to `FILE`
   (`_redirect_output`, at the fd level so the rsync/ssh subprocesses land there
-  too), which exists so no caller — human or launcher — needs to wrap the command
+  too), which exists so no caller (human or launcher) needs to wrap the command
   in `nohup … > log 2>&1 &`. `--detach` without `--log` is refused: output that
   goes nowhere is indistinguishable from a run that never started.
 - `examples/clouds.yaml.example`: OVH application-credential template.

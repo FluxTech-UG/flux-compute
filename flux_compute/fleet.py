@@ -1,15 +1,15 @@
 """Resource-aware fleet planner: turn a generic job description into a launch plan.
 
 A consumer (a simulation repo's tooling, a UI) describes what a batch of jobs
-*needs* — RAM per job, whether it wants a CPU or a GPU, whether the jobs batch
-onto one device, how long each takes, and how many there are — and gets back a
+*needs* (RAM per job, whether it wants a CPU or a GPU, whether the jobs batch
+onto one device, how long each takes, and how many there are) and gets back a
 `FleetPlan`: which flavor, which device, how wide a fleet across which regions,
 how many jobs pack onto a VM, how many waves it takes, the worst-case spend, and
 how much spare capacity is left to fill. It never prints; it returns structured
 data the caller renders or acts on.
 
 **This package knows nothing about what the jobs compute.** `JobRequirements`
-carries only generic resource fields — no grid sizes, no solver settings, no
+carries only generic resource fields: no grid sizes, no solver settings, no
 consumer concepts. The planner routes on RAM, device, batchability and count
 alone, so any consumer that can state those four things can size a fleet here.
 
@@ -41,7 +41,7 @@ RAM_HEADROOM = 0.8
 # Cloud topology, from the flux-compute README ("Multi-region sweeps", measured
 # 2026-07-21). GPU cards live only in the five GPU regions; the other four are
 # CPU-only. BHS5 carries the cheaper plain V100; the other GPU regions carry the
-# V100S. These are the *catalog* defaults the offline plan reasons from — a live
+# V100S. These are the *catalog* defaults the offline plan reasons from; a live
 # plan reads each region's real flavor list and quota instead.
 GPU_REGIONS = ("GRA11", "DE1", "UK1", "WAW1", "BHS5")
 CPU_ONLY_REGIONS = ("SBG5", "RBX-A", "EU-WEST-PAR", "EU-SOUTH-MIL")
@@ -54,9 +54,9 @@ _REGION_GPU_FAMILY = {
     "WAW1": "t2-le", "BHS5": "t1-le",
 }
 
-# Per-region compute quota, measured live 2026-07-27 in DE1/UK1/WAW1/SBG5 —
+# Per-region compute quota, measured live 2026-07-27 in DE1/UK1/WAW1/SBG5:
 # the CS16091787 increase (granted 2026-07-19) is in effect (README "Cost
-# guardrails"). The quota is per region — spreading across regions is the only
+# guardrails"). The quota is per region; spreading across regions is the only
 # way to widen a fleet past one region's headroom. A live plan reads the real
 # numbers from the API; these bound the offline preview.
 CATALOG_QUOTA_CORES = 64
@@ -68,12 +68,12 @@ CATALOG_QUOTA_MEASURED = "measured 2026-07-27"
 # the EU-wide single-card V100S default (a live plan may pick a region's cheaper
 # card, e.g. BHS5's V100); CPU work picks the cheapest single VM whose host RAM
 # fits one job, across both the compute-optimized (c3) and general-purpose (b3)
-# ladders — for a RAM-heavy job b3's 4 GB/vCPU beats c3's 2 GB/vCPU on price.
+# ladders: for a RAM-heavy job b3's 4 GB/vCPU beats c3's 2 GB/vCPU on price.
 # GPU work ranks across the EU-wide V100S family: choose_flavor picks the cheapest
 # that fits one member's HOST RAM, so a lean member stays on t2-le-45 (the default,
 # first here) while a host-RAM-heavy member steps up to t2-le-90/180 instead of
 # being refused. t1-le (V100, BHS5-only, cheaper but half the VRAM) is deliberately
-# NOT a primary candidate — on price it would undercut the EU-wide default and
+# NOT a primary candidate: on price it would undercut the EU-wide default and
 # misreport a BHS5-only card as the fleet's primary flavor; BHS5 still runs t1-le
 # via its per-region flavor, whose smaller VRAM the per-region K already accounts for.
 _GPU_CANDIDATE_FLAVORS = (DEFAULT_SIM_FLAVOR, "t2-le-90", "t2-le-180")
@@ -89,26 +89,26 @@ _DEVICES = ("cpu", "gpu", "either")
 class JobRequirements:
     """A consumer's generic description of a batch of independent jobs.
 
-    Every field is resource-generic — nothing here names what the jobs compute.
+    Every field is resource-generic: nothing here names what the jobs compute.
     A later consumer-side estimator produces one of these and the planner routes
     on it alone.
 
     Fields:
-      job_count        — how many independent jobs to run (>= 1).
-      ram_gb_per_job   — peak host RAM one job (or one batched member) needs, GB.
-      device           — "cpu", "gpu", or "either". "either" lets the planner
+      job_count:         how many independent jobs to run (>= 1).
+      ram_gb_per_job:    peak host RAM one job (or one batched member) needs, GB.
+      device:            "cpu", "gpu", or "either". "either" lets the planner
                          pick: batched work amortizes on a GPU, unbatched work
                          fans out cheaply on CPU.
-      minutes_per_job  — wall-clock estimate for one job (or one batched
+      minutes_per_job:   wall-clock estimate for one job (or one batched
                          invocation); sizes waves and worst-case spend.
-      batchable        — True if many jobs collapse into one device invocation
+      batchable:         True if many jobs collapse into one device invocation
                          (e.g. one GPU absorbing many members at once). When
                          True the planner packs a VM to a batch, not to its vCPUs.
-      batch_width      — preferred members per batched invocation. Only meaningful
+      batch_width:       preferred members per batched invocation. Only meaningful
                          when batchable; the actual batch is clamped down to what
                          a VM's RAM and (on a GPU) VRAM hold. Omitted -> the batch
                          is resource-bound.
-      vram_gb_per_member — GPU device memory one batched member needs, GB. Only
+      vram_gb_per_member: GPU device memory one batched member needs, GB. Only
                          meaningful when batchable (a batch is what co-resides on
                          the accelerator). Omitted -> the planner conservatively
                          assumes a member's VRAM footprint equals its host
@@ -194,7 +194,7 @@ class FleetPlan:
     cost_jobs_eur: float | None       # worst case for the requested job_count
                                       #   (dealt across the fleet like `sweep`;
                                       #   this is what --budget guards)
-    cost_filled_eur: float | None     # worst case if every slot is filled — the
+    cost_filled_eur: float | None     # worst case if every slot is filled: the
                                       #   packed capacity envelope (reported, not gated)
     notes: tuple = field(default_factory=tuple)
 
@@ -216,7 +216,7 @@ def _resolve_device(req: JobRequirements) -> str:
 
     Batched work amortizes a device invocation across many members, which is what
     a GPU is for here; unbatched work is a wide one-per-VM CPU fan-out. This is a
-    generic default, not a measured crossover — a consumer that has benchmarked
+    generic default, not a measured crossover; a consumer that has benchmarked
     the crossover passes "cpu"/"gpu" explicitly to override it.
     """
     if req.device in ("cpu", "gpu"):
@@ -235,7 +235,7 @@ def choose_flavor(req: JobRequirements, *, ram_headroom: float = RAM_HEADROOM,
     """Pick the cheapest usable flavor whose host RAM fits one job of `req`.
 
     `candidates` overrides the catalog ladder (the live path passes a region's
-    real specs). Raises fail-fast when no candidate can hold even one job — the
+    real specs). Raises fail-fast when no candidate can hold even one job: the
     RAM-above-the-largest-flavor case, with the largest available size named.
     """
     device = _resolve_device(req)
@@ -267,10 +267,10 @@ def jobs_per_vm(req: JobRequirements, spec: FlavorSpec, *,
     (`K * ram_gb_per_job <= ram_gb * headroom`). For a *batched* GPU invocation the
     members co-reside on the accelerator, so GPU VRAM binds too
     (`K * vram_per_member <= vram_gb * headroom`), with `vram_per_member` the
-    requirement's `vram_gb_per_member` or — conservatively, when unset — its
+    requirement's `vram_gb_per_member` or (conservatively, when unset) its
     `ram_gb_per_job`. Contention then depends on how the work uses the device:
       - batchable: the caller's preferred batch width (or, if unset, the
-        resource fit) — many members share one device invocation.
+        resource fit): many members share one device invocation.
       - unbatched on a GPU: one job holds the single accelerator, so K's
         contention bound is 1 (RAM cannot pack more usefully onto one GPU).
       - unbatched on a CPU: one serial job per vCPU (the fan-out packing).
@@ -281,7 +281,7 @@ def jobs_per_vm(req: JobRequirements, spec: FlavorSpec, *,
     if ram_fit < 1:
         raise RuntimeError(
             f"one job needs {req.ram_gb_per_job:g} GB but {spec.name} offers only "
-            f"{usable:.0f} GB usable of {spec.ram_gb:g} GB — not even one fits.")
+            f"{usable:.0f} GB usable of {spec.ram_gb:g} GB: not even one fits.")
     resource_fit = ram_fit
     if req.batchable and spec.kind == "gpu" and spec.vram_gb is not None:
         vram_per_member = (req.vram_gb_per_member
@@ -292,7 +292,7 @@ def jobs_per_vm(req: JobRequirements, spec: FlavorSpec, *,
             raise RuntimeError(
                 f"one batched member needs {vram_per_member:g} GB of VRAM but "
                 f"{spec.name} has only {vram_usable:.0f} GB usable of "
-                f"{spec.vram_gb:g} GB VRAM — not even one member fits on the device.")
+                f"{spec.vram_gb:g} GB VRAM: not even one member fits on the device.")
         resource_fit = min(ram_fit, vram_fit)
     if req.batchable:
         contention = req.batch_width if req.batch_width is not None else resource_fit
@@ -310,7 +310,7 @@ def _region_cap(spec: FlavorSpec, *, cores_used=0, cores_max=CATALOG_QUOTA_CORES
 
     Cores and instances go through the shared `clamp_concurrency` (which raises
     when not even one instance fits that quota); RAM is the third axis
-    (VMs * ram_gb <= ram quota). Returns the max concurrent VMs — **0** when RAM
+    (VMs * ram_gb <= ram quota). Returns the max concurrent VMs, **0** when RAM
     headroom cannot fit even one VM, matching the strictness of the core/instance
     axis rather than optimistically claiming one. The caller (`plan_fleet_core`)
     fails fast when every region resolves to 0.
@@ -346,7 +346,7 @@ def _flavor_reason(req, device, primary, K) -> str:
         pack = (f"packs {K} job(s)/VM"
                 + (f" across {primary.vcpus} vCPU" if K > 1 else " (RAM-bound)"))
     return (f"{dev_note}: {primary.name} "
-            f"({primary.vcpus} vCPU, {primary.ram_gb:g} GB) — cheapest usable "
+            f"({primary.vcpus} vCPU, {primary.ram_gb:g} GB), cheapest usable "
             f"flavor fitting {req.ram_gb_per_job:g} GB/job; {pack}")
 
 
@@ -425,7 +425,7 @@ def plan_fleet_core(req: JobRequirements, region_units, *, device: str,
     #     `sweep` bills, one VM per job).
     #   - batched: the members run K-at-a-time, so a wave of K members costs ONE
     #     VM-period; `job_count` members occupy `ceil(job_count / K)` VM-invocations
-    #     (billing the raw member count would over-charge ~K x — the batch runs its
+    #     (billing the raw member count would over-charge ~K x; the batch runs its
     #     members concurrently, not as separate VM-jobs).
     # Either way the count is dealt across regions ~ vms, exactly as `cost_filled`
     # weights them, which keeps `cost_jobs <= cost_filled` region-by-region (each
@@ -483,7 +483,7 @@ def plan_fleet(requirements: JobRequirements, budget=None, regions=None,
 
     Chooses the flavor for the requirement, spreads the fleet across the eligible
     regions at their catalog quota, and returns a `FleetPlan`. GPU work is planned
-    across the GPU regions (each at its catalog card — BHS5's cheaper V100, the
+    across the GPU regions (each at its catalog card: BHS5's cheaper V100, the
     V100S elsewhere); CPU work spreads across all regions on one chosen CPU flavor.
     A live launch re-verifies quota and availability per region and may pick a
     cheaper regional card.
@@ -608,7 +608,7 @@ def plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None,
             cap, sub = _live_region_cap(spec, conn.get_compute_limits())
             substituted.update(sub)
             units.append(RegionUnit(region=reg, spec=spec, cap=cap))
-        except Exception as exc:       # noqa: BLE001 — collected and re-raised together
+        except Exception as exc:       # noqa: BLE001: collected and re-raised together
             if "refused by the local clouds.yaml" in str(exc):
                 raise
             failures.append(f"  {region}: {type(exc).__name__}: {str(exc)[:160]}")
@@ -633,7 +633,7 @@ def plan_fleet_live(requirements: JobRequirements, *, cloud=None, budget=None,
 
 def format_plan(req: JobRequirements, plan: FleetPlan) -> str:
     """Render a FleetPlan as human-readable text. Pure: returns a string, never
-    prints — the CLI prints it, and a consumer can reuse it in its own UI."""
+    prints; the CLI prints it, and a consumer can reuse it in its own UI."""
     cost_jobs = (f"~EUR {plan.cost_jobs_eur:.2f}"
                  if plan.cost_jobs_eur is not None else "price n/a")
     cost_filled = (f"~EUR {plan.cost_filled_eur:.2f}"

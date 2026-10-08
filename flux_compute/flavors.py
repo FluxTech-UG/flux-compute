@@ -20,7 +20,7 @@ from the OVH catalog. CPU instance spend IS covered by Startup Program credits:
 the program's product-eligibility guide (March 2026, archived at
 docs/product-eligibility-startup-program-2026-03.html) marks every b-series and
 c-series instance "Covered" at both program levels, with GPU instances as the
-only restricted family — so for CPU flavors credit_eligible is a sourced billing
+only restricted family, so for CPU flavors credit_eligible is a sourced billing
 fact, same as for the GPU cards (README, "CPU credit coverage").
 """
 from __future__ import annotations
@@ -56,10 +56,10 @@ _KNOWN_PRICE_EUR_HR = {
     "t1-le-45": 0.70, "t1-le-90": 1.40, "t1-le-180": 2.80,
     "t2-le-45": 0.80, "t2-le-90": 1.60, "t2-le-180": 3.20,
     "rtx5000-28": 0.36, "rtx5000-56": 0.72, "rtx5000-84": 1.08,
-    # CPU — General Purpose (b3-*, 1 vCPU : 4 GB RAM)
+    # CPU: General Purpose (b3-*, 1 vCPU : 4 GB RAM)
     "b3-8": 0.0512, "b3-16": 0.1023, "b3-32": 0.2046, "b3-64": 0.4092,
     "b3-128": 0.8190, "b3-256": 1.6370, "b3-512": 3.2740, "b3-640": 4.0920,
-    # CPU — Compute Optimized (c3-*, 1 vCPU : 2 GB RAM)
+    # CPU: Compute Optimized (c3-*, 1 vCPU : 2 GB RAM)
     "c3-4": 0.0457, "c3-8": 0.0913, "c3-16": 0.1825, "c3-32": 0.3650,
     "c3-64": 0.7301, "c3-128": 1.4610, "c3-256": 2.9210, "c3-320": 3.6510,
 }
@@ -89,7 +89,7 @@ _GPU_RULES = (
 
 # CPU flavor families on Public Cloud: fp64-healthy, usable, and covered by
 # Startup Program credits (the archived eligibility guide marks every b-/c-series
-# instance "Covered"; only GPU instances are restricted — module docstring).
+# instance "Covered"; only GPU instances are restricted; see the module docstring).
 _CPU_PREFIXES = ("b3-", "b2-", "c3-", "c2-", "r3-", "r2-", "d2-", "i1-", "bm-")
 
 # Host RAM per vCPU by CPU family, from the OVH catalog (docs/product-eligibility-
@@ -118,7 +118,7 @@ _GPU_SPECS_VCPU_RAM = {
 # named in its model string (V100 = 16 GB, V100S = 32 GB, RTX5000 = 16 GB); the
 # multi-card flavors carry that many times the card count (t2-le-90 is 2 x V100S
 # = 64 GB, t2-le-180 is 4 x = 128 GB). Tabulated explicitly rather than parsed
-# from the model string. VRAM — not host RAM — bounds a *batched* device
+# from the model string. VRAM (not host RAM) bounds a *batched* device
 # invocation (the members co-resident on the accelerator), so the fleet planner
 # clamps a batch by both. Every flavor in _GPU_SPECS_VCPU_RAM has a row here;
 # an out-of-sync GPU flavor is a fail-fast in static_flavor_spec.
@@ -203,7 +203,7 @@ class FlavorSpec:
     device invocation; `price_eur_hr` bounds spend (None when the flavor is
     unpriced, which the budget guard refuses). `kind`/`gpu_model` come straight
     from the policy `classify`, so a spec of a non-usable flavor still describes
-    it — the planner filters on `usable_for_sim` itself.
+    it; the planner filters on `usable_for_sim` itself.
     """
 
     name: str
@@ -222,7 +222,7 @@ def _parse_cpu_suffix(name: str):
     The suffix is the flavor's host RAM in GB (b3-8 = 8 GB); the family prefix
     keys the RAM-per-vCPU ratio. Raises for a CPU family whose ratio is not
     sourced, or a suffix that is not a bare integer (e.g. a `-flex` variant),
-    rather than guessing — the offline path is fail-fast, the live path reads
+    rather than guessing: the offline path is fail-fast, the live path reads
     `.ram`/`.vcpus` off the flavor object.
     """
     n = name.strip().lower()
@@ -249,7 +249,7 @@ def static_flavor_spec(name: str) -> FlavorSpec:
     The pure/offline counterpart to reading a live OpenStack flavor object. GPU
     flavors come from the tabulated `_GPU_SPECS_VCPU_RAM`; CPU flavors are derived
     from the family ratio and the name's GB suffix. An unknown flavor family, or a
-    GPU name not in the catalog table, raises (fail fast — never a guessed shape).
+    GPU name not in the catalog table, raises (fail fast, never a guessed shape).
     """
     verdict = classify(name)
     if verdict.kind == "gpu":
@@ -264,7 +264,7 @@ def static_flavor_spec(name: str) -> FlavorSpec:
         if key not in _GPU_VRAM_GB:
             raise RuntimeError(
                 f"GPU flavor {name!r} is in _GPU_SPECS_VCPU_RAM but has no VRAM row "
-                f"in _GPU_VRAM_GB — the two tables are out of sync.")
+                f"in _GPU_VRAM_GB; the two tables are out of sync.")
         return FlavorSpec(name, "gpu", verdict.gpu_model, vcpus, float(ram_gb),
                           verdict.price_eur_hr, verdict.usable_for_sim,
                           vram_gb=_GPU_VRAM_GB[key])

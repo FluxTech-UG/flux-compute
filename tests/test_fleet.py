@@ -137,7 +137,7 @@ def test_pack_not_even_one_fits_fails_fast():
 def test_batched_gpu_is_vram_bounded_not_host_ram():
     # Example 2 re-derived: t2-le-45 has 32 GB VRAM (25.6 usable) and 45 GB host
     # RAM (36 usable). At 2 GB/member the batch is VRAM-bound at 12, NOT host-RAM
-    # -bound at 18 — a naive host-RAM pack (18*2=36 GB) would OOM the 32 GB card.
+    # -bound at 18: a naive host-RAM pack (18*2=36 GB) would OOM the 32 GB card.
     spec = static_flavor_spec("t2-le-45")
     assert spec.vram_gb == 32.0
     K = jobs_per_vm(JobRequirements(8, 2.0, "gpu", batchable=True, batch_width=128), spec)

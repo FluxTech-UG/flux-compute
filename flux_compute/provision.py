@@ -161,8 +161,8 @@ _CPU_SMOKE = (
 # is where a live sweep persists its per-job `.flux_attach` records (sweep.py),
 # and those records are created and deleted *while the fleet runs*. Uploading a
 # repo that contains a live fleet's `cloud-sweep/` lets those records vanish
-# mid-transfer, so rsync exits 24 and (with check=True) aborts the whole launch
-# — this stranded two fleets. Excluding it removes the self-race at the source;
+# mid-transfer, so rsync exits 24 and (with check=True) aborts the whole launch.
+# This stranded two fleets. Excluding it removes the self-race at the source;
 # `_rsync_up` additionally tolerates exit 24 as belt-and-suspenders.
 #
 # `.flux_attach` is the general form of that hazard and the one that actually
@@ -384,8 +384,8 @@ def _rsync_up(local, ip, keyfile, dest, extra_excludes=()):
         ["rsync", "-az", "-e", _ssh_cmd(keyfile), *excludes,
          local.rstrip("/") + "/", f"{SSH_USER}@{ip}:{dest}/"])
     if res.returncode == 24:
-        # rsync exit 24 = "some files vanished before they could be transferred"
-        # — a source file (e.g. a live fleet's churning `.flux_attach` record)
+        # rsync exit 24 = "some files vanished before they could be transferred":
+        # a source file (e.g. a live fleet's churning `.flux_attach` record)
         # disappeared mid-copy. That is benign for a launch upload: the transfer
         # otherwise completed. Warn and continue rather than aborting the launch
         # (which used to strand the freshly-booted VM).

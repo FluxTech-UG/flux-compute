@@ -41,12 +41,12 @@ one-job-per-VM fan-out.
 `flux_compute.flavors.classify(name)` and `recommended_for_sim(names)` encode
 this policy; it is enforced, not advisory.
 
-### CPU credit coverage — CONFIRMED covered
+### CPU credit coverage: CONFIRMED covered
 
 **CPU instance spend (`b3-*`, `c3-*`) draws from Startup Program credits.**
 Source of record: the program's product-eligibility guide (March 2026),
-archived in this repo at `docs/product-eligibility-startup-program-2026-03.html`
-— every General Purpose (b-series) and Compute Optimised (c-series) instance
+archived in this repo at `docs/product-eligibility-startup-program-2026-03.html`:
+every General Purpose (b-series) and Compute Optimised (c-series) instance
 row is marked "✓ Covered" at both program levels, and the guide's general rule
 states the Public Cloud range is eligible with **GPU instances as the only
 restricted family** ("only V100, V100S and RTX5000 are available with
@@ -57,7 +57,7 @@ The guide's `b3-8`..`b3-64` prices match the `_KNOWN_PRICE_EUR_HR` table exactly
 (e.g. b3-8 at EUR 0.0512/hr); its `c3-*` and `b3-128+` rows run ~10% lower than
 the table's 2026-07-04 DE order-catalog reads. The DE order catalog is the
 account's billing basis, and the gap is conservative for budgeting (worst-case
-spend is over-, never under-, estimated) — see the cross-check note in
+spend is over-, never under-, estimated); see the cross-check note in
 `flavors.py`.
 
 ## Install
@@ -93,20 +93,20 @@ end-to-end "is the API working?" check.
 
 ## Commands (all verified live on OVH)
 
-- **`doctor` / `preflight`** — API health and launch-readiness.
-- **`plan --ram-gb GB --device D --count N`** — size a fleet for a generic job
+- **`doctor` / `preflight`**: API health and launch-readiness.
+- **`plan --ram-gb GB --device D --count N`**: size a fleet for a generic job
   requirement and print the flavor, per-region VM spread, jobs-per-VM packing,
   wave count and worst-case cost, without launching (see *Fleet planning* below).
-- **`run --upload --script --fetch`** — provision a V100S, upload repos, run a job
+- **`run --upload --script --fetch`**: provision a V100S, upload repos, run a job
   script, fetch artifacts, tear down (`--smoke` for a GPU check; `--plan` for a dry run).
-- **`sweep --jobs FILE --max-parallel K --budget EUR`** — fan out one instance per
+- **`sweep --jobs FILE --max-parallel K --budget EUR`**: fan out one instance per
   job, with a pre-flight worst-case cost guard and a per-job wall-clock cap. Each
   job runs **detached** on its VM and is followed by a reconnect-tolerant poll
   loop, so a laptop sleep does not kill it; `sweep --resume` continues an
   interrupted run (see *Surviving laptop sleep* below). Add
   **`--regions A,B,C`** to shard one sweep across several regions at once (see
-  *Multi-region sweeps* below) — the way to run a fleet wider than one region's
-  quota — and **`--detach --log FILE`** to run the whole sweep as a background
+  *Multi-region sweeps* below), the way to run a fleet wider than one region's
+  quota, and **`--detach --log FILE`** to run the whole sweep as a background
   daemon with no shell wrapper (see *Launching without a shell* below).
 
 ### The jobs file
@@ -121,7 +121,7 @@ anchor      = --select anchor
 heavy_nx128 = --select nx128 --resume    # inline comments are stripped too
 ```
 
-Comments — whole-line and inline — and surrounding whitespace are stripped from
+Comments (whole-line and inline) and surrounding whitespace are stripped from
 **both** the label and the params, so what the remote receives is exactly the
 parameters. A `#` only opens a comment when it is unquoted and at the start of a
 line or preceded by whitespace, so `--tag run#3` and `--note "a # b"` keep their
@@ -131,7 +131,7 @@ hashes, exactly as a shell would read them.
 
 `--upload DIR` rsyncs `DIR` to `~/<basename>` on each instance.
 `--upload SRC:DEST` lands `SRC` at `~/DEST` instead, for when the remote name
-must differ from the local one — a git worktree being the usual case:
+must differ from the local one, a git worktree being the usual case:
 
 ```bash
 --upload /path/to/1DSim3-experiment:1DSim3     # arrives as ~/1DSim3
@@ -141,25 +141,25 @@ Uploads always exclude the heavy and hazardous trees: VCS and cache dirs, and
 any `.flux_attach` records or the sweep's own `--into` results dir when it lives
 inside an upload source (a live fleet writes and deletes those records while the
 upload runs).
-- **`regions [--regions A,B,C] [--flavor NAME] [--json]`** — live, read-only
+- **`regions [--regions A,B,C] [--flavor NAME] [--json]`**: live, read-only
   per-region occupancy: quota (vCPU / instances / RAM used vs total), the running
   flux-compute instances occupying each region (name, flavor, age, TTL bucket) and
   a count of foreign servers, and how many of a flavor (`--flavor`, default
   `b3-32`) still fit the remaining headroom. `--json` is the machine-readable
   shape for the frontend region-status button and for launchers that check
   occupancy before fanning out. Safe against live fleets (read-only throughout).
-- **`reap [--yes] [--all] [--force]`** — list every flux-compute instance with
+- **`reap [--yes] [--all] [--force]`**: list every flux-compute instance with
   age, hourly price and accrued cost; delete the ones past their stamped TTL
   (see Cost guardrails below). `--all --force` is the non-interactive way to
   take instances still inside their TTL, for stopping a runaway fleet from a
   script or a session with no tty.
-- **`push DIR CONTAINER`** — durable artifact copies to OVH Object Storage (Swift).
+- **`push DIR CONTAINER`**: durable artifact copies to OVH Object Storage (Swift).
 
 ### Fleet planning (size the experiment to the machine)
 
-A consumer describes a batch of jobs generically — RAM per job, whether it wants
+A consumer describes a batch of jobs generically (RAM per job, whether it wants
 a CPU or a GPU, whether the jobs batch onto one device, minutes per job, and how
-many — and the planner returns which flavor, how wide a fleet across which
+many), and the planner returns which flavor, how wide a fleet across which
 regions, how many jobs pack onto a VM, how many waves it takes, the worst-case
 spend, and how much spare capacity is left to fill. The package knows nothing
 about what the jobs compute: it routes on those generic resource fields alone.
@@ -177,27 +177,27 @@ The plan is **structured data** (`flux_compute.fleet.plan_fleet` returns a
 directly. `JobRequirements` fields: `job_count`, `ram_gb_per_job`, `device`
 (`cpu` / `gpu` / `either`), `minutes_per_job`, `batchable`, `batch_width`,
 `vram_gb_per_member` (GPU device memory per batched member; batchable-only).
-`device: either` lets the planner pick — batched work amortizes on a GPU,
+`device: either` lets the planner pick: batched work amortizes on a GPU,
 unbatched work fans out cheapest on CPU; pass `cpu`/`gpu` to force it.
 
 Packing K (jobs per VM) is clamped by **every binding axis**: host RAM
-(`K × ram_gb_per_job ≤ host RAM × headroom`) and vCPUs for CPU fan-out, and — for a
-**batched GPU** invocation — the card's **VRAM** (`K × vram_gb_per_member ≤ VRAM ×
+(`K × ram_gb_per_job ≤ host RAM × headroom`) and vCPUs for CPU fan-out, and, for a
+**batched GPU** invocation, the card's **VRAM** (`K × vram_gb_per_member ≤ VRAM ×
 headroom`), since the batched members co-reside on the accelerator (host RAM does
 not bound them). Pass `vram_gb_per_member` for batched GPU work; omitted, the
 planner conservatively assumes a member's VRAM footprint equals its host
 `ram_gb_per_job` and says so in a plan note. The plan reports the **spare slots**
-left in the fleet — the sizing doctrine in action: round the job count up to fill
+left in the fleet: the sizing doctrine in action: round the job count up to fill
 them, because the marginal slot is close to free (a wave runs whether or not it is
 full).
 
 The plan shows **two worst-case costs**: `plan --budget` guards the **requested
 jobs** cost (the N jobs dealt across the fleet, exactly as `sweep --budget` bills
 one instance per job), and the **fill-the-fleet** cost (every spare slot used) is
-reported beside it — so both the cost of your jobs and the cost if you round up to
+reported beside it, so both the cost of your jobs and the cost if you round up to
 fill are visible.
 
-Offline plans (the default) use catalog values — the per-region quota (64 vCPU /
+Offline plans (the default) use catalog values: the per-region quota (64 vCPU /
 50 instances / 496 GB, measured 2026-07-27) and the catalog flavor shapes.
 `flux-compute plan --live` reads the real per-region quota and flavor availability
 from the API instead; a live **launch** always re-verifies and clamps to real
@@ -205,7 +205,7 @@ headroom per region. The planner reuses the sweep's per-region sharding
 (`allocate_concurrency`), so the region spread it shows mirrors how a sweep fans
 across the same regions. The plan is a **sizing envelope**, not a literal sweep
 transcript: it reports the full quota fleet and a packing K, while `sweep` itself
-launches one instance per job — it does not pack K, and runs only as many VMs as
+launches one instance per job; it does not pack K, and runs only as many VMs as
 the jobs need. Use the plan to pick the flavor and size the batch; the K figure is
 the target for a consumer's own batched launcher, not something `sweep` enforces.
 
@@ -219,7 +219,7 @@ overrides, and with no requirement the behavior is unchanged.
 **OVH compute quota is per region, not per project.** Every region carries its
 own 64 vCPUs / 50 instances / 496 GiB (measured live 2026-07-27; the CS16091787
 increase is in effect). A V100S (`t2-le-45`, 15 vCPU) therefore fits **4 per
-region** — so a single-region sweep tops out at 4 GPUs no matter how high
+region**, so a single-region sweep tops out at 4 GPUs no matter how high
 `--max-parallel` goes.
 Spreading the same sweep across regions is what widens the fleet:
 
@@ -239,8 +239,8 @@ flux-compute sweep --cloud flux-ovh \
     --max-parallel 24 --budget 40
 ```
 
-`--max-parallel` stays what it always was — the total instances alive at once
-**across the whole sweep** — and each region is additionally clamped to its own
+`--max-parallel` stays what it always was (the total instances alive at once
+**across the whole sweep**), and each region is additionally clamped to its own
 quota headroom, so the fleet can never outrun either bound. Jobs are dealt to
 regions in proportion to the concurrency each was granted, so the shards finish
 together rather than one region idling while another drains. Flavor and price are
@@ -248,9 +248,9 @@ resolved **per region** (BHS5 picking the cheaper V100 above is that at work), a
 the budget guard sums the shards' worst cases against the one `--budget`.
 `--plan` prints the whole allocation table without launching anything.
 
-A region that cannot fit at least one instance of the chosen flavor — no
+A region that cannot fit at least one instance of the chosen flavor (no
 credit-eligible fp64-healthy GPU, no quota headroom (another fleet is living
-there), no compute endpoint — is **dropped with a warning** naming its occupants
+there), no compute endpoint) is **dropped with a warning** naming its occupants
 and headroom, and the wave allocation is recomputed over the regions that do fit.
 The sweep proceeds as long as one region fits; it refuses only when **none** do.
 This turns a partial-capacity situation into a running sweep on the free regions
@@ -262,7 +262,7 @@ live occupancy before launching.
 
 **Your `clouds.yaml` must not pin one region.** An entry with a single
 `region_name:` makes every other region fail *locally*, before any request is
-sent — and so silently caps fleet width at one region. Use a `regions:` list
+sent, and so silently caps fleet width at one region. Use a `regions:` list
 instead (see `examples/clouds.yaml.example`); `connect` detects the pin and
 prints this fix.
 
@@ -288,15 +288,15 @@ avoid this in two halves (`flux_compute/detach.py`):
 
 2. **A reconnect-tolerant poll loop follows it.** A fresh short SSH every ~15 s
    reads `~/job.rc` (done?) and incrementally tails `~/job.out` (live log). A
-   failed poll — the laptop just woke, a network flap — is retried with
+   failed poll (the laptop just woke, a network flap) is retried with
    exponential backoff (5 s → 60 s cap) and is **never fatal**; only the local
    wall-clock deadline (the remote cap + a 2-minute grace) aborts. On the rc
    appearing, the full `~/job.out` is pulled into `<into>/<label>/job.log`, the
-   artifacts are fetched, and the VM is torn down — the same success path as
+   artifacts are fetched, and the VM is torn down: the same success path as
    before.
 
 **Roaming: the fleet follows you to a new network.** Each instance's security
-group admits SSH from exactly one address — the public IP that launched it — so
+group admits SSH from exactly one address (the public IP that launched it), so
 when the operator's IP moves (a different network overnight, a VPN toggling, an
 ISP re-lease), every job in the fleet becomes unreachable at once. Both paths
 repair it automatically, and both say so in one line:
@@ -309,10 +309,10 @@ repair it automatically, and both say so in one line:
   failures. A sleep that overshoots its intended duration in wall-clock time is a
   system suspend (`time.monotonic` freezes across one), and waking is both the
   likeliest moment for the address to have moved and the moment the follower
-  knows least — so the next failed poll escalates at once instead of spending
+  knows least, so the next failed poll escalates at once instead of spending
   minutes re-deriving what a wake already implies.
 - **On `--resume`**, the check runs *before the first SSH of every job*, which is
-  the moment the address is most likely to have changed — a fleet launched from
+  the moment the address is most likely to have changed: a fleet launched from
   one network is routinely collected from another. The current /32 is read once
   for the whole fleet and each VM's group is patched if it lacks it, so the first
   poll works instead of burning a blackout-detection cycle per VM.
@@ -324,7 +324,7 @@ notices it.
 The repair is **append-only**: the launch-time rule is left in place, so a
 flapping address never locks out the machine that started the run, and repeating
 it adds nothing. If the public-IP read itself fails the run continues and says
-why — the SSH attempt is the authority on whether the VM is actually reachable,
+why: the SSH attempt is the authority on whether the VM is actually reachable,
 and a failed lookup is never grounds to widen a group to `0.0.0.0/0`.
 
 **When the repair is not the answer.** A blackout that ingress cannot explain is
@@ -350,7 +350,7 @@ it can reach before teardown, exactly like the local-deadline path.
 > `sweep --resume` recovered everything, because the resume path already did the
 > repair the follower did not. Three defects, all fixed above: the follower's
 > report of a *failed* self-heal was emitted only when a status sink happened to
-> be wired, and the steady-state sweep wires none — so the one message that
+> be wired, and the steady-state sweep wires none, so the one message that
 > explains a frozen fleet was the one message nobody could see; there was no
 > bound on a blackout, so the fleet could sit unreachable for the entire wall
 > cap; and a wake was treated as an ordinary retry rather than as the reconnect
@@ -366,8 +366,8 @@ it can reach before teardown, exactly like the local-deadline path.
 > entry point, so a piped or `tee`-d log reflects live state with nothing asked
 > of the caller.
 
-For the harder case — the process is fully killed (a sleep long enough to be
-terminated, a closed terminal) — each sweep job persists an **attach record** and
+For the harder case, where the process is fully killed (a sleep long enough to be
+terminated, a closed terminal), each sweep job persists an **attach record** and
 a copy of its ephemeral key under `<into>/<label>/.flux_attach/`. Continue with:
 
 ```bash
@@ -388,15 +388,15 @@ exactly the set of jobs still needing collection.
 Given `--jobs` (with `--script`/`--fetch`) it then **continues the jobs file**:
 every job that is neither in flight nor already collected is launched now, on the
 normal sweep path with the same quota clamp and budget guard. Jobs already
-collected — a `job.log` was pulled, whatever the outcome — are skipped, so
+collected (a `job.log` was pulled, whatever the outcome) are skipped, so
 `--resume` continues a sweep rather than retrying its failures. Without `--jobs`
 it only re-attaches, unchanged.
 
 The record is written **before** the instance boots (with the instance name,
 which is generated locally), so a launcher killed mid-boot leaves a VM that
 `--resume` can still find and tear down instead of an unnamed orphan billing in
-the console. Such a VM can be killed but not collected — its ephemeral key was
-never persisted — and `--resume` reports exactly that.
+the console. Such a VM can be killed but not collected (its ephemeral key was
+never persisted), and `--resume` reports exactly that.
 
 ### Launching without a shell (`--detach`, `--log`)
 
@@ -414,13 +414,13 @@ This returns immediately, printing the daemon's pid, the log path, and the
 `--resume` command that recovers the run if the daemon is ever lost.
 
 - **`--log FILE`** appends all output to `FILE`. The redirect is done at the file
-  descriptor level, so it captures the `rsync`/`scp`/`ssh` subprocesses too — the
-  lines that say why an upload or a fetch failed — and not merely Python's
+  descriptor level, so it captures the `rsync`/`scp`/`ssh` subprocesses too (the
+  lines that say why an upload or a fetch failed) and not merely Python's
   prints. It appends rather than truncates, so a `--resume` can be pointed at the
   log of the run it continues and the two read as one story. Used without
   `--detach` it prints one line to the terminal naming the log, then redirects.
 - **`--detach`** re-launches the sweep under `setsid`, in a new session with no
-  controlling terminal and stdin on `/dev/null` — the same guarantee the remote
+  controlling terminal and stdin on `/dev/null`, the same guarantee the remote
   launcher gives each job on its VM, applied to the orchestrator itself. It
   requires `--log`: a detached run without one would send its output nowhere,
   which is indistinguishable from never having started. The log is opened before
@@ -440,12 +440,12 @@ guessed:
 | rc | reported as |
 |---|---|
 | 0 | `ok` |
-| 124 | `job timed out (remote cap)` — `timeout` TERM'd it at `--max-minutes` |
+| 124 | `job timed out (remote cap)`: `timeout` TERM'd it at `--max-minutes` |
 | 137 at ~its cap | `job timed out (remote cap; SIGKILL after TERM)` |
 | 137 far short of its cap, kernel log confirms | `OOM-killed (rc=137, kernel oom-killer confirmed ...)` |
 | 137 far short of its cap, no evidence | `killed (rc=137, SIGKILL ...) - cause unknown` |
 | other nonzero | `job nonzero` |
-| never answered again | `UNREACHABLE (...)` — SSH stayed dead while this machine was online and the security group admitted it |
+| never answered again | `UNREACHABLE (...)`: SSH stayed dead while this machine was online and the security group admitted it |
 
 137 is `128 + SIGKILL` and is genuinely ambiguous: the wall cap's kill-after
 escalation and the kernel OOM-killer both produce it. Reading every 137 as a
@@ -454,7 +454,7 @@ now triggers a kernel-log read on the still-live VM (`dmesg`/`journalctl -k`)
 before teardown, and is never called a timeout. A log that cannot be read is
 reported as unknown, never as innocence.
 
-**Artifacts are fetched on every path**, not only after a clean exit — a job
+**Artifacts are fetched on every path**, not only after a clean exit: a job
 killed by its cap, by the OOM-killer, or abandoned at the local deadline has
 still written checkpoints and partial results, and the instance is about to be
 deleted. Those partial fetches are best-effort and are labelled `PARTIAL`.
@@ -469,7 +469,7 @@ consumer-side settings keep working.
 ### Tested and rejected on OVH: baked images
 
 `bake` / `run --image` work, but booting from an OVH custom snapshot takes ~12 min
-(image staging) — slower than the stock image + ~5 min install it replaces. The
+(image staging), slower than the stock image + ~5 min install it replaces. The
 code is kept (correct and cloud-general) but is **not recommended on OVH**; prefer
 the stock image + per-job install.
 
@@ -478,14 +478,14 @@ the stock image + per-job install.
 "Every provisioned instance tears down" is enforced by mechanism, not trust:
 
 - **Hard spend cap**: `sweep --budget EUR` caps **the whole sweep's** worst case,
-  not one job's. The guard computes `(total jobs) × (EUR/hr) × (--max-minutes)` —
-  every job running to its full wall cap — and refuses to start above the number;
+  not one job's. The guard computes `(total jobs) × (EUR/hr) × (--max-minutes)`
+  (every job running to its full wall cap) and refuses to start above the number;
   it refuses outright when the flavor has no known price, since a money cap that
   cannot see the price is not a cap. With `--regions` the per-region shards' worst
   cases are **summed against that one budget**, so the cap is *independent of how
   many regions the sweep spans*: regions buy wall-clock, not spend. Concurrency is
   clamped to compute-quota headroom, read live from the API **per region** (64
-  vCPUs / 50 instances each as measured 2026-07-27 — 4 concurrent V100S, or 8 of
+  vCPUs / 50 instances each as measured 2026-07-27: 4 concurrent V100S, or 8 of
   BHS5's 8-vCPU V100).
 - **Wall caps**: the remote job runs under a `timeout` wrapper on the VM, so a
   hung job is killed at its cap independently of the laptop (the local poll loop
@@ -494,7 +494,7 @@ the stock image + per-job install.
   (`wait_for_delete`); a delete that cannot be verified prints a multi-line
   STRANDED INSTANCE banner with the exact cleanup commands and exits nonzero.
 - **TTL metadata**: every created server is stamped `flux_created_by` and
-  `flux_expires_at` (wall cap + max(30 min, 25% of the cap) — generous on
+  `flux_expires_at` (wall cap + max(30 min, 25% of the cap), generous on
   purpose: reap must never fire early). `--keep` runs also stamp
   `flux_keep=true`.
 - **`flux-compute reap`**: auto-deletes only instances that are positively
@@ -502,28 +502,28 @@ the stock image + per-job install.
   use), removing the same-named keypair and security group with them. Everything
   else it only reports, annotated with the decision basis: keep-flagged,
   within-TTL and unstamped-legacy (name-prefix, no stamp) instances need `--all`
-  plus a confirmation — interactive by default, or an explicit `--force` for a
+  plus a confirmation: interactive by default, or an explicit `--force` for a
   script or a session with no tty (`--force` alone is refused; it means something
   only with `--all`). Two flags rather than one widened `--yes`, so "skip the
-  routine prompt" and "kill running work" can never be the same keystroke — and
+  routine prompt" and "kill running work" can never be the same keystroke, and
   so nobody has to reach for `yes | flux-compute reap --all`, which answers every
   prompt in the command blind, including ones added later. Servers it cannot
   positively identify as flux-compute-created are never listed or touched. Exits
   nonzero while strays remain.
 - **Stray visibility**: every command that connects (`doctor`, `preflight`,
   `run`, `sweep`, `bake`, `push`) first surfaces any stranded or kept instance
-  with its accrued cost and points at `reap` — advisory only; no command other
+  with its accrued cost and points at `reap`; advisory only; no command other
   than `reap` ever deletes.
 - **Reachability**: an unreachable fleet is a billing problem, because a VM that
   cannot be collected cannot be torn down. Every path that connects therefore
-  re-opens each instance's SSH ingress for the caller's current public IP —
-  `--resume` before reconnecting, the follower on a blackout or a wake — so a
+  re-opens each instance's SSH ingress for the caller's current public IP
+  (`--resume` before reconnecting, the follower on a blackout or a wake), so a
   laptop that changed networks collects and tears down normally instead of
   leaving finished VMs idle-billing behind a stale `/32` (see **Surviving laptop
   sleep**). A blackout that ingress cannot explain is bounded rather than retried
   to the wall cap, so a dead VM stops costing money at 30 minutes instead of at
   its `--max-minutes`. Progress output is line-buffered even through a pipe, so a
-  `tee`-d log — or a `--log` file — shows a stall as it happens rather than after
+  `tee`-d log (or a `--log` file) shows a stall as it happens rather than after
   the fact.
 
 ## Tests
