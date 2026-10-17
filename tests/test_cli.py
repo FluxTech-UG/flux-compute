@@ -211,3 +211,74 @@ def test_detach_resume_leaves_the_region_fit_to_the_child(monkeypatch, tmp_path,
     assert rc == 0
     assert forked == [str(tmp_path / "fleet.log")]
     assert "pre-flight passed: 4 job(s), worst-case ~EUR 3.20" in out
+
+
+# --- --plan always prints in the foreground --------------------------------------
+#
+# The incident: a campaign's recorded launch line ends in `--detach --log FILE`,
+# and a `--plan` dry run built from it went into the background log instead of
+# the terminal where it was meant to be read.
+
+def test_plan_ignores_detach_and_log_and_prints_to_the_terminal(
+        monkeypatch, tmp_path, capsys):
+    argv = _wire_offline_sweep(monkeypatch, tmp_path) + ["--plan"]
+    _forbid_detach(monkeypatch)
+
+    rc = main(argv)
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "--plan prints to the terminal; ignoring --detach and --log" in captured.err
+    assert "plan only: no instances launched." in captured.out
+    assert not (tmp_path / "fleet.log").exists()
+
+
+def test_plan_with_log_alone_names_only_log(monkeypatch, tmp_path, capsys):
+    argv = _wire_offline_sweep(monkeypatch, tmp_path)
+    argv.remove("--detach")
+    assert main(argv + ["--plan"]) == 0
+    captured = capsys.readouterr()
+    assert "ignoring --log" in captured.err and "--detach" not in captured.err
+    assert "plan only" in captured.out
+    assert not (tmp_path / "fleet.log").exists()
+
+
+# --- --wait-next and --rerun-failed-start are parsed and dispatched ---------------
+
+def test_wait_next_dispatches_with_the_campaign_folder(monkeypatch, tmp_path):
+    from flux_compute import sweep
+
+    seen = []
+    monkeypatch.setattr(sweep, "wait_next_job", lambda into: seen.append(into) or 0)
+    assert main(["sweep", "--wait-next", "--into", str(tmp_path)]) == 0
+    assert seen == [str(tmp_path)]
+
+
+def test_wait_next_with_no_running_job_exits_nonzero(tmp_path, capsys):
+    assert main(["sweep", "--wait-next", "--into", str(tmp_path)]) == 1
+    assert "no running jobs" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("extra", [["--resume"], ["--plan"], ["--jobs", "j.txt"],
+                                   ["--detach", "--log", "x.log"]])
+def test_wait_next_refuses_flags_that_would_launch_or_background(extra, capsys):
+    with pytest.raises(SystemExit):
+        main(["sweep", "--wait-next", "--into", "cloud-sweep", *extra])
+    assert "--wait-next only waits on a running campaign" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("extra", [[], ["--resume"], ["--jobs", "j.txt"]])
+def test_rerun_failed_start_needs_resume_and_jobs(extra, capsys):
+    with pytest.raises(SystemExit):
+        main(["sweep", "--rerun-failed-start", *extra])
+    assert "--rerun-failed-start needs --resume and --jobs" in capsys.readouterr().err
+
+
+def test_resume_passes_rerun_failed_start_through(monkeypatch, tmp_path):
+    from flux_compute import sweep
+
+    seen = {}
+    monkeypatch.setattr(sweep, "run_sweep", lambda **kw: seen.update(kw) or 0)
+    assert main(["sweep", "--resume", "--rerun-failed-start", "--jobs", "j.txt",
+                 "--into", str(tmp_path)]) == 0
+    assert seen["rerun_failed_start"] is True and seen["resume"] is True

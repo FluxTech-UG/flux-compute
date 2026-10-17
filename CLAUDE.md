@@ -122,7 +122,14 @@ results are the last trace of the work and the instance is about to be deleted.
   the single definition of what reaches `$FLUX_JOB`, so never add a compensating
   strip in a consumer's job script. `_launch_jobs` is the shared launch path, used
   both by a fresh sweep and by `--resume --jobs`, which continues the jobs file by
-  launching whatever `job_state` finds neither in flight nor collected. `--resume`
+  launching whatever `job_state` finds neither in flight nor ended. Every path
+  that ends a job writes its `JobOutcome` (`<into>/<label>/outcome.json`: region,
+  rc, status, and the `boot`/`upload`/`launch` step when it failed before its
+  script started) BEFORE it drops the attach record (`_close_job`); that order is
+  what `wait_next_job` (`sweep --wait-next`) reads by, and the pre-start step is
+  what `--resume --rerun-failed-start` relaunches on. An upload failure is retried
+  once in another of the sweep's region shards (`pick_retry_shard`: live quota
+  fits one, and under `--budget` no dearer flavor). `--resume`
   heals SSH ingress **before the first SSH of each re-attach**
   (`_heal_ingress_before_reattach`): a fleet launched from one network is
   routinely collected from another, and a stale `/32` makes every job unreachable
@@ -187,7 +194,9 @@ results are the last trace of the work and the instance is about to be deleted.
   (`_redirect_output`, at the fd level so the rsync/ssh subprocesses land there
   too), which exists so no caller (human or launcher) needs to wrap the command
   in `nohup … > log 2>&1 &`. `--detach` without `--log` is refused: output that
-  goes nowhere is indistinguishable from a run that never started. The fork comes
+  goes nowhere is indistinguishable from a run that never started. `--plan` drops
+  both (one stderr line says so, `_check_sweep_modes`), so a recorded launch line
+  is dry-run on the terminal by adding `--plan`. The fork comes
   after `sweep.preflight_sweep`, which runs every refusal a launch can meet (spec,
   regions, budget) in the foreground and launches nothing, so a refused detached
   sweep fails on the terminal with a non-zero exit, never only inside the log. A

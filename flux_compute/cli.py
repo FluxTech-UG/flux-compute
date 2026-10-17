@@ -194,7 +194,36 @@ def _detach_sweep(args, pre):
     print(f"flux-compute {args.command}: detached as pid {pid}; output -> {args.log}")
     print(f"  follow:  tail -f {args.log}")
     print(f"  recover: flux-compute {args.command} --resume --into {args.into}")
+    print(f"  next end: flux-compute {args.command} --wait-next --into {args.into}")
     return True
+
+
+def _check_sweep_modes(parser, args):
+    """Settle how the sweep's mode flags combine, before anything runs.
+
+    `--plan` is a dry run read on the terminal, so it drops `--detach` and
+    `--log` (saying so on stderr): the launch line recorded in a campaign's
+    fleet/launch.sh carries both, and a dry run built from it must still print
+    where it is read. `--wait-next` only reads local state and refuses the flags
+    that would launch, resume or background something. `--rerun-failed-start`
+    is part of a resume with a jobs file.
+    """
+    if args.plan and (args.detach or args.log):
+        given = " and ".join(f for f, on in (("--detach", args.detach),
+                                             ("--log", args.log)) if on)
+        print(f"flux-compute sweep: --plan prints to the terminal; ignoring {given}",
+              file=sys.stderr)
+        args.detach, args.log = False, None
+    if args.wait_next:
+        clash = [f for f, on in (("--resume", args.resume), ("--plan", args.plan),
+                                 ("--detach", args.detach), ("--jobs", args.jobs),
+                                 ("--rerun-failed-start", args.rerun_failed_start)) if on]
+        if clash:
+            parser.error(f"--wait-next only waits on a running campaign; it cannot be "
+                         f"combined with {', '.join(clash)}")
+    if args.rerun_failed_start and not (args.resume and args.jobs):
+        parser.error("--rerun-failed-start needs --resume and --jobs FILE (the jobs "
+                     "file holds the parameters of the jobs it launches again)")
 
 
 def main(argv=None) -> int:
@@ -305,7 +334,9 @@ def main(argv=None) -> int:
                             "many regions the sweep spans (regions buy wall-clock, not spend). "
                             "An unpriced flavor is refused rather than skipping the guard.")
     sweep.add_argument("--plan", action="store_true",
-                       help="Resolve the spec and print the cost/budget (and quota) preview without launching (dry run).")
+                       help="Resolve the spec and print the cost/budget (and quota) preview without "
+                            "launching (dry run). Always prints to the terminal: --detach and --log "
+                            "are ignored with it, so a recorded launch line can be dry-run as is.")
     sweep.add_argument("--image", default=None,
                        help="Boot from this image name instead of the auto-selected image.")
     sweep.add_argument("--resume", action="store_true",
@@ -314,6 +345,16 @@ def main(argv=None) -> int:
                             "down. Needs only --into (and --cloud/--region). Pass --jobs (with "
                             "--script/--fetch) as well to ALSO launch the jobs of that file that "
                             "never started -- jobs already collected are skipped.")
+    sweep.add_argument("--rerun-failed-start", action="store_true",
+                       help="With --resume --jobs: also launch again the jobs that failed BEFORE "
+                            "their script started (instance boot, upload, or the detached launch), "
+                            "into the same <into>/<label>/ folders. Jobs whose script ran are never "
+                            "rerun, whatever their outcome.")
+    sweep.add_argument("--wait-next", action="store_true",
+                       help="Block until the next job of the campaign under --into ends (the next "
+                            "one to end after this call), print 'LABEL region=R rc=N STATUS' and "
+                            "exit 0. Reads the campaign's attach and outcome records, never the log. "
+                            "Exits nonzero when the campaign has no running job.")
     sweep.add_argument("--strict-regions", action="store_true",
                        help="Refuse the whole sweep if ANY requested region cannot fit >=1 "
                             "instance of the chosen flavor (exact-width mode). Default: drop "
@@ -399,6 +440,9 @@ def main(argv=None) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.command == "sweep":
+        _check_sweep_modes(parser, args)
+
     # A plain --log redirects BEFORE dispatch, so everything the command prints
     # lands in the log. A --detach sweep forks later, inside the sweep branch,
     # once its pre-flight has passed on the terminal (`_detach_sweep`).
@@ -464,6 +508,10 @@ def main(argv=None) -> int:
                 max_parallel=args.max_parallel, max_minutes=args.max_minutes,
                 budget_eur=args.budget, image=args.image, plan_only=args.plan,
                 resume=args.resume, strict_regions=args.strict_regions)
+            if args.wait_next:
+                from .sweep import wait_next_job
+                return wait_next_job(args.into)
+            sweep_kwargs["rerun_failed_start"] = args.rerun_failed_start
             if args.detach:
                 # Refuse in the foreground: a bad spec, an unfit region set or a
                 # budget refusal raises here, before the fork, so the operator

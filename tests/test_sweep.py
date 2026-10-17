@@ -730,8 +730,8 @@ def test_reattach_heals_every_group_before_any_ssh(tmp_path, monkeypatch, capsys
     events, reads = [], []
 
     monkeypatch.setattr(sweep, "_load_attach_records",
-                        lambda into: [_rec(label="a", name="sg-a"),
-                                      _rec(label="b", name="sg-b")])
+                        lambda into: [_rec(label="a", name="sg-a", into=into),
+                                      _rec(label="b", name="sg-b", into=into)])
     monkeypatch.setattr(sweep, "connect", lambda **kw: SimpleNamespace())
     monkeypatch.setattr(sweep, "warn_strays", lambda conn: None)
     monkeypatch.setattr(sweep, "_server_by_name_or_id",
@@ -766,7 +766,7 @@ def test_reattach_heals_every_group_before_any_ssh(tmp_path, monkeypatch, capsys
 
 
 def test_reattach_warns_once_when_the_public_ip_cannot_be_read(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(sweep, "_load_attach_records", lambda into: [_rec()])
+    monkeypatch.setattr(sweep, "_load_attach_records", lambda into: [_rec(into=into)])
     monkeypatch.setattr(sweep, "connect", lambda **kw: SimpleNamespace())
     monkeypatch.setattr(sweep, "warn_strays", lambda conn: None)
     monkeypatch.setattr(sweep, "_server_by_name_or_id",

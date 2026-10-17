@@ -27,7 +27,8 @@ _flux-compute command-line entry point._
 - _redirect_output(log_path)  ·L127: Point this process's stdout AND stderr at ``log_path`` (appending).
 - _detach_into_background(log_path)  ·L148: Re-launch this process as a background daemon writing to ``log_path``.
 - _detach_sweep(args, pre)  ·L183: Fork a sweep whose pre-flight passed. True in the PARENT, which has
-- main(argv=None) -> int  ·L200
+- _check_sweep_modes(parser, args)  ·L201: Settle how the sweep's mode flags combine, before anything runs.
+- main(argv=None) -> int  ·L229
 
 ### flux_compute/detach.py
 _Detach-and-poll: run a remote job so it survives the launching SSH session_
@@ -269,56 +270,78 @@ _`flux-compute regions`: a live, read-only per-region occupancy view._
 
 ### flux_compute/sweep.py
 _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling._
-- const ATTACH_DIR  ·L46
-- const ATTACH_RECORD  ·L47
-- const ATTACH_KEY  ·L48
-- const JOB_LOG  ·L51
-- strip_inline_comment(line)  ·L54: Return `line` with any trailing ``#`` comment removed, quote-aware.
-- parse_jobs(text)  ·L97: Parse a jobs file: each non-blank, non-comment line is 'LABEL = PARAMS'.
-- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L127: Total worst-case cost: every job runs to its wall cap. Concurrency does
-- budget_guard_shards(entries, max_minutes, budget_eur)  ·L135: Enforce --budget against the worst-case spend of every shard, or raise.
-- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L166: Single-shard budget guard: the one-region case of budget_guard_shards.
-- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L171: Clamp requested parallelism to what compute-quota headroom allows.
-- parse_regions(text)  ·L209: Parse `--regions A,B,C` into an ordered, de-duplicated region list.
-- allocate_concurrency(caps, max_parallel)  ·L227: Split a global live-instance ceiling across regions, never past each cap.
-- shard_jobs(jobs, weights)  ·L257: Deal jobs to regions in proportion to each region's allocated concurrency.
-- @dataclass class Shard  ·L276: One region's slice of a sweep: where to launch, how wide, and which jobs.
-  - with_plan(self, concurrency, jobs)  ·L285
-- _prepare_shard(cloud, region, flavor, image, max_parallel)  ·L290: Resolve one region: connect, pick the flavor/image, read its own quota.
-- @dataclass class RegionDrop  ·L313: A requested region that cannot host the sweep, and why. The raw `region`
-  - @property label(self) -> str  ·L322
-- _prepare_shards(cloud, regions, flavor, image, max_parallel)  ·L326: Resolve every requested region; return (shards, drops).
-- const _REFUSAL_TAIL  ·L349
-- _region_refusal(cloud, drops, *, all_dropped)  ·L356: The informative refusal message when the sweep cannot proceed: every
-- _warn_region_drops(cloud, drops, surviving)  ·L371: Graceful-degrade: print a warning per dropped region (reason + who occupies
-- _flavor_vcpus(conn, flavor_name)  ·L383: Read the vCPU count for a flavor from the compute API, or raise.
-- _failure_status(exc)  ·L394: Label a per-job failure for the job record. A teardown strand reads as
-- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L409: Run run_one(job) across up to max_workers threads (one instance per job);
-- _attach_dir(dest)  ·L425
-- _persist_record(dest, rec)  ·L429: Write an attach record atomically (temp file + rename), so a process killed
-- _write_pending_record(dest, *, label, cloud, region, name, remote_script, fetch, into, cap_seconds)  ·L442: Record the job BEFORE its instance boots.
-- _write_attach_record(dest, *, label, cloud, region, name, server_id, ip, keyfile, remote_script, fetch, into, cap_seconds)  ·L459: Upgrade the pending record to a full one: the boot-time facts plus a
-- _close_unrecoverable(dest, status)  ·L476: Record a job that ended badly (its VM lost, orphaned, or its launch
-- _clear_attach_record(dest)  ·L492: Drop the attach dir (record + key copy) after a clean finalize + teardown;
-- _load_attach_records(into)  ·L498: Every persisted attach record under <into> (in-flight or interrupted jobs).
-- job_state(into, label)  ·L511: Where one job of the jobs file stands, from what is on local disk:
-- _status_for_outcome(outcome, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L528: Map a follow outcome to the sweep's (rc, status) record fields.
-- _finalize(ip, keyfile, dest, fetch, outcome, *, elapsed_s=None, cap_seconds=None)  ·L546: Collect a followed job: pull the authoritative job.log, then the artifacts.
-- _job_warn(label)  ·L573: A labelled stderr sink for the poll loop's must-not-miss lines.
-- _heal_ingress_before_reattach(conn, rec, cidr, emit=print)  ·L587: Make sure this VM's security group still admits us, BEFORE the first SSH.
-- _reattach_records(cloud, region, into, max_parallel) -> int  ·L605: Re-attach to every persisted in-flight job under <into>, collect and tear
-- _resume_pending(into, jobs_file, script, fetch)  ·L681: The jobs of `jobs_file` that `--resume` would launch: (jobs, pending, done).
-- resume_sweep(cloud=None, region=None, regions=None, into='cloud-sweep', max_parallel=4, jobs_file=None, uploads=(), script=None, fetch=None, max_minutes=30, budget_eur=None, flavor=None, image=None, …  ·L703: Continue an interrupted sweep: re-attach what is running, then launch what
-- _upload_excludes(src, into)  ·L746: Exclude the sweep's own results dir when it lives inside an upload source.
-- _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes)  ·L761: Build the per-job runner bound to one region shard (provision -> upload ->
-- @dataclass class LaunchPlan  ·L837: Everything a launch is decided on, resolved before any instance exists:
-- _plan_launch(*, cloud, region, regions, flavor, image, jobs, uploads, max_parallel, max_minutes, budget_eur, strict_regions) -> LaunchPlan  ·L849: The refusing half of a launch: validate uploads, resolve and clamp the
-- _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L894: Plan and run a list of jobs: shard across regions, guard the budget, fan
-- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L965
-- _fresh_jobs(jobs_file, script, fetch, plan_only)  ·L986: Validate a fresh sweep's spec and return its parsed jobs, or raise.
-- @dataclass class Preflight  ·L1000: What a sweep that passed its pre-flight is about to launch.
-- preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=Non…  ·L1007: Run every refusal `run_sweep` would meet before launching, and launch nothing.
-- _resume_static_plan(*, region, regions, flavor, jobs, uploads, max_minutes, budget_eur)  ·L1043: The resume pre-flight: spec checks and the budget guard on static prices,
+- const ATTACH_DIR  ·L47
+- const ATTACH_RECORD  ·L48
+- const ATTACH_KEY  ·L49
+- const JOB_LOG  ·L52
+- const OUTCOME  ·L58
+- const PRESTART_PHASES  ·L62
+- const WAIT_POLL_S  ·L65
+- @dataclass class JobOutcome  ·L69: How one job ended, as `<into>/<label>/outcome.json`.
+  - @property failed_before_start(self) -> bool  ·L86
+  - to_json(self)  ·L89
+  - @classmethod from_json(cls, text)  ·L93
+- _outcome(label, region, rc, status, prestart_phase=None)  ·L97
+- _record_outcome(dest, outcome)  ·L104: Write a job's outcome record atomically (temp file + rename).
+- read_outcome(dest)  ·L114: The job's `JobOutcome`, or None when it has not ended. An outcome file
+- strip_inline_comment(line)  ·L129: Return `line` with any trailing ``#`` comment removed, quote-aware.
+- parse_jobs(text)  ·L172: Parse a jobs file: each non-blank, non-comment line is 'LABEL = PARAMS'.
+- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L202: Total worst-case cost: every job runs to its wall cap. Concurrency does
+- budget_guard_shards(entries, max_minutes, budget_eur)  ·L210: Enforce --budget against the worst-case spend of every shard, or raise.
+- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L241: Single-shard budget guard: the one-region case of budget_guard_shards.
+- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L246: Clamp requested parallelism to what compute-quota headroom allows.
+- parse_regions(text)  ·L284: Parse `--regions A,B,C` into an ordered, de-duplicated region list.
+- allocate_concurrency(caps, max_parallel)  ·L302: Split a global live-instance ceiling across regions, never past each cap.
+- shard_jobs(jobs, weights)  ·L332: Deal jobs to regions in proportion to each region's allocated concurrency.
+- @dataclass class Shard  ·L351: One region's slice of a sweep: where to launch, how wide, and which jobs.
+  - with_plan(self, concurrency, jobs)  ·L360
+- _prepare_shard(cloud, region, flavor, image, max_parallel)  ·L365: Resolve one region: connect, pick the flavor/image, read its own quota.
+- @dataclass class RegionDrop  ·L388: A requested region that cannot host the sweep, and why. The raw `region`
+  - @property label(self) -> str  ·L397
+- _prepare_shards(cloud, regions, flavor, image, max_parallel)  ·L401: Resolve every requested region; return (shards, drops).
+- const _REFUSAL_TAIL  ·L424
+- _region_refusal(cloud, drops, *, all_dropped)  ·L431: The informative refusal message when the sweep cannot proceed: every
+- _warn_region_drops(cloud, drops, surviving)  ·L446: Graceful-degrade: print a warning per dropped region (reason + who occupies
+- _flavor_vcpus(conn, flavor_name)  ·L458: Read the vCPU count for a flavor from the compute API, or raise.
+- _failure_status(exc)  ·L469: Label a per-job failure for the job record. A teardown strand reads as
+- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L484: Run run_one(job) across up to max_workers threads (one instance per job);
+- _attach_dir(dest)  ·L500
+- _persist_record(dest, rec)  ·L504: Write an attach record atomically (temp file + rename), so a process killed
+- _write_pending_record(dest, *, label, cloud, region, name, remote_script, fetch, into, cap_seconds)  ·L517: Record the job BEFORE its instance boots.
+- _write_attach_record(dest, *, label, cloud, region, name, server_id, ip, keyfile, remote_script, fetch, into, cap_seconds)  ·L534: Upgrade the pending record to a full one: the boot-time facts plus a
+- _close_job(dest, outcome)  ·L551: End a job: write its outcome, THEN drop its attach record. The order is
+- _close_unrecoverable(dest, outcome)  ·L559: Record a job that ended badly (its VM lost, orphaned, or its launch
+- _clear_previous_attempt(dest)  ·L575: Before a new attempt, remove what an earlier attempt that failed before
+- _clear_attach_record(dest)  ·L591: Drop the attach dir (record + key copy) after a clean finalize + teardown;
+- _load_attach_records(into)  ·L597: Every persisted attach record under <into> (in-flight or interrupted jobs).
+- job_state(into, label)  ·L610: Where one job of the jobs file stands, from what is on local disk:
+- _status_for_outcome(outcome, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L635: Map a follow outcome to the sweep's (rc, status) record fields.
+- _finalize(ip, keyfile, dest, fetch, outcome, *, elapsed_s=None, cap_seconds=None)  ·L653: Collect a followed job: pull the authoritative job.log, then the artifacts.
+- _job_warn(label)  ·L680: A labelled stderr sink for the poll loop's must-not-miss lines.
+- _heal_ingress_before_reattach(conn, rec, cidr, emit=print)  ·L694: Make sure this VM's security group still admits us, BEFORE the first SSH.
+- _reattach_records(cloud, region, into, max_parallel) -> int  ·L712: Re-attach to every persisted in-flight job under <into>, collect and tear
+- @dataclass class ResumeWork  ·L793: What `--resume --jobs FILE` finds on disk for the jobs of FILE.
+- _resume_pending(into, jobs_file, script, fetch, rerun_failed_start=False)  ·L809: The jobs of `jobs_file` that `--resume` would launch, as a `ResumeWork`.
+- resume_sweep(cloud=None, region=None, regions=None, into='cloud-sweep', max_parallel=4, jobs_file=None, uploads=(), script=None, fetch=None, max_minutes=30, budget_eur=None, flavor=None, image=None, …  ·L835: Continue an interrupted sweep: re-attach what is running, then launch what
+- _upload_excludes(src, into)  ·L892: Exclude the sweep's own results dir when it lives inside an upload source.
+- class UploadFailed(RuntimeError)  ·L907: An attempt's upload to its instance failed; the instance is torn down
+  - __init__(self, region, status)  ·L913
+- _prestart_status(phase, region, status)  ·L919
+- _region_fits_one(cloud, shard)  ·L924: Raise unless `shard`'s region has live quota headroom for one more
+- pick_retry_shard(cloud, failed, alternates, budget_eur, _fits=None)  ·L936: Choose the region a job whose upload failed in `failed` is retried in.
+- _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes, alternates=(), budget_eur=None)  ·L973: Build the per-job runner bound to one region shard (provision -> upload ->
+- @dataclass class LaunchPlan  ·L1096: Everything a launch is decided on, resolved before any instance exists:
+- _plan_launch(*, cloud, region, regions, flavor, image, jobs, uploads, max_parallel, max_minutes, budget_eur, strict_regions) -> LaunchPlan  ·L1108: The refusing half of a launch: validate uploads, resolve and clamp the
+- _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L1153: Plan and run a list of jobs: shard across regions, guard the budget, fan
+- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L1226
+- _fresh_jobs(jobs_file, script, fetch, plan_only)  ·L1251: Validate a fresh sweep's spec and return its parsed jobs, or raise.
+- @dataclass class Preflight  ·L1265: What a sweep that passed its pre-flight is about to launch.
+- preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=Non…  ·L1272: Run every refusal `run_sweep` would meet before launching, and launch nothing.
+- _resume_static_plan(*, region, regions, flavor, jobs, uploads, max_minutes, budget_eur)  ·L1311: The resume pre-flight: spec checks and the budget guard on static prices,
+- _campaign_state(into)  ·L1344: {label: (attach record or None, outcome or None)} for every job folder
+- _running(state)  ·L1365: Labels whose job is running: an attach record with no outcome written
+- format_outcome_line(outcome)  ·L1373: The one line `--wait-next` prints: label, region, rc, status.
+- wait_next_job(into, *, poll_interval=WAIT_POLL_S, _sleep=time.sleep, emit=print)  ·L1379: Block until the next job of the campaign under <into> ends; print its line.
 
 ### tests/conftest.py
 _Suite-wide guard: the tests are hermetic and touch no network._
@@ -339,6 +362,13 @@ _Tests for the command-line entry point. No network, no credentials._
 - test_detach_with_a_bad_spec_is_refused_before_any_fork(monkeypatch, tmp_path, capsys)  ·L159
 - test_detach_within_budget_detaches_and_says_what_passed(monkeypatch, tmp_path, capsys)  ·L171
 - test_detach_resume_leaves_the_region_fit_to_the_child(monkeypatch, tmp_path, capsys)  ·L188: The in-flight fleet still holds the quota a resume frees as it collects,
+- test_plan_ignores_detach_and_log_and_prints_to_the_terminal(monkeypatch, tmp_path, capsys)  ·L222
+- test_plan_with_log_alone_names_only_log(monkeypatch, tmp_path, capsys)  ·L236
+- test_wait_next_dispatches_with_the_campaign_folder(monkeypatch, tmp_path)  ·L248
+- test_wait_next_with_no_running_job_exits_nonzero(tmp_path, capsys)  ·L257
+- @pytest.mark.parametrize test_wait_next_refuses_flags_that_would_launch_or_background(extra, capsys)  ·L264
+- @pytest.mark.parametrize test_rerun_failed_start_needs_resume_and_jobs(extra, capsys)  ·L271
+- test_resume_passes_rerun_failed_start_through(monkeypatch, tmp_path)  ·L277
 
 ### tests/test_detach.py
 _Pure-logic tests for the detach-and-poll machinery. No network, no credentials._
@@ -782,6 +812,39 @@ _Pure-logic tests for the sweep helpers. No network, no credentials._
 - test_resume_with_a_fully_accounted_jobs_file_launches_nothing(tmp_path, monkeypatch)  ·L850
 - test_resume_needs_script_and_fetch_to_launch_the_remainder(tmp_path, monkeypatch)  ·L865
 - test_run_sweep_resume_passes_the_jobs_file_through(tmp_path, monkeypatch)  ·L873: `sweep --resume --jobs ...` must reach resume_sweep with the file.
+
+### tests/test_sweep_recovery.py
+_Campaign recovery: outcome records, the upload retry in another region,_
+- _shard(region, price=0.8, flavor='t2-le-45')  ·L36
+- test_outcome_round_trips_and_is_absent_until_written(tmp_path)  ·L44
+- test_an_unreadable_outcome_raises_with_its_path(tmp_path)  ·L52
+- test_an_unknown_prestart_phase_is_refused()  ·L60
+- test_job_state_tells_a_failed_start_from_a_job_that_ran(tmp_path)  ·L65
+- class _Cloud  ·L77: Stubs the instance and SSH layer. `upload_fails_in` names the regions
+  - __init__(self, monkeypatch, tmp_path, *, upload_fails_in=(), follow=None)  ·L82
+- _runner(tmp_path, shard, alternates=(), budget_eur=None)  ·L115
+- test_an_upload_failure_is_retried_once_in_another_region(tmp_path, monkeypatch)  ·L124
+- test_with_no_other_region_the_upload_failure_ends_as_a_failed_start(tmp_path, monkeypatch)  ·L140
+- test_a_retry_whose_upload_fails_too_is_not_retried_again(tmp_path, monkeypatch)  ·L157
+- test_a_boot_failure_is_a_failed_start_but_a_failure_after_launch_is_not(tmp_path, monkeypatch)  ·L171
+- test_a_rerun_attempt_clears_the_failed_attempts_records(tmp_path, monkeypatch)  ·L189
+- test_retry_region_skips_a_region_without_headroom_and_says_why()  ·L206
+- test_under_a_budget_a_dearer_retry_region_is_refused()  ·L218
+- _campaign(tmp_path)  ·L231
+- _stub_launch(monkeypatch)  ·L244
+- test_resume_skips_failed_starts_and_names_the_flag(tmp_path, monkeypatch, capsys)  ·L252
+- test_rerun_failed_start_relaunches_only_pre_start_failures_into_the_same_folder(tmp_path, monkeypatch, capsys)  ·L261
+- test_resume_preflight_counts_the_reruns(tmp_path)  ·L273
+- test_rerun_failed_start_without_resume_is_refused(tmp_path)  ·L281
+- _launch(into, label, region='UK1')  ·L288
+- _end(into, label, rc, region='UK1', status='ok')  ·L297
+- test_wait_next_with_no_running_job_exits_nonzero(tmp_path)  ·L301
+- test_wait_next_reports_the_next_end_and_never_replays_an_old_one(tmp_path)  ·L309
+- test_wait_next_sees_a_job_launched_after_it_started(tmp_path)  ·L327
+- test_wait_next_raises_when_a_running_record_vanishes_without_an_outcome(tmp_path)  ·L343
+- test_wait_next_counts_a_stranded_job_as_ended(tmp_path)  ·L354: A teardown strand keeps its record for --resume AND writes its outcome:
+- test_wait_next_on_a_missing_folder_raises(tmp_path)  ·L365
+- test_a_new_attempt_keeps_the_log_of_a_run_whose_script_ran(tmp_path)  ·L370
 
 ## Other source files
 

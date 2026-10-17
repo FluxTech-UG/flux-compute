@@ -17,6 +17,7 @@ one `--budget`. A single `--region` is the one-shard case of the same path.
 """
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -24,7 +25,7 @@ import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from . import detach, regions
 from .auth import connect
@@ -49,6 +50,80 @@ ATTACH_KEY = "id_key"
 # The pulled remote job log. Its presence is what marks a job as collected, so
 # `sweep --resume --jobs ...` can tell an already-run job from a never-started one.
 JOB_LOG = "job.log"
+# The job's end record (`JobOutcome`): label, the region it ended in, rc, status,
+# and whether it failed before its script started. Written on every path that
+# ends a job, BEFORE the attach record is dropped, so a reader that sees the
+# record gone always finds the outcome. `--rerun-failed-start` and `--wait-next`
+# read it; neither reads a log.
+OUTCOME = "outcome.json"
+# The steps a job can fail in before its script runs on the instance. A failure in
+# any of them leaves nothing to collect (the instance is torn down at once), so
+# `--rerun-failed-start` may launch the job again into the same folder.
+PRESTART_PHASES = ("boot", "upload", "launch")
+# How often `--wait-next` re-reads the campaign's local state (a directory scan,
+# no network).
+WAIT_POLL_S = 5.0
+
+
+@dataclass(frozen=True)
+class JobOutcome:
+    """How one job ended, as `<into>/<label>/outcome.json`.
+
+    `region` is the region the job last ran in (a retried upload moves it).
+    `prestart_phase` names the step it failed in when it failed before its
+    script started (one of `PRESTART_PHASES`), and is None for every job whose
+    script ran, and for every job where that is not known for certain.
+    """
+
+    label: str
+    region: str | None
+    rc: int
+    status: str
+    ended_epoch: float
+    prestart_phase: str | None = None
+
+    @property
+    def failed_before_start(self) -> bool:
+        return self.prestart_phase is not None
+
+    def to_json(self):
+        return json.dumps(asdict(self), indent=2, sort_keys=True)
+
+    @classmethod
+    def from_json(cls, text):
+        return cls(**json.loads(text))
+
+
+def _outcome(label, region, rc, status, prestart_phase=None):
+    if prestart_phase is not None and prestart_phase not in PRESTART_PHASES:
+        raise ValueError(f"unknown pre-start phase {prestart_phase!r}")
+    return JobOutcome(label=label, region=region, rc=rc, status=status,
+                      ended_epoch=time.time(), prestart_phase=prestart_phase)
+
+
+def _record_outcome(dest, outcome):
+    """Write a job's outcome record atomically (temp file + rename)."""
+    os.makedirs(dest, exist_ok=True)
+    tmp = os.path.join(dest, OUTCOME + ".tmp")
+    with open(tmp, "w") as fh:
+        fh.write(outcome.to_json())
+    os.replace(tmp, os.path.join(dest, OUTCOME))
+    return outcome
+
+
+def read_outcome(dest):
+    """The job's `JobOutcome`, or None when it has not ended. An outcome file
+    that does not parse raises with its path: it is the record two commands
+    decide on, and a guess in its place would rerun or report the wrong job."""
+    path = os.path.join(dest, OUTCOME)
+    if not os.path.isfile(path):
+        return None
+    with open(path) as fh:
+        text = fh.read()
+    try:
+        return JobOutcome.from_json(text)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(f"unreadable outcome record {path}: {exc}") from exc
 
 
 def strip_inline_comment(line):
@@ -473,20 +548,44 @@ def _write_attach_record(dest, *, label, cloud, region, name, server_id, ip,
         into=into, cap_seconds=cap_seconds, launch_epoch=time.time()))
 
 
-def _close_unrecoverable(dest, status):
+def _close_job(dest, outcome):
+    """End a job: write its outcome, THEN drop its attach record. The order is
+    the contract `--wait-next` reads by: a job whose record is gone has its
+    outcome on disk."""
+    _record_outcome(dest, outcome)
+    _clear_attach_record(dest)
+
+
+def _close_unrecoverable(dest, outcome):
     """Record a job that ended badly (its VM lost, orphaned, or its launch
     failed), then drop its attach record.
 
     The status is written as the local job.log FIRST, so `job_state` reads the
-    job as "collected" and a later --resume (or the detached child after a
-    pre-flight) never counts it as pending and launches it a second time. A
-    job.log `_finalize` already pulled is the authoritative record and is kept."""
+    job as ended and a later --resume (or the detached child after a pre-flight)
+    never counts it as pending and launches it a second time. A job.log
+    `_finalize` already pulled is the authoritative record and is kept."""
     os.makedirs(dest, exist_ok=True)
     log = os.path.join(dest, JOB_LOG)
     if not os.path.isfile(log):
         with open(log, "w") as fh:
-            fh.write(f"flux-compute: {status}\n")
-    _clear_attach_record(dest)
+            fh.write(f"flux-compute: {outcome.status}\n")
+    _close_job(dest, outcome)
+
+
+def _clear_previous_attempt(dest):
+    """Before a new attempt, remove what an earlier attempt that failed before
+    its script started left: its one-line status job.log (which
+    `_close_unrecoverable` never overwrites, so it would outlive the new
+    attempt) and its outcome. A job.log pulled from a run whose script ran is
+    real output and is left for the new run to replace. Only a job with no
+    attach record is ever launched, so this never touches a live job's state."""
+    prior = read_outcome(dest)
+    if prior is None or not prior.failed_before_start:
+        return
+    for name in (JOB_LOG, OUTCOME):
+        path = os.path.join(dest, name)
+        if os.path.isfile(path):
+            os.remove(path)
 
 
 def _clear_attach_record(dest):
@@ -511,16 +610,24 @@ def _load_attach_records(into):
 def job_state(into, label):
     """Where one job of the jobs file stands, from what is on local disk:
 
-      "in_flight" : an attach record exists -- launched, not yet collected.
-      "collected" : job.log was pulled -- the job ran and its outcome is recorded
-                    (whatever that outcome was; --resume continues a sweep, it
-                    does not retry failures).
-      "pending"   : neither -- never started, so --resume may launch it.
+      "in_flight"    : an attach record exists -- launched, not yet collected.
+      "failed_start" : it ended before its script started (its outcome names
+                       the boot, upload or launch step). `--resume` skips it;
+                       `--resume --rerun-failed-start` launches it again.
+      "collected"    : it ended after its script started, or its end is
+                       recorded without that distinction (a job.log or an
+                       outcome). `--resume` never launches it again, whatever
+                       the outcome was: a resume continues a sweep, it does not
+                       retry jobs that ran.
+      "pending"      : none of these -- never started, so --resume may launch it.
     """
     dest = os.path.join(into, label)
     if os.path.isfile(os.path.join(dest, ATTACH_DIR, ATTACH_RECORD)):
         return "in_flight"
-    if os.path.isfile(os.path.join(dest, JOB_LOG)):
+    outcome = read_outcome(dest)
+    if outcome is not None and outcome.failed_before_start:
+        return "failed_start"
+    if outcome is not None or os.path.isfile(os.path.join(dest, JOB_LOG)):
         return "collected"
     return "pending"
 
@@ -632,7 +739,7 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
             server = _server_by_name_or_id(conn, rec.name, rec.server_id or None)
             if server is None:
                 status = "lost: VM gone (reaped?); cannot re-attach"
-                _close_unrecoverable(dest, status)
+                _close_unrecoverable(dest, _outcome(rec.label, rec.region, -1, status))
                 return (rec.label, -1, status)
             if not rec.attachable:
                 # A pending (pre-boot) record whose instance DID come up: the
@@ -642,9 +749,11 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
                 # the record is written before the boot. Stop the billing and say
                 # plainly that the results are gone.
                 teardown_by_name(conn, rec.name, rec.server_id or None)
+                # Whether its script started is unknown (the key is recorded
+                # after the launch), so it is not marked as a pre-start failure.
                 status = ("orphan: instance booted but the launcher died before "
                           "recording its key; torn down (results unrecoverable)")
-                _close_unrecoverable(dest, status)
+                _close_unrecoverable(dest, _outcome(rec.label, rec.region, -1, status))
                 return (rec.label, -1, status)
             # Before the first SSH: re-open ingress if we are on a new network.
             _heal_ingress_before_reattach(conn, rec, cidr)
@@ -662,9 +771,11 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
                 rec.ip, rec.keyfile, dest, rec.fetch, outcome,
                 elapsed_s=time.time() - rec.launch_epoch, cap_seconds=rec.cap_seconds)
             teardown_by_name(conn, rec.name, rec.server_id or None)
-            _clear_attach_record(dest)
+            _close_job(dest, _outcome(rec.label, rec.region, rc, status))
             return (rec.label, rc, status)
         except Exception as exc:
+            # No outcome: the job may still be running on its VM, and its
+            # record stays for the next --resume.
             return (rec.label, -1, _failure_status(exc))
 
     def _log(r):
@@ -678,66 +789,101 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
 
 
 
-def _resume_pending(into, jobs_file, script, fetch):
-    """The jobs of `jobs_file` that `--resume` would launch: (jobs, pending, done).
+@dataclass(frozen=True)
+class ResumeWork:
+    """What `--resume --jobs FILE` finds on disk for the jobs of FILE.
+
+    `never_started` are the pending jobs, `failed_start` the jobs that ended
+    before their script started, `collected` the count of jobs that ended after
+    (or without that distinction). `launch` is what the resume launches: the
+    never-started jobs, plus the failed-start ones under `--rerun-failed-start`,
+    in jobs-file order."""
+
+    jobs: list
+    never_started: list
+    failed_start: list
+    collected: int
+    launch: list
+
+
+def _resume_pending(into, jobs_file, script, fetch, rerun_failed_start=False):
+    """The jobs of `jobs_file` that `--resume` would launch, as a `ResumeWork`.
 
     Read from local disk only (`job_state`), so the answer is the same before and
-    after the re-attach half runs: every in-flight job leaves it as collected,
-    never as pending, because a finalized job has its pulled job.log and a lost
-    or orphaned one has the status job.log `_close_unrecoverable` writes. Pending
-    jobs without --script/--fetch are refused.
+    after the re-attach half runs: every in-flight job leaves it as ended, never
+    as pending, because a finalized job has its pulled job.log and outcome and a
+    lost or orphaned one has the status job.log and outcome
+    `_close_unrecoverable` writes. Jobs to launch without --script/--fetch are
+    refused.
     """
     with open(jobs_file) as fh:
         jobs = parse_jobs(fh.read())
     states = {label: job_state(into, label) for label, _ in jobs}
-    pending = [j for j in jobs if states[j[0]] == "pending"]
-    done = sum(1 for s in states.values() if s == "collected")
-    if pending and (not script or not fetch):
+    never = [j for j in jobs if states[j[0]] == "pending"]
+    failed = [j for j in jobs if states[j[0]] == "failed_start"]
+    collected = sum(1 for s in states.values() if s == "collected")
+    launch = [j for j in jobs if j in never or (rerun_failed_start and j in failed)]
+    if launch and (not script or not fetch):
         raise RuntimeError(
-            f"resume: {len(pending)} job(s) in {jobs_file} were never started, but "
+            f"resume: {len(launch)} job(s) in {jobs_file} are to be launched, but "
             "launching them needs --script and --fetch (as a normal sweep does). "
             "Re-run with those, or drop --jobs to only re-attach.")
-    return jobs, pending, done
+    return ResumeWork(jobs=jobs, never_started=never, failed_start=failed,
+                      collected=collected, launch=launch)
 
 
 def resume_sweep(cloud=None, region=None, regions=None, into="cloud-sweep",
                  max_parallel=4, jobs_file=None, uploads=(), script=None,
                  fetch=None, max_minutes=30, budget_eur=None, flavor=None,
-                 image=None, strict_regions=False) -> int:
+                 image=None, strict_regions=False, rerun_failed_start=False) -> int:
     """Continue an interrupted sweep: re-attach what is running, then launch what
     never started.
 
-    Two halves, and the second is why an interrupted sweep no longer needs a
-    hand-edited jobs file to finish:
+    Two halves:
 
     1. **Re-attach.** Scan <into>/*/.flux_attach/ for in-flight jobs, re-establish
        the poll loop against each recorded VM, and on completion pull the log +
        artifacts and tear the VM down.
     2. **Continue the jobs file.** Given --jobs (with --script/--fetch), every job
-       that is neither in flight nor already collected (`job_state`) is launched
-       now, on the normal sweep path. A killed orchestrator therefore resumes the
-       whole sweep rather than only the handful of VMs that happened to be alive
-       when it died -- previously the remaining jobs had to be split into a new
-       jobs file by hand, which is exactly the kind of manual step that goes wrong
-       at 2am.
+       that is neither in flight nor ended (`job_state`) is launched now, on the
+       normal sweep path. A killed orchestrator therefore resumes the whole sweep
+       rather than only the VMs that happened to be alive when it died. With
+       `rerun_failed_start` the jobs that ended before their script started
+       (boot, upload or launch failure) are launched again too, into the same
+       per-job folders, so one campaign keeps one results tree. Jobs whose script
+       ran are never launched again, whatever their outcome.
 
-    Without --jobs it does step 1 only, unchanged.
+    Without --jobs it does step 1 only.
     """
     rc = _reattach_records(cloud, region, into, max_parallel)
     if not jobs_file:
         return rc
 
-    jobs, pending, done = _resume_pending(into, jobs_file, script, fetch)
-    if not pending:
-        print(f"resume: jobs file fully accounted for ({done} collected, "
-              f"{len(jobs) - done} attached above); nothing left to launch.")
+    work = _resume_pending(into, jobs_file, script, fetch, rerun_failed_start)
+    n_failed = len(work.failed_start)
+    if work.failed_start and not rerun_failed_start:
+        print(f"resume: {n_failed} job(s) failed before their script started and "
+              "are skipped; add --rerun-failed-start to launch them again: "
+              + ", ".join(label for label, _ in work.failed_start))
+    if not work.launch:
+        print(f"resume: jobs file fully accounted for ({work.collected} collected, "
+              f"{n_failed} failed before start, "
+              f"{len(work.jobs) - work.collected - n_failed} attached above); "
+              "nothing left to launch.")
         return rc
 
-    print(f"resume: {len(pending)} of {len(jobs)} job(s) never started "
-          f"({done} already collected); launching them now.")
+    if rerun_failed_start:
+        for label, _ in work.failed_start:
+            prior = read_outcome(os.path.join(into, label))
+            print(f"resume: rerunning [{label}], which failed before start: "
+                  f"{prior.status}")
+    print(f"resume: launching {len(work.launch)} of {len(work.jobs)} job(s) "
+          f"({len(work.never_started)} never started, "
+          f"{n_failed if rerun_failed_start else 0} failed before start; "
+          f"{work.collected} already collected).")
     rc |= _launch_jobs(
         cloud=cloud, region=region, regions=regions, flavor=flavor, image=image,
-        jobs=pending, uploads=uploads, script=script, fetch=fetch, into=into,
+        jobs=work.launch, uploads=uploads, script=script, fetch=fetch, into=into,
         max_parallel=max_parallel, max_minutes=max_minutes,
         budget_eur=budget_eur, plan_only=False, strict_regions=strict_regions)
     return rc
@@ -758,30 +904,110 @@ def _upload_excludes(src, into):
     return ("/" + rel.rstrip("/"),)     # a leading '/' anchors it at the transfer root
 
 
-def _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes):
+class UploadFailed(RuntimeError):
+    """An attempt's upload to its instance failed; the instance is torn down
+    (verified) and the job's pending record names that dead instance. Raised
+    only to the retry logic in `_make_run_one`, which either retries the job in
+    another region or closes it as a pre-start failure."""
+
+    def __init__(self, region, status):
+        super().__init__(status)
+        self.region = region
+        self.status = status
+
+
+def _prestart_status(phase, region, status):
+    where = region or "(default region)"
+    return f"failed before start ({phase}, {where}): {status}"
+
+
+def _region_fits_one(cloud, shard):
+    """Raise unless `shard`'s region has live quota headroom for one more
+    instance of its flavor right now (a fresh read: the plan-time cap is stale
+    by the time an upload fails)."""
+    conn = connect(cloud=cloud, region=shard.region)
+    lim = conn.get_compute_limits()
+    gq = lambda k: getattr(lim, k, None)
+    clamp_concurrency(1, shard.vcpus,
+                      gq("total_cores_used"), gq("max_total_cores"),
+                      gq("total_instances_used"), gq("max_total_instances"))
+
+
+def pick_retry_shard(cloud, failed, alternates, budget_eur, _fits=None):
+    """Choose the region a job whose upload failed in `failed` is retried in.
+
+    The candidates are the sweep's own resolved region shards (`alternates`),
+    other than the failed one, in order: the retry never leaves the regions the
+    operator asked for. Under a `--budget`, a candidate whose flavor is dearer
+    than the failed shard's (or unpriced) is refused, because the job was priced
+    at the failed shard's rate and the guard must still bound it. A candidate is
+    taken only if a live quota read fits one more instance.
+
+    Returns (shard, reasons): the chosen shard or None, and one line per refused
+    candidate saying why, which becomes the job's status when nothing fits.
+    """
+    fits = _fits or _region_fits_one
+    reasons = []
+    price = failed.spec.est_cost_eur_hr
+    for s in alternates:
+        if s.region == failed.region:
+            continue
+        alt_price = s.spec.est_cost_eur_hr
+        if budget_eur is not None and (alt_price is None or price is None
+                                       or alt_price > price):
+            reasons.append(f"{s.region}: {s.spec.flavor} at "
+                           f"{'an unknown price' if alt_price is None else f'EUR {alt_price:.2f}/hr'}"
+                           f" is outside the budget this job was priced at")
+            continue
+        try:
+            fits(cloud, s)
+        except Exception as exc:
+            reasons.append(f"{s.region}: {type(exc).__name__}: {str(exc)[:120]}")
+            continue
+        return s, reasons
+    if not reasons:
+        reasons.append("no other region in this sweep")
+    return None, reasons
+
+
+def _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes,
+                  alternates=(), budget_eur=None):
     """Build the per-job runner bound to one region shard (provision -> upload ->
     detached run -> follow -> fetch -> teardown). `upload_pairs` are already-parsed
-    (local_src, remote_dest) pairs (`parse_upload_spec`)."""
-    spec, region = shard.spec, shard.region
+    (local_src, remote_dest) pairs (`parse_upload_spec`).
 
-    def _one(job):
+    **An upload failure is retried once, in another region.** The upload is the
+    step most exposed to a region's network (a booted VM whose port 22 stops
+    answering mid-rsync), and it fails before the script starts, so nothing is
+    lost by starting over elsewhere. The failed instance is torn down first; the
+    retry region is `pick_retry_shard` over `alternates` (the sweep's resolved
+    shards). When none fits, or the retry fails too, the job ends as a pre-start
+    failure whose status says why, and `sweep --resume --rerun-failed-start`
+    launches it again into the same folder.
+    """
+    cap_seconds = max_minutes * 60
+    remote = os.path.basename(script)
+
+    def _attempt(job, s, *, may_retry, note=""):
         label, params = job
-        conn = connect(cloud=cloud, region=region)
+        region = s.region
         name = f"flux-compute-sweep-{uuid.uuid4().hex[:8]}"
         dest = os.path.join(into, label)
-        cap_seconds = max_minutes * 60
-        remote = os.path.basename(script)
 
         # BEFORE the instance boots: record the job under its (locally generated)
         # instance name, so a launcher killed during boot leaves a VM that
         # `--resume` can still find and tear down instead of an unnamed orphan.
         os.makedirs(dest, exist_ok=True)
+        _clear_previous_attempt(dest)
         _write_pending_record(
             dest, label=label, cloud=cloud, region=region, name=name,
             remote_script=remote, fetch=fetch, into=into, cap_seconds=cap_seconds)
+        phase = "boot"          # the step in flight; None once the script runs
         try:
-            with _gpu_instance(conn, spec, name,
+            conn = connect(cloud=cloud, region=region)
+            with _gpu_instance(conn, s.spec, name,
                                ttl_minutes=ttl_minutes_for(max_minutes)) as (server, ip, keyfile):
+                phase = "upload"
                 for local, remote_dest in upload_pairs:
                     _rsync_up(local, ip, keyfile, remote_dest,
                               extra_excludes=_upload_excludes(local, into))
@@ -792,11 +1018,15 @@ def _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes):
                 # Launch the job detached so a laptop sleep cannot HUP it, then
                 # upgrade the record with the boot-time facts so even a hard kill
                 # of THIS process can re-attach to the still-running VM
-                # (`flux-compute sweep --resume`). The record carries THIS shard's
-                # region, so --resume reconnects to the right one in a
-                # multi-region sweep.
+                # (`flux-compute sweep --resume`). The record carries THIS
+                # attempt's region, so --resume reconnects to the right one.
+                # A launch that raises is a pre-start failure: the instance is
+                # torn down at once, so nothing the script might have begun can
+                # be collected.
+                phase = "launch"
                 started = time.time()
                 _launch_detached(ip, keyfile, remote, cap_seconds, env_prefix=env)
+                phase = None
                 _write_attach_record(
                     dest, label=label, cloud=cloud, region=region, name=name,
                     server_id=server.id, ip=ip, keyfile=keyfile, remote_script=remote,
@@ -816,19 +1046,48 @@ def _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes):
                 rc, status = _finalize(ip, keyfile, dest, fetch, outcome,
                                        elapsed_s=time.time() - started,
                                        cap_seconds=cap_seconds)
-                _clear_attach_record(dest)   # clean finalize: drop record + key
+                status += note
+                _close_job(dest, _outcome(label, region, rc, status))
                 return (label, rc, status)
         except TeardownStrandError as exc:
             # The instance could not be verified gone, so its record MUST survive:
-            # it is the handle `--resume` uses to finish the teardown.
-            return (label, -1, _failure_status(exc))
-        except Exception as exc:
-            # Teardown ran (the context manager's finally): the job is finished,
-            # badly. Drop the record so --resume neither re-attaches to a dead VM
-            # nor counts the job as still in flight, nor launches it again.
-            status = _failure_status(exc)
-            _close_unrecoverable(dest, status)
+            # it is the handle `--resume` uses to finish the teardown. The
+            # outcome is still written: this attempt has ended.
+            status = _failure_status(exc) + note
+            _record_outcome(dest, _outcome(label, region, -1, status, phase))
             return (label, -1, status)
+        except Exception as exc:
+            # Teardown ran (the context manager's finally): the attempt is
+            # finished, badly.
+            status = _failure_status(exc)
+            if phase == "upload" and may_retry:
+                raise UploadFailed(region, status) from exc
+            if phase is not None:
+                status = _prestart_status(phase, region, status)
+            status += note
+            # Drop the record so --resume neither re-attaches to a dead VM nor
+            # counts the job as still in flight; the outcome says whether
+            # --rerun-failed-start may launch it again.
+            _close_unrecoverable(dest, _outcome(label, region, -1, status, phase))
+            return (label, -1, status)
+
+    def _one(job):
+        label = job[0]
+        try:
+            return _attempt(job, shard, may_retry=True)
+        except UploadFailed as first:
+            alt, reasons = pick_retry_shard(cloud, shard, alternates, budget_eur)
+            if alt is None:
+                status = (_prestart_status("upload", first.region, first.status)
+                          + "; not retried: " + "; ".join(reasons))
+                _close_unrecoverable(os.path.join(into, label),
+                                     _outcome(label, first.region, -1, status, "upload"))
+                return (label, -1, status)
+            print(f"  [{first.region}/{label}] upload failed ({first.status}); "
+                  f"instance torn down; retrying once in {alt.region}")
+            return _attempt(job, alt, may_retry=False,
+                            note=f" [retried in {alt.region} after an upload "
+                                 f"failure in {first.region}]")
 
     return _one
 
@@ -944,7 +1203,9 @@ def _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script
 
     def _run_shard(s):
         return _fan_out(list(s.jobs),
-                        _make_run_one(cloud, s, upload_pairs, script, fetch, into, max_minutes),
+                        _make_run_one(cloud, s, upload_pairs, script, fetch, into,
+                                      max_minutes, alternates=shards,
+                                      budget_eur=budget_eur),
                         s.concurrency, on_result=_log_for(s.region))
 
     # Shards run concurrently; each stays within its own region's allocation, so
@@ -965,16 +1226,20 @@ def _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script
 def run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None,
               jobs_file=None, fetch=None, into="cloud-sweep",
               max_parallel=4, max_minutes=30, budget_eur=None, image=None,
-              plan_only=False, resume=False, strict_regions=False) -> int:
+              plan_only=False, resume=False, strict_regions=False,
+              rerun_failed_start=False) -> int:
     if resume:
         # --resume re-attaches in-flight jobs and, when a jobs file is given,
-        # launches the ones that never started.
+        # launches the ones that never started (and, with rerun_failed_start,
+        # the ones that failed before their script started).
         return resume_sweep(
             cloud=cloud, region=region, regions=regions, into=into,
             max_parallel=max_parallel, jobs_file=jobs_file, uploads=uploads,
             script=script, fetch=fetch, max_minutes=max_minutes,
             budget_eur=budget_eur, flavor=flavor, image=image,
-            strict_regions=strict_regions)
+            strict_regions=strict_regions, rerun_failed_start=rerun_failed_start)
+    if rerun_failed_start:
+        raise RuntimeError("--rerun-failed-start needs --resume (it continues a sweep)")
     jobs = _fresh_jobs(jobs_file, script, fetch, plan_only)
     return _launch_jobs(
         cloud=cloud, region=region, regions=regions, flavor=flavor, image=image,
@@ -1007,7 +1272,8 @@ class Preflight:
 def preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(),
                     script=None, jobs_file=None, fetch=None, into="cloud-sweep",
                     max_parallel=4, max_minutes=30, budget_eur=None, image=None,
-                    plan_only=False, resume=False, strict_regions=False):
+                    plan_only=False, resume=False, strict_regions=False,
+                    rerun_failed_start=False):
     """Run every refusal `run_sweep` would meet before launching, and launch nothing.
 
     Takes `run_sweep`'s arguments. Raises RuntimeError on a bad spec, an unfit
@@ -1017,7 +1283,8 @@ def preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=
     so a refused sweep is refused on the terminal, not inside the log. The
     detached child still runs the full sweep, and with it the same checks.
 
-    A `--resume` runs the spec checks, `_resume_pending` and the budget guard on
+    A `--resume` runs the spec checks, `_resume_pending` (counting the
+    failed-start reruns when asked) and the budget guard on
     static prices only (`_resume_static_plan`). Its region fit is left to the
     child: the in-flight fleet still holds the quota it frees on collection, so
     a live quota read here would refuse exactly the jobs the child can launch.
@@ -1025,7 +1292,8 @@ def preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=
     if resume:
         if not jobs_file:
             return None
-        _, jobs, _ = _resume_pending(into, jobs_file, script, fetch)
+        jobs = _resume_pending(into, jobs_file, script, fetch,
+                               rerun_failed_start).launch
         if not jobs:
             return None
         return _resume_static_plan(
@@ -1069,3 +1337,83 @@ def _resume_static_plan(*, region, regions, flavor, jobs, uploads, max_minutes,
             f"flavor, {label}; pass --flavor to bound it by the one you launch)"
         ) from exc
     return Preflight(n_jobs=len(jobs), worst_case_eur=wc)
+
+
+# --- wait for the next job of a campaign to end --------------------------------
+
+def _campaign_state(into):
+    """{label: (attach record or None, outcome or None)} for every job folder
+    under <into> that holds either. The record is read BEFORE the outcome: a job
+    writes its outcome before it drops its record (`_close_job`), so a read in
+    this order never sees a job with neither that has in fact ended."""
+    state = {}
+    for label in sorted(os.listdir(into)):
+        dest = os.path.join(into, label)
+        if not os.path.isdir(dest):
+            continue
+        rec_path = os.path.join(dest, ATTACH_DIR, ATTACH_RECORD)
+        rec = None
+        if os.path.isfile(rec_path):
+            with open(rec_path) as fh:
+                rec = detach.AttachRecord.from_json(fh.read())
+        out = read_outcome(dest)
+        if rec is not None or out is not None:
+            state[label] = (rec, out)
+    return state
+
+
+def _running(state):
+    """Labels whose job is running: an attach record with no outcome written
+    since it launched (a teardown strand keeps its record AND writes its
+    outcome, and has ended)."""
+    return {label for label, (rec, out) in state.items()
+            if rec is not None and (out is None or out.ended_epoch < rec.launch_epoch)}
+
+
+def format_outcome_line(outcome):
+    """The one line `--wait-next` prints: label, region, rc, status."""
+    region = outcome.region or "(default region)"
+    return f"{outcome.label} region={region} rc={outcome.rc} {outcome.status}"
+
+
+def wait_next_job(into, *, poll_interval=WAIT_POLL_S, _sleep=time.sleep, emit=print):
+    """Block until the next job of the campaign under <into> ends; print its line.
+
+    "Next" is relative to this call: the outcomes already on disk when it starts
+    are the baseline, and the first job whose outcome appears or changes after
+    it (a job running now, or one the sweep launches while this waits) is the
+    one reported. Read from the campaign's local state only (attach records and
+    outcome records), never from a log, so no earlier failure is replayed.
+
+    Returns 0 once a job has ended and its line is printed, whatever that job's
+    own rc (the line carries it). Raises RuntimeError, which the CLI turns into a
+    nonzero exit, when the campaign has no running job at the start, and when a
+    running job's record vanishes with no outcome (removed by hand or by
+    `reap --sweep-local`).
+    """
+    if not os.path.isdir(into):
+        raise RuntimeError(f"--wait-next: no campaign folder {into}/")
+    state = _campaign_state(into)
+    baseline = {label: out.ended_epoch for label, (_, out) in state.items()
+                if out is not None}
+    running = _running(state)
+    if not running:
+        raise RuntimeError(
+            f"--wait-next: no running jobs under {into}/ (no attach record without "
+            "an outcome); nothing to wait for")
+    while True:
+        _sleep(poll_interval)
+        state = _campaign_state(into)
+        ended = [out for label, (_, out) in state.items()
+                 if out is not None and baseline.get(label) != out.ended_epoch]
+        if ended:
+            emit(format_outcome_line(min(ended, key=lambda o: o.ended_epoch)))
+            return 0
+        vanished = sorted(label for label in running
+                          if label not in state or state[label][0] is None)
+        if vanished:
+            raise RuntimeError(
+                f"--wait-next: job(s) {', '.join(vanished)} under {into}/ lost their "
+                "attach record without writing an outcome (removed by hand or by "
+                "`flux-compute reap --sweep-local`?); their end is not known")
+        running = _running(state)

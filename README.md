@@ -103,7 +103,9 @@ end-to-end "is the API working?" check.
   job, with a pre-flight worst-case cost guard and a per-job wall-clock cap. Each
   job runs **detached** on its VM and is followed by a reconnect-tolerant poll
   loop, so a laptop sleep does not kill it; `sweep --resume` continues an
-  interrupted run (see *Surviving laptop sleep* below). Add
+  interrupted run (see *Surviving laptop sleep* below), and
+  `sweep --wait-next --into DIR` blocks until the campaign's next job ends (see
+  *Waiting for the next job* below). Add
   **`--regions A,B,C`** to shard one sweep across several regions at once (see
   *Multi-region sweeps* below), the way to run a fleet wider than one region's
   quota, and **`--detach --log FILE`** to run the whole sweep as a background
@@ -377,6 +379,10 @@ flux-compute sweep --resume --into cloud-sweep --cloud flux-ovh
 # ... and also launch the jobs of the file that never started:
 flux-compute sweep --resume --into cloud-sweep --cloud flux-ovh \
     --jobs jobs.txt --script job.sh --fetch out
+
+# ... and launch again the jobs that failed before their script started:
+flux-compute sweep --resume --into cloud-sweep --cloud flux-ovh \
+    --jobs jobs.txt --script job.sh --fetch out --rerun-failed-start
 ```
 
 `--resume` scans `<into>` for in-flight jobs, re-establishes the poll loop against
@@ -387,10 +393,32 @@ exactly the set of jobs still needing collection.
 
 Given `--jobs` (with `--script`/`--fetch`) it then **continues the jobs file**:
 every job that is neither in flight nor already collected is launched now, on the
-normal sweep path with the same quota clamp and budget guard. Jobs already
-collected (a `job.log` was pulled, whatever the outcome) are skipped, so
-`--resume` continues a sweep rather than retrying its failures. Without `--jobs`
-it only re-attaches, unchanged.
+normal sweep path with the same quota clamp and budget guard. Jobs that ended
+are skipped, so `--resume` continues a sweep rather than retrying its failures.
+Without `--jobs` it only re-attaches.
+
+Every job that ends writes `<into>/<label>/outcome.json`: its label, the region
+it ended in, its rc, its status line, and, when it failed before its script
+started, the step it failed in (`boot`: connecting, creating or booting the
+instance; `upload`: the `--upload` rsync or the job-script copy; `launch`: the
+detached launch). A job that failed in one of those steps left nothing to
+collect, because its instance was torn down at once. `--resume` lists those jobs
+and skips them; **`--rerun-failed-start`** (with `--resume --jobs`) launches them
+again into the same `<into>/<label>/` folders, so a campaign keeps one results
+tree. A job whose script ran is never rerun by it, whatever its rc, and neither is
+an orphan or a lost VM, where whether the script started is not known. The resume
+pre-flight prices the reruns with the rest.
+
+**An upload failure is retried once, in another region, before it ever reaches a
+resume.** When the rsync or the job-script copy to a job's instance fails (a VM
+whose port 22 stops answering mid-upload), the instance is torn down and the job
+is launched again in another region of the same sweep (`--regions`) whose live
+quota fits one more instance. Under `--budget` a region whose flavor is dearer
+than the failed one is not taken, so the job stays inside the price it was
+guarded at; the aborted attempt's few minutes of boot and upload are the only
+spend outside the guard. When no region fits (a one-region sweep has none), or
+the retry's upload fails too, the job ends as a pre-start failure whose status
+names each region it could not use and why, ready for `--rerun-failed-start`.
 
 The record is written **before** the instance boots (with the instance name,
 which is generated locally), so a launcher killed mid-boot leaves a VM that
@@ -410,8 +438,13 @@ flux-compute sweep --cloud flux-ovh --regions GRA11,DE1,UK1,WAW1 \
     --detach --log fleet.log
 ```
 
-This returns immediately, printing the daemon's pid, the log path, and the
-`--resume` command that recovers the run if the daemon is ever lost.
+This returns immediately, printing the daemon's pid, the log path, the
+`--resume` command that recovers the run if the daemon is ever lost, and the
+`--wait-next` command that waits for its next job to end.
+
+**`--plan` always prints to the terminal.** Given `--plan`, `--detach` and `--log`
+are ignored, with one line on stderr saying so, so the exact launch line recorded
+for a campaign can be dry-run by adding `--plan` to it.
 
 - **`--log FILE`** appends all output to `FILE`. The redirect is done at the file
   descriptor level, so it captures the `rsync`/`scp`/`ssh` subprocesses too (the
@@ -440,6 +473,28 @@ matters beyond typing: a launcher driving this CLI programmatically has no shell
 to wrap it with, and every piece of that idiom is a way for a fleet to end up
 running with its output discarded.
 
+### Waiting for the next job (`--wait-next`)
+
+```bash
+flux-compute sweep --wait-next --into cloud-sweep
+# chen_nx1024 region=DE1 rc=0 ok
+```
+
+Blocks until the next job of the campaign under `--into` ends, prints one line
+(`LABEL region=R rc=N STATUS`) and exits 0, whatever that job's own rc. "Next"
+is relative to the call: outcomes already on disk are the baseline, and the
+first job whose `outcome.json` appears or changes afterwards, whether running at
+the call or launched by the sweep while it waits, is the one reported. It reads
+only the campaign's attach and outcome records (a directory scan every 5 s, no
+network), never the log, so an earlier failure is never replayed. It exits
+nonzero when the campaign has no running job at the call (no attach record
+without an outcome), and when a running job's record disappears without an
+outcome (removed by hand or by `reap --sweep-local`). It refuses `--resume`,
+`--plan`, `--detach`, `--jobs` and `--rerun-failed-start`, and is a bare
+`flux-compute` invocation like every fleet command. A campaign whose orchestrator
+is dead keeps its records, so `--wait-next` waits on it until the caller's own
+timeout; `sweep --resume` is what revives it.
+
 ### When a job dies: what the status line means
 
 `sweep` records one line per job, and the return code is explained rather than
@@ -454,6 +509,7 @@ guessed:
 | 137 far short of its cap, no evidence | `killed (rc=137, SIGKILL ...) - cause unknown` |
 | other nonzero | `job nonzero` |
 | never answered again | `UNREACHABLE (...)`: SSH stayed dead while this machine was online and the security group admitted it |
+| -1, before the script started | `failed before start (STEP, REGION): ...`: STEP is `boot`, `upload` or `launch`; an upload failure carries the retry's result (`[retried in R after an upload failure in R0]`) or why none ran (`not retried: ...`) |
 
 137 is `128 + SIGKILL` and is genuinely ambiguous: the wall cap's kill-after
 escalation and the kernel OOM-killer both produce it. Reading every 137 as a
