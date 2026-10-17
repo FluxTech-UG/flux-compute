@@ -643,6 +643,27 @@ def test_a_teardown_strand_keeps_the_record_for_resume(tmp_path, monkeypatch):
     assert [r.label for r in _load_attach_records(into)] == ["kept"]   # 'dropped' cleared
 
 
+def test_a_failed_launch_leaves_its_job_non_pending(tmp_path, monkeypatch):
+    """A launch that failed after its record was written must not read as
+    pending once the record clears, or --resume launches it a second time."""
+    from contextlib import contextmanager
+    from flux_compute.sweep import _make_run_one
+
+    into = str(tmp_path / "cloud-sweep")
+
+    @contextmanager
+    def fake_instance(conn, spec, name, ttl_minutes, keep=False):
+        raise RuntimeError("ssh never opened")
+
+    monkeypatch.setattr(sweep, "connect", lambda cloud=None, region=None: object())
+    monkeypatch.setattr(sweep, "_gpu_instance", fake_instance)
+    shard = Shard(region="GRA11", spec=SimpleNamespace(flavor="b3-8"), vcpus=8, cap=1)
+    _make_run_one("flux-ovh", shard, [], "job.sh", "out", into, 30)(("alpha", "p"))
+
+    assert sweep.job_state(into, "alpha") != "pending"
+    assert _load_attach_records(into) == []
+
+
 # --- --resume heals SSH ingress before it reconnects --------------------------
 #
 # The roaming incident: a 16-VM fleet was launched from one network and resumed

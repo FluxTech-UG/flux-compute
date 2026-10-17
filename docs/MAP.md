@@ -298,27 +298,27 @@ _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling.
 - _persist_record(dest, rec)  ·L429: Write an attach record atomically (temp file + rename), so a process killed
 - _write_pending_record(dest, *, label, cloud, region, name, remote_script, fetch, into, cap_seconds)  ·L442: Record the job BEFORE its instance boots.
 - _write_attach_record(dest, *, label, cloud, region, name, server_id, ip, keyfile, remote_script, fetch, into, cap_seconds)  ·L459: Upgrade the pending record to a full one: the boot-time facts plus a
-- _close_unrecoverable(dest, status)  ·L476: Record a job that ended without a pullable job.log (its VM lost or torn
-- _clear_attach_record(dest)  ·L489: Drop the attach dir (record + key copy) after a clean finalize + teardown;
-- _load_attach_records(into)  ·L495: Every persisted attach record under <into> (in-flight or interrupted jobs).
-- job_state(into, label)  ·L508: Where one job of the jobs file stands, from what is on local disk:
-- _status_for_outcome(outcome, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L525: Map a follow outcome to the sweep's (rc, status) record fields.
-- _finalize(ip, keyfile, dest, fetch, outcome, *, elapsed_s=None, cap_seconds=None)  ·L543: Collect a followed job: pull the authoritative job.log, then the artifacts.
-- _job_warn(label)  ·L570: A labelled stderr sink for the poll loop's must-not-miss lines.
-- _heal_ingress_before_reattach(conn, rec, cidr, emit=print)  ·L584: Make sure this VM's security group still admits us, BEFORE the first SSH.
-- _reattach_records(cloud, region, into, max_parallel) -> int  ·L602: Re-attach to every persisted in-flight job under <into>, collect and tear
-- _resume_pending(into, jobs_file, script, fetch)  ·L678: The jobs of `jobs_file` that `--resume` would launch: (jobs, pending, done).
-- resume_sweep(cloud=None, region=None, regions=None, into='cloud-sweep', max_parallel=4, jobs_file=None, uploads=(), script=None, fetch=None, max_minutes=30, budget_eur=None, flavor=None, image=None, …  ·L700: Continue an interrupted sweep: re-attach what is running, then launch what
-- _upload_excludes(src, into)  ·L743: Exclude the sweep's own results dir when it lives inside an upload source.
-- _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes)  ·L758: Build the per-job runner bound to one region shard (provision -> upload ->
-- @dataclass class LaunchPlan  ·L833: Everything a launch is decided on, resolved before any instance exists:
-- _plan_launch(*, cloud, region, regions, flavor, image, jobs, uploads, max_parallel, max_minutes, budget_eur, strict_regions) -> LaunchPlan  ·L845: The refusing half of a launch: validate uploads, resolve and clamp the
-- _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L890: Plan and run a list of jobs: shard across regions, guard the budget, fan
-- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L961
-- _fresh_jobs(jobs_file, script, fetch, plan_only)  ·L982: Validate a fresh sweep's spec and return its parsed jobs, or raise.
-- @dataclass class Preflight  ·L996: What a sweep that passed its pre-flight is about to launch.
-- preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=Non…  ·L1003: Run every refusal `run_sweep` would meet before launching, and launch nothing.
-- _resume_static_plan(*, region, regions, flavor, jobs, uploads, max_minutes, budget_eur)  ·L1039: The resume pre-flight: spec checks and the budget guard on static prices,
+- _close_unrecoverable(dest, status)  ·L476: Record a job that ended badly (its VM lost, orphaned, or its launch
+- _clear_attach_record(dest)  ·L492: Drop the attach dir (record + key copy) after a clean finalize + teardown;
+- _load_attach_records(into)  ·L498: Every persisted attach record under <into> (in-flight or interrupted jobs).
+- job_state(into, label)  ·L511: Where one job of the jobs file stands, from what is on local disk:
+- _status_for_outcome(outcome, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L528: Map a follow outcome to the sweep's (rc, status) record fields.
+- _finalize(ip, keyfile, dest, fetch, outcome, *, elapsed_s=None, cap_seconds=None)  ·L546: Collect a followed job: pull the authoritative job.log, then the artifacts.
+- _job_warn(label)  ·L573: A labelled stderr sink for the poll loop's must-not-miss lines.
+- _heal_ingress_before_reattach(conn, rec, cidr, emit=print)  ·L587: Make sure this VM's security group still admits us, BEFORE the first SSH.
+- _reattach_records(cloud, region, into, max_parallel) -> int  ·L605: Re-attach to every persisted in-flight job under <into>, collect and tear
+- _resume_pending(into, jobs_file, script, fetch)  ·L681: The jobs of `jobs_file` that `--resume` would launch: (jobs, pending, done).
+- resume_sweep(cloud=None, region=None, regions=None, into='cloud-sweep', max_parallel=4, jobs_file=None, uploads=(), script=None, fetch=None, max_minutes=30, budget_eur=None, flavor=None, image=None, …  ·L703: Continue an interrupted sweep: re-attach what is running, then launch what
+- _upload_excludes(src, into)  ·L746: Exclude the sweep's own results dir when it lives inside an upload source.
+- _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes)  ·L761: Build the per-job runner bound to one region shard (provision -> upload ->
+- @dataclass class LaunchPlan  ·L837: Everything a launch is decided on, resolved before any instance exists:
+- _plan_launch(*, cloud, region, regions, flavor, image, jobs, uploads, max_parallel, max_minutes, budget_eur, strict_regions) -> LaunchPlan  ·L849: The refusing half of a launch: validate uploads, resolve and clamp the
+- _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L894: Plan and run a list of jobs: shard across regions, guard the budget, fan
+- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L965
+- _fresh_jobs(jobs_file, script, fetch, plan_only)  ·L986: Validate a fresh sweep's spec and return its parsed jobs, or raise.
+- @dataclass class Preflight  ·L1000: What a sweep that passed its pre-flight is about to launch.
+- preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=Non…  ·L1007: Run every refusal `run_sweep` would meet before launching, and launch nothing.
+- _resume_static_plan(*, region, regions, flavor, jobs, uploads, max_minutes, budget_eur)  ·L1043: The resume pre-flight: spec checks and the budget guard on static prices,
 
 ### tests/conftest.py
 _Suite-wide guard: the tests are hermetic and touch no network._
@@ -767,20 +767,21 @@ _Pure-logic tests for the sweep helpers. No network, no credentials._
 - test_region_drop_label_defaults_when_region_is_none()  ·L583
 - test_pending_record_exists_before_the_instance_boots(tmp_path, monkeypatch)  ·L590: A launcher killed during boot must leave a record naming the VM, or the
 - test_a_teardown_strand_keeps_the_record_for_resume(tmp_path, monkeypatch)  ·L621: The record IS the handle --resume uses to finish a failed teardown, so a
-- _rec(**kw)  ·L654
-- test_resume_heal_announces_a_reopened_group(monkeypatch)  ·L664
-- test_resume_heal_is_quiet_when_ingress_is_already_open(monkeypatch)  ·L673: The common case (same network) must not add noise to a 100-job resume.
-- test_resume_heal_reports_an_unreadable_public_ip_and_continues(monkeypatch)  ·L682: Cannot repair without knowing where we are -- say so, then let the SSH
-- test_resume_heal_surfaces_an_api_error_without_failing_the_reattach(monkeypatch)  ·L692: A network-API hiccup must not abandon a live, billing VM: the check is
-- test_reattach_heals_every_group_before_any_ssh(tmp_path, monkeypatch, capsys)  ·L706: End to end: the ingress repair for each VM lands BEFORE that VM's first
-- test_reattach_warns_once_when_the_public_ip_cannot_be_read(tmp_path, monkeypatch, capsys)  ·L747
-- test_reattach_marks_a_lost_job_non_pending(tmp_path, monkeypatch)  ·L769: A lost VM ends with no job.log to pull. Clearing its record alone left it
-- _stub_resume(monkeypatch, launched)  ·L794
-- test_resume_without_a_jobs_file_only_reattaches(tmp_path, monkeypatch)  ·L800: Backward compatibility: the existing `sweep --resume --into X` invocation
-- test_resume_launches_only_the_jobs_that_never_started(tmp_path, monkeypatch)  ·L809
-- test_resume_with_a_fully_accounted_jobs_file_launches_nothing(tmp_path, monkeypatch)  ·L829
-- test_resume_needs_script_and_fetch_to_launch_the_remainder(tmp_path, monkeypatch)  ·L844
-- test_run_sweep_resume_passes_the_jobs_file_through(tmp_path, monkeypatch)  ·L852: `sweep --resume --jobs ...` must reach resume_sweep with the file.
+- test_a_failed_launch_leaves_its_job_non_pending(tmp_path, monkeypatch)  ·L646: A launch that failed after its record was written must not read as
+- _rec(**kw)  ·L675
+- test_resume_heal_announces_a_reopened_group(monkeypatch)  ·L685
+- test_resume_heal_is_quiet_when_ingress_is_already_open(monkeypatch)  ·L694: The common case (same network) must not add noise to a 100-job resume.
+- test_resume_heal_reports_an_unreadable_public_ip_and_continues(monkeypatch)  ·L703: Cannot repair without knowing where we are -- say so, then let the SSH
+- test_resume_heal_surfaces_an_api_error_without_failing_the_reattach(monkeypatch)  ·L713: A network-API hiccup must not abandon a live, billing VM: the check is
+- test_reattach_heals_every_group_before_any_ssh(tmp_path, monkeypatch, capsys)  ·L727: End to end: the ingress repair for each VM lands BEFORE that VM's first
+- test_reattach_warns_once_when_the_public_ip_cannot_be_read(tmp_path, monkeypatch, capsys)  ·L768
+- test_reattach_marks_a_lost_job_non_pending(tmp_path, monkeypatch)  ·L790: A lost VM ends with no job.log to pull. Clearing its record alone left it
+- _stub_resume(monkeypatch, launched)  ·L815
+- test_resume_without_a_jobs_file_only_reattaches(tmp_path, monkeypatch)  ·L821: Backward compatibility: the existing `sweep --resume --into X` invocation
+- test_resume_launches_only_the_jobs_that_never_started(tmp_path, monkeypatch)  ·L830
+- test_resume_with_a_fully_accounted_jobs_file_launches_nothing(tmp_path, monkeypatch)  ·L850
+- test_resume_needs_script_and_fetch_to_launch_the_remainder(tmp_path, monkeypatch)  ·L865
+- test_run_sweep_resume_passes_the_jobs_file_through(tmp_path, monkeypatch)  ·L873: `sweep --resume --jobs ...` must reach resume_sweep with the file.
 
 ## Other source files
 

@@ -474,15 +474,18 @@ def _write_attach_record(dest, *, label, cloud, region, name, server_id, ip,
 
 
 def _close_unrecoverable(dest, status):
-    """Record a job that ended without a pullable job.log (its VM lost or torn
-    down unreachable), then drop its attach record.
+    """Record a job that ended badly (its VM lost, orphaned, or its launch
+    failed), then drop its attach record.
 
     The status is written as the local job.log FIRST, so `job_state` reads the
     job as "collected" and a later --resume (or the detached child after a
-    pre-flight) never counts it as pending and launches it a second time."""
+    pre-flight) never counts it as pending and launches it a second time. A
+    job.log `_finalize` already pulled is the authoritative record and is kept."""
     os.makedirs(dest, exist_ok=True)
-    with open(os.path.join(dest, JOB_LOG), "w") as fh:
-        fh.write(f"flux-compute resume: {status}\n")
+    log = os.path.join(dest, JOB_LOG)
+    if not os.path.isfile(log):
+        with open(log, "w") as fh:
+            fh.write(f"flux-compute: {status}\n")
     _clear_attach_record(dest)
 
 
@@ -822,9 +825,10 @@ def _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes):
         except Exception as exc:
             # Teardown ran (the context manager's finally): the job is finished,
             # badly. Drop the record so --resume neither re-attaches to a dead VM
-            # nor counts the job as still in flight.
-            _clear_attach_record(dest)
-            return (label, -1, _failure_status(exc))
+            # nor counts the job as still in flight, nor launches it again.
+            status = _failure_status(exc)
+            _close_unrecoverable(dest, status)
+            return (label, -1, status)
 
     return _one
 
