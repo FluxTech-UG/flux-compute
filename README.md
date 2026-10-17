@@ -401,22 +401,35 @@ Every job that ends writes `<into>/<label>/outcome.json`: its label, the region
 it ended in, its rc, its status line, and, when it failed before its script
 started, the step it failed in (`boot`: connecting, creating or booting the
 instance; `upload`: the `--upload` rsync or the job-script copy; `launch`: the
-detached launch). A job that failed in one of those steps left nothing to
-collect, because its instance was torn down at once. `--resume` lists those jobs
+detached launch, counted only when the job provably never spawned, that is the
+launcher could not be copied up or exited before its fork). A job that failed in
+one of those steps left nothing to collect, because its instance was torn down
+at once. A launch hand-off that failed any other way (an SSH timeout, a dropped
+connection, a nonzero exit after the fork) is recorded with no step and a status
+saying whether the script started is unknown, so it is never rerun. A folder
+with no `outcome.json` whose `job.log` is exactly the one-line upload or boot
+failure status flux-compute writes also reads as failed before start. `--resume` lists those jobs
 and skips them; **`--rerun-failed-start`** (with `--resume --jobs`) launches them
 again into the same `<into>/<label>/` folders, so a campaign keeps one results
 tree. A job whose script ran is never rerun by it, whatever its rc, and neither is
-an orphan or a lost VM, where whether the script started is not known. The resume
+an orphan or a lost VM, where whether the script started is not known. The one
+exception is an attempt that had already recorded its pre-start failure (an
+orchestrator killed while it chose the retry region): `--resume` keeps that
+record and tears down the instance if it is somehow still up. The resume
 pre-flight prices the reruns with the rest.
 
 **An upload failure is retried once, in another region, before it ever reaches a
 resume.** When the rsync or the job-script copy to a job's instance fails (a VM
 whose port 22 stops answering mid-upload), the instance is torn down and the job
-is launched again in another region of the same sweep (`--regions`) whose live
-quota fits one more instance. Under `--budget` a region whose flavor is dearer
-than the failed one is not taken, so the job stays inside the price it was
+is launched again in another region. The upload failure is recorded as the
+job's outcome first, so an orchestrator killed at that point leaves a job
+`--resume` reads as failed before start. The candidates are the sweep's other
+regions, then every other region the cloud entry is configured for, so a
+one-region sweep has a retry too; each is resolved with the same flavor and
+taken only when that flavor exists there and live quota fits one more instance.
+Under `--budget` a region whose flavor is dearer than the failed one is not taken, so the job stays inside the price it was
 guarded at; the aborted attempt's few minutes of boot and upload are the only
-spend outside the guard. When no region fits (a one-region sweep has none), or
+spend outside the guard. When no region fits, or
 the retry's upload fails too, the job ends as a pre-start failure whose status
 names each region it could not use and why, ready for `--rerun-failed-start`.
 
@@ -490,7 +503,8 @@ network), never the log, so an earlier failure is never replayed. It exits
 nonzero when the campaign has no running job at the call (no attach record
 without an outcome), and when a running job's record disappears without an
 outcome (removed by hand or by `reap --sweep-local`). It refuses `--resume`,
-`--plan`, `--detach`, `--jobs` and `--rerun-failed-start`, and is a bare
+`--plan`, `--detach`, `--jobs` and `--rerun-failed-start`, ignores `--log`
+(saying so on stderr: its one line belongs on the terminal), and is a bare
 `flux-compute` invocation like every fleet command. A campaign whose orchestrator
 is dead keeps its records, so `--wait-next` waits on it until the caller's own
 timeout; `sweep --resume` is what revives it.

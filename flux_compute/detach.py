@@ -137,6 +137,12 @@ fi
 """
 
 
+# The launcher's exit code for a failure BEFORE it forks the job (no home dir,
+# no job script). Only this code proves the job never spawned: any other failure
+# of the launching SSH may have come after the fork.
+LAUNCH_PREFORK_RC = 97
+
+
 def launcher_script(remote_script, cap_seconds, *, kill_after_s=30):
     """Return the bash for the detached launcher (uploaded and run once).
 
@@ -151,6 +157,9 @@ def launcher_script(remote_script, cap_seconds, *, kill_after_s=30):
     It also applies the universal glibc-allocator tuning (``_MALLOC_TUNING``)
     before spawning the job, so every consumer inherits the OOM mitigation
     without repeating it in its own script.
+
+    Every check before the fork exits ``LAUNCH_PREFORK_RC``, so the caller can
+    tell a job that provably never spawned from a hand-off that failed after it.
     """
     remote_script = str(remote_script)
     cap = int(cap_seconds)
@@ -158,7 +167,11 @@ def launcher_script(remote_script, cap_seconds, *, kill_after_s=30):
     return f"""#!/usr/bin/env bash
 # flux-compute detached job launcher (generated; do not edit).
 set -u
-cd "$HOME"
+cd "$HOME" || exit {LAUNCH_PREFORK_RC}
+if [ ! -f "$HOME/{remote_script}" ]; then
+  echo "flux-compute: job script ~/{remote_script} is missing; not launched" >&2
+  exit {LAUNCH_PREFORK_RC}
+fi
 chmod +x "$HOME/{remote_script}" 2>/dev/null || true
 {_MALLOC_TUNING}
 rm -f {REMOTE_RC} {REMOTE_PID}

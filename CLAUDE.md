@@ -127,9 +127,13 @@ results are the last trace of the work and the instance is about to be deleted.
   rc, status, and the `boot`/`upload`/`launch` step when it failed before its
   script started) BEFORE it drops the attach record (`_close_job`); that order is
   what `wait_next_job` (`sweep --wait-next`) reads by, and the pre-start step is
-  what `--resume --rerun-failed-start` relaunches on. An upload failure is retried
-  once in another of the sweep's region shards (`pick_retry_shard`: live quota
-  fits one, and under `--budget` no dearer flavor). `--resume`
+  what `--resume --rerun-failed-start` relaunches on (`prior_failed_start`, which
+  also reads a legacy one-line upload/boot `job.log`). A launch counts as
+  pre-start only on `LaunchNotStarted` (launcher copy failed, or the launcher
+  exited `LAUNCH_PREFORK_RC` before its fork). An upload failure is recorded,
+  then retried once in another region (`pick_retry_shard` over the sweep's other
+  shards, then the cloud entry's configured regions, each resolved through
+  `_prepare_shard` with the same flavor; under `--budget` no dearer one). `--resume`
   heals SSH ingress **before the first SSH of each re-attach**
   (`_heal_ingress_before_reattach`): a fleet launched from one network is
   routinely collected from another, and a stale `/32` makes every job unreachable

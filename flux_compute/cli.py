@@ -204,8 +204,9 @@ def _check_sweep_modes(parser, args):
     `--plan` is a dry run read on the terminal, so it drops `--detach` and
     `--log` (saying so on stderr): the launch line recorded in a campaign's
     fleet/launch.sh carries both, and a dry run built from it must still print
-    where it is read. `--wait-next` only reads local state and refuses the flags
-    that would launch, resume or background something. `--rerun-failed-start`
+    where it is read. `--wait-next` prints its one line to the terminal too, so
+    it drops `--log` the same way, and refuses the flags that would launch,
+    resume or background something. `--rerun-failed-start`
     is part of a resume with a jobs file.
     """
     if args.plan and (args.detach or args.log):
@@ -214,6 +215,10 @@ def _check_sweep_modes(parser, args):
         print(f"flux-compute sweep: --plan prints to the terminal; ignoring {given}",
               file=sys.stderr)
         args.detach, args.log = False, None
+    if args.wait_next and args.log and not args.detach:
+        print("flux-compute sweep: --wait-next prints to the terminal; ignoring --log",
+              file=sys.stderr)
+        args.log = None
     if args.wait_next:
         clash = [f for f, on in (("--resume", args.resume), ("--plan", args.plan),
                                  ("--detach", args.detach), ("--jobs", args.jobs),
@@ -354,7 +359,8 @@ def main(argv=None) -> int:
                        help="Block until the next job of the campaign under --into ends (the next "
                             "one to end after this call), print 'LABEL region=R rc=N STATUS' and "
                             "exit 0. Reads the campaign's attach and outcome records, never the log. "
-                            "Exits nonzero when the campaign has no running job.")
+                            "Exits nonzero when the campaign has no running job. Always prints "
+                            "to the terminal: --log is ignored with it.")
     sweep.add_argument("--strict-regions", action="store_true",
                        help="Refuse the whole sweep if ANY requested region cannot fit >=1 "
                             "instance of the chosen flavor (exact-width mode). Default: drop "

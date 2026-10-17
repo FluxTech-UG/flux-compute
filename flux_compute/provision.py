@@ -623,6 +623,13 @@ def _make_poll_runner(ip, keyfile, connect_timeout=CONNECT_TIMEOUT_S, _ssh=_ssh)
     return run_poll
 
 
+class LaunchNotStarted(RuntimeError):
+    """The detached launch failed in a way that proves the job never spawned:
+    the launcher could not be copied up, or it exited ``LAUNCH_PREFORK_RC``
+    before its fork. Any other launch failure (an SSH timeout, a transport drop,
+    another nonzero exit) may have come after the fork and is raised as itself."""
+
+
 def _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix="",
                      launch_timeout=90, _ssh=_ssh):
     """Upload the generated launcher and run it to start the job detached.
@@ -631,7 +638,8 @@ def _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix="",
     off the SSH channel) and returns at once, so this SSH closes cleanly and the
     job keeps running through any later disconnect. env_prefix carries the caller's
     `$FLUX_LABEL=... $FLUX_JOB=...` assignments into the job's environment. Returns
-    the launcher's stdout; raises on a nonzero launch.
+    the launcher's stdout; raises on a nonzero launch: `LaunchNotStarted` when
+    the job provably never spawned, the original error otherwise.
     """
     script_text = detach.launcher_script(remote_script, cap_seconds)
     tmp = tempfile.mkdtemp(prefix="flux-launch-")
@@ -639,13 +647,22 @@ def _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix="",
         path = os.path.join(tmp, detach.REMOTE_LAUNCHER)
         with open(path, "w") as fh:
             fh.write(script_text)
-        _scp_up(path, ip, keyfile, detach.REMOTE_LAUNCHER)
+        try:
+            _scp_up(path, ip, keyfile, detach.REMOTE_LAUNCHER)
+        except Exception as exc:
+            raise LaunchNotStarted(
+                f"launcher copy failed, job not launched: {type(exc).__name__}: "
+                f"{str(exc)[:120]}") from exc
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     prefix = (env_prefix + " ") if env_prefix else ""
     res = _ssh(ip, keyfile,
-               f"chmod +x ~/{detach.REMOTE_LAUNCHER} && {prefix}bash ~/{detach.REMOTE_LAUNCHER}",
+               f"{prefix}bash ~/{detach.REMOTE_LAUNCHER}",
                timeout=launch_timeout, capture=True)
+    if res.returncode == detach.LAUNCH_PREFORK_RC:
+        raise LaunchNotStarted(
+            "detached launch refused before the fork, job not launched: "
+            f"{(res.stderr or res.stdout or '').strip()[:200]}")
     if res.returncode != 0:
         raise RuntimeError(
             "detached launch failed "

@@ -282,3 +282,16 @@ def test_resume_passes_rerun_failed_start_through(monkeypatch, tmp_path):
     assert main(["sweep", "--resume", "--rerun-failed-start", "--jobs", "j.txt",
                  "--into", str(tmp_path)]) == 0
     assert seen["rerun_failed_start"] is True and seen["resume"] is True
+
+
+def test_wait_next_ignores_log_and_prints_to_the_terminal(monkeypatch, tmp_path, capsys):
+    from flux_compute import sweep
+
+    monkeypatch.setattr(sweep, "wait_next_job",
+                        lambda into: print("chen_nx1024 region=DE1 rc=0 ok") or 0)
+    log = tmp_path / "fleet.log"
+    assert main(["sweep", "--wait-next", "--into", str(tmp_path), "--log", str(log)]) == 0
+    captured = capsys.readouterr()
+    assert "chen_nx1024 region=DE1 rc=0 ok" in captured.out
+    assert "--wait-next prints to the terminal; ignoring --log" in captured.err
+    assert not log.exists()
