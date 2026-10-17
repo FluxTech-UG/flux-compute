@@ -190,7 +190,9 @@ results are the last trace of the work and the instance is about to be deleted.
   goes nowhere is indistinguishable from a run that never started. The fork comes
   after `sweep.preflight_sweep`, which runs every refusal a launch can meet (spec,
   regions, budget) in the foreground and launches nothing, so a refused detached
-  sweep fails on the terminal with a non-zero exit, never only inside the log.
+  sweep fails on the terminal with a non-zero exit, never only inside the log. A
+  `--resume` pre-flight checks the spec and the budget on static prices and leaves
+  the region fit to the child, since its in-flight fleet still holds the quota.
 - `examples/clouds.yaml.example`: OVH application-credential template.
 
 ## Tests

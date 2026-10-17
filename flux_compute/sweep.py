@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 from . import detach, regions
 from .auth import connect
+from .flavors import classify, dearest_default_flavor
 from .launch import resolve_spec
 from .provision import (
     LOCAL_GRACE_S, POLL_INTERVAL_SWEEP_S, RC_SIGKILL, RESUME_MIN_DEADLINE_S,
@@ -472,6 +473,19 @@ def _write_attach_record(dest, *, label, cloud, region, name, server_id, ip,
         into=into, cap_seconds=cap_seconds, launch_epoch=time.time()))
 
 
+def _close_unrecoverable(dest, status):
+    """Record a job that ended without a pullable job.log (its VM lost or torn
+    down unreachable), then drop its attach record.
+
+    The status is written as the local job.log FIRST, so `job_state` reads the
+    job as "collected" and a later --resume (or the detached child after a
+    pre-flight) never counts it as pending and launches it a second time."""
+    os.makedirs(dest, exist_ok=True)
+    with open(os.path.join(dest, JOB_LOG), "w") as fh:
+        fh.write(f"flux-compute resume: {status}\n")
+    _clear_attach_record(dest)
+
+
 def _clear_attach_record(dest):
     """Drop the attach dir (record + key copy) after a clean finalize + teardown;
     its absence means the job is done."""
@@ -614,8 +628,9 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
             conn = connect(cloud=rec.cloud or cloud, region=rec.region or region)
             server = _server_by_name_or_id(conn, rec.name, rec.server_id or None)
             if server is None:
-                _clear_attach_record(dest)
-                return (rec.label, -1, "lost: VM gone (reaped?); cannot re-attach")
+                status = "lost: VM gone (reaped?); cannot re-attach"
+                _close_unrecoverable(dest, status)
+                return (rec.label, -1, status)
             if not rec.attachable:
                 # A pending (pre-boot) record whose instance DID come up: the
                 # launcher died before it could persist the address and the
@@ -624,10 +639,10 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
                 # the record is written before the boot. Stop the billing and say
                 # plainly that the results are gone.
                 teardown_by_name(conn, rec.name, rec.server_id or None)
-                _clear_attach_record(dest)
-                return (rec.label, -1,
-                        "orphan: instance booted but the launcher died before "
-                        "recording its key; torn down (results unrecoverable)")
+                status = ("orphan: instance booted but the launcher died before "
+                          "recording its key; torn down (results unrecoverable)")
+                _close_unrecoverable(dest, status)
+                return (rec.label, -1, status)
             # Before the first SSH: re-open ingress if we are on a new network.
             _heal_ingress_before_reattach(conn, rec, cidr)
             # The original deadline may already have elapsed while the orchestrator
@@ -664,8 +679,10 @@ def _resume_pending(into, jobs_file, script, fetch):
     """The jobs of `jobs_file` that `--resume` would launch: (jobs, pending, done).
 
     Read from local disk only (`job_state`), so the answer is the same before and
-    after the re-attach half runs: a re-attached job moves from in flight to
-    collected, never to pending. Pending jobs without --script/--fetch are refused.
+    after the re-attach half runs: every in-flight job leaves it as collected,
+    never as pending, because a finalized job has its pulled job.log and a lost
+    or orphaned one has the status job.log `_close_unrecoverable` writes. Pending
+    jobs without --script/--fetch are refused.
     """
     with open(jobs_file) as fh:
         jobs = parse_jobs(fh.read())
@@ -995,6 +1012,11 @@ def preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=
     whose jobs are all accounted for). The CLI runs it before `--detach` forks,
     so a refused sweep is refused on the terminal, not inside the log. The
     detached child still runs the full sweep, and with it the same checks.
+
+    A `--resume` runs the spec checks, `_resume_pending` and the budget guard on
+    static prices only (`_resume_static_plan`). Its region fit is left to the
+    child: the in-flight fleet still holds the quota it frees on collection, so
+    a live quota read here would refuse exactly the jobs the child can launch.
     """
     if resume:
         if not jobs_file:
@@ -1002,11 +1024,44 @@ def preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=
         _, jobs, _ = _resume_pending(into, jobs_file, script, fetch)
         if not jobs:
             return None
-    else:
-        jobs = _fresh_jobs(jobs_file, script, fetch, plan_only)
+        return _resume_static_plan(
+            region=region, regions=regions, flavor=flavor, jobs=jobs,
+            uploads=uploads, max_minutes=max_minutes, budget_eur=budget_eur)
+    jobs = _fresh_jobs(jobs_file, script, fetch, plan_only)
     plan = _plan_launch(
         cloud=cloud, region=region, regions=regions, flavor=flavor, image=image,
         jobs=jobs, uploads=uploads, max_parallel=max_parallel,
         max_minutes=max_minutes, budget_eur=budget_eur,
         strict_regions=strict_regions)
     return Preflight(n_jobs=len(jobs), worst_case_eur=plan.worst_case_eur)
+
+
+def _resume_static_plan(*, region, regions, flavor, jobs, uploads, max_minutes,
+                        budget_eur):
+    """The resume pre-flight: spec checks and the budget guard on static prices,
+    with no connection and no quota read.
+
+    The price is the static table's (`classify`). With --flavor that is the
+    flavor the child launches. Without it the child picks the cheapest healthy
+    GPU each region offers, unknown offline, so every job is charged at the
+    dearest priced flavor that default can pick: an upper bound, since a budget
+    guard that can under-estimate is not a cap."""
+    if regions and region:
+        raise RuntimeError(
+            "pass either --region (one region) or --regions (several), not both")
+    for u in uploads:
+        parse_upload_spec(u)
+    if flavor:
+        label, price = flavor, classify(flavor).price_eur_hr
+    else:
+        label, price = dearest_default_flavor()
+    try:
+        wc = budget_guard_shards([(label, price, len(jobs))], max_minutes, budget_eur)
+    except RuntimeError as exc:
+        if flavor:
+            raise
+        raise RuntimeError(
+            f"{exc} (no --flavor: every job is priced at the dearest allowed "
+            f"flavor, {label}; pass --flavor to bound it by the one you launch)"
+        ) from exc
+    return Preflight(n_jobs=len(jobs), worst_case_eur=wc)

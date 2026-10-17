@@ -194,6 +194,18 @@ def recommended_for_sim(available_names) -> str:
     return gpus[0].name
 
 
+def dearest_default_flavor() -> tuple[str, float]:
+    """(name, EUR/hr) of the dearest priced flavor `recommended_for_sim` can pick.
+
+    The offline upper bound on a default (no --flavor) launch's hourly price: the
+    default is the cheapest healthy GPU a region offers, which no catalog read
+    can know in advance, but it is always one of these."""
+    usable = {n: p for n, p in _KNOWN_PRICE_EUR_HR.items()
+              if classify(n).kind == "gpu" and classify(n).usable_for_sim}
+    name = max(usable, key=usable.get)
+    return name, usable[name]
+
+
 @dataclass(frozen=True)
 class FlavorSpec:
     """A flavor's resource shape: the fields the fleet planner sizes against.

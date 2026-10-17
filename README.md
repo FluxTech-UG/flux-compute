@@ -427,7 +427,11 @@ This returns immediately, printing the daemon's pid, the log path, and the
   sweep runs its whole pre-flight in the foreground (the jobs-file and script
   checks, the region resolution and the `--budget` guard), so a refused sweep
   prints the refusal on the terminal and exits non-zero instead of detaching; a
-  passing one prints its job count and worst case, then the pid. The log is
+  passing one prints its job count and worst case, then the pid. A `--resume`
+  pre-flight reads no quota (the fleet it is collecting still holds it): it runs
+  the spec checks and the `--budget` guard on static prices, priced at the dearest
+  default flavor when `--flavor` is not given, and the child does the region fit.
+  The log is
   opened before the fork too, so an unwritable path also fails where you can
   still see it.
 

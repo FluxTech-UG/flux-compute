@@ -766,6 +766,29 @@ def test_reattach_warns_once_when_the_public_ip_cannot_be_read(tmp_path, monkeyp
     assert "first thing to suspect" in out
 
 
+def test_reattach_marks_a_lost_job_non_pending(tmp_path, monkeypatch):
+    """A lost VM ends with no job.log to pull. Clearing its record alone left it
+    "pending", so the detached child launched more jobs than the pre-flight
+    counted and priced; the job is closed as collected instead."""
+    into = str(tmp_path / "cloud-sweep")
+    dest = os.path.join(into, "alpha")
+    os.makedirs(dest, exist_ok=True)
+    _write_attach_record(
+        dest, label="alpha", cloud="flux-ovh", region="GRA11",
+        name="flux-compute-sweep-abcd1234", server_id="srv-1", ip="1.2.3.4",
+        keyfile=_make_keyfile(tmp_path), remote_script="job.sh", fetch="out",
+        into=into, cap_seconds=1800)
+    monkeypatch.setattr(sweep, "connect", lambda **kw: SimpleNamespace())
+    monkeypatch.setattr(sweep, "warn_strays", lambda conn: None)
+    monkeypatch.setattr(sweep, "current_ingress_cidr", lambda: "9.9.9.9/32")
+    monkeypatch.setattr(sweep, "_server_by_name_or_id", lambda conn, name, sid: None)
+
+    assert sweep._reattach_records(None, None, into, 1) == 1
+
+    assert sweep.job_state(into, "alpha") != "pending"
+    assert _load_attach_records(into) == []
+
+
 # --- --resume continues the jobs file -----------------------------------------
 
 def _stub_resume(monkeypatch, launched):

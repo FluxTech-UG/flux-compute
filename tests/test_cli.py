@@ -183,3 +183,31 @@ def test_detach_within_budget_detaches_and_says_what_passed(monkeypatch, tmp_pat
     assert forked == [str(tmp_path / "fleet.log")]
     assert "pre-flight passed: 4 job(s), worst-case ~EUR 3.20" in out
     assert "detached as pid 4242" in out
+
+
+def test_detach_resume_leaves_the_region_fit_to_the_child(monkeypatch, tmp_path, capsys):
+    """The in-flight fleet still holds the quota a resume frees as it collects,
+    so a live quota read on the terminal refused exactly what the child would
+    launch. A --resume pre-flight checks the spec and the static-price budget,
+    and forks even when every region reads full."""
+    from types import SimpleNamespace
+
+    from flux_compute import cli, sweep
+    from flux_compute.sweep import Shard
+
+    argv = _wire_offline_sweep(monkeypatch, tmp_path) + ["--resume", "--budget", "10"]
+    full = SimpleNamespace(flavor="t2-le-45", est_cost_eur_hr=0.80,
+                           gpu_model="Tesla V100S 32GB", image="img", network="Ext-Net")
+    monkeypatch.setattr(sweep, "_prepare_shard",
+                        lambda cloud, region, flavor, image, max_parallel:
+                        Shard(region=region, spec=full, vcpus=15, cap=0))
+    forked = []
+    monkeypatch.setattr(cli, "_detach_into_background",
+                        lambda log_path: forked.append(log_path) or 4242)
+
+    rc = main(argv)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert forked == [str(tmp_path / "fleet.log")]
+    assert "pre-flight passed: 4 job(s), worst-case ~EUR 3.20" in out
