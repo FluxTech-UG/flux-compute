@@ -187,7 +187,10 @@ results are the last trace of the work and the instance is about to be deleted.
   (`_redirect_output`, at the fd level so the rsync/ssh subprocesses land there
   too), which exists so no caller (human or launcher) needs to wrap the command
   in `nohup … > log 2>&1 &`. `--detach` without `--log` is refused: output that
-  goes nowhere is indistinguishable from a run that never started.
+  goes nowhere is indistinguishable from a run that never started. The fork comes
+  after `sweep.preflight_sweep`, which runs every refusal a launch can meet (spec,
+  regions, budget) in the foreground and launches nothing, so a refused detached
+  sweep fails on the terminal with a non-zero exit, never only inside the log.
 - `examples/clouds.yaml.example`: OVH application-credential template.
 
 ## Tests

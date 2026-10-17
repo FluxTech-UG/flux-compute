@@ -101,3 +101,85 @@ def test_log_appends_so_a_resume_can_share_its_run_s_log(tmp_path):
     text = log.read_text()
     assert text.startswith("FIRST ATTEMPT")
     assert "no in-flight jobs" in text
+
+
+# --- a refused --detach sweep is refused in the foreground ---------------------
+#
+# The incident: a budget refusal raised inside the detached child, so the terminal
+# showed "detached as pid ..." and exit 0 while the refusal sat in the log, and a
+# fleet that never ran was recorded as running. The pre-flight now runs before
+# the fork. The fork itself is stubbed, so these tests stay in-process and offline.
+
+def _wire_offline_sweep(monkeypatch, tmp_path, price_eur_hr=0.80):
+    """A one-region sweep resolved without network: a priced V100S shard, a
+    four-job jobs file and a job script. Returns the argv that runs it."""
+    from types import SimpleNamespace
+
+    from flux_compute import sweep
+    from flux_compute.sweep import Shard
+
+    spec = SimpleNamespace(flavor="t2-le-45", est_cost_eur_hr=price_eur_hr,
+                           gpu_model="Tesla V100S 32GB", image="img", network="Ext-Net")
+    monkeypatch.setattr(sweep, "_prepare_shard",
+                        lambda cloud, region, flavor, image, max_parallel:
+                        Shard(region=region, spec=spec, vcpus=15, cap=4))
+    jobs = tmp_path / "jobs.txt"
+    jobs.write_text("a = 1\nb = 2\nc = 3\nd = 4\n")
+    script = tmp_path / "job.sh"
+    script.write_text("#!/bin/bash\n")
+    return ["sweep", "--region", "GRA11", "--flavor", "t2-le-45",
+            "--jobs", str(jobs), "--script", str(script), "--fetch", "out",
+            "--into", str(tmp_path / "into"), "--max-minutes", "60",
+            "--detach", "--log", str(tmp_path / "fleet.log")]
+
+
+def _forbid_detach(monkeypatch):
+    from flux_compute import cli
+
+    def _no_fork(log_path):
+        raise AssertionError("a refused sweep must not detach")
+    monkeypatch.setattr(cli, "_detach_into_background", _no_fork)
+
+
+def test_detach_over_budget_is_refused_on_the_terminal_before_any_fork(
+        monkeypatch, tmp_path, capsys):
+    # 4 jobs x EUR 0.80/hr x 60 min = EUR 3.20 worst case, against EUR 1.
+    argv = _wire_offline_sweep(monkeypatch, tmp_path) + ["--budget", "1"]
+    _forbid_detach(monkeypatch)
+
+    rc = main(argv)
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "worst-case ~EUR 3.20 exceeds budget EUR 1.00" in captured.err
+    assert "detached as pid" not in captured.out
+    assert not (tmp_path / "fleet.log").exists()     # nothing was handed to a log
+
+
+def test_detach_with_a_bad_spec_is_refused_before_any_fork(monkeypatch, tmp_path, capsys):
+    argv = _wire_offline_sweep(monkeypatch, tmp_path)
+    i = argv.index("--script")
+    del argv[i:i + 2]                                  # no job script
+    _forbid_detach(monkeypatch)
+
+    rc = main(argv)
+
+    assert rc == 1
+    assert "sweep needs --script" in capsys.readouterr().err
+
+
+def test_detach_within_budget_detaches_and_says_what_passed(monkeypatch, tmp_path, capsys):
+    from flux_compute import cli
+
+    argv = _wire_offline_sweep(monkeypatch, tmp_path) + ["--budget", "10"]
+    forked = []
+    monkeypatch.setattr(cli, "_detach_into_background",
+                        lambda log_path: forked.append(log_path) or 4242)
+
+    rc = main(argv)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert forked == [str(tmp_path / "fleet.log")]
+    assert "pre-flight passed: 4 job(s), worst-case ~EUR 3.20" in out
+    assert "detached as pid 4242" in out

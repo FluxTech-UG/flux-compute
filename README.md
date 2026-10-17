@@ -423,9 +423,13 @@ This returns immediately, printing the daemon's pid, the log path, and the
   controlling terminal and stdin on `/dev/null`, the same guarantee the remote
   launcher gives each job on its VM, applied to the orchestrator itself. It
   requires `--log`: a detached run without one would send its output nowhere,
-  which is indistinguishable from never having started. The log is opened before
-  the fork, so an unwritable path fails in the foreground where you can still see
-  it.
+  which is indistinguishable from never having started. Before it forks, the
+  sweep runs its whole pre-flight in the foreground (the jobs-file and script
+  checks, the region resolution and the `--budget` guard), so a refused sweep
+  prints the refusal on the terminal and exits non-zero instead of detaching; a
+  passing one prints its job count and worst case, then the pid. The log is
+  opened before the fork too, so an unwritable path also fails where you can
+  still see it.
 
 Together these replace wrapping the command in `nohup … > log 2>&1 &`. That
 matters beyond typing: a launcher driving this CLI programmatically has no shell

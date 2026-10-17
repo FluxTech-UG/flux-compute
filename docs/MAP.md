@@ -26,7 +26,8 @@ _flux-compute command-line entry point._
 - _stream_output()  ·L108: Make progress output appear as it happens, even through a pipe.
 - _redirect_output(log_path)  ·L127: Point this process's stdout AND stderr at ``log_path`` (appending).
 - _detach_into_background(log_path)  ·L148: Re-launch this process as a background daemon writing to ``log_path``.
-- main(argv=None) -> int  ·L183
+- _detach_sweep(args, pre)  ·L183: Fork a sweep whose pre-flight passed. True in the PARENT, which has
+- main(argv=None) -> int  ·L200
 
 ### flux_compute/detach.py
 _Detach-and-poll: run a remote job so it survives the launching SSH session_
@@ -304,11 +305,17 @@ _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling.
 - _job_warn(label)  ·L556: A labelled stderr sink for the poll loop's must-not-miss lines.
 - _heal_ingress_before_reattach(conn, rec, cidr, emit=print)  ·L570: Make sure this VM's security group still admits us, BEFORE the first SSH.
 - _reattach_records(cloud, region, into, max_parallel) -> int  ·L588: Re-attach to every persisted in-flight job under <into>, collect and tear
-- resume_sweep(cloud=None, region=None, regions=None, into='cloud-sweep', max_parallel=4, jobs_file=None, uploads=(), script=None, fetch=None, max_minutes=30, budget_eur=None, flavor=None, image=None, …  ·L662: Continue an interrupted sweep: re-attach what is running, then launch what
-- _upload_excludes(src, into)  ·L714: Exclude the sweep's own results dir when it lives inside an upload source.
-- _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes)  ·L729: Build the per-job runner bound to one region shard (provision -> upload ->
-- _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L803: Plan and run a list of jobs: shard across regions, guard the budget, fan
-- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L902
+- _resume_pending(into, jobs_file, script, fetch)  ·L663: The jobs of `jobs_file` that `--resume` would launch: (jobs, pending, done).
+- resume_sweep(cloud=None, region=None, regions=None, into='cloud-sweep', max_parallel=4, jobs_file=None, uploads=(), script=None, fetch=None, max_minutes=30, budget_eur=None, flavor=None, image=None, …  ·L683: Continue an interrupted sweep: re-attach what is running, then launch what
+- _upload_excludes(src, into)  ·L726: Exclude the sweep's own results dir when it lives inside an upload source.
+- _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes)  ·L741: Build the per-job runner bound to one region shard (provision -> upload ->
+- @dataclass class LaunchPlan  ·L816: Everything a launch is decided on, resolved before any instance exists:
+- _plan_launch(*, cloud, region, regions, flavor, image, jobs, uploads, max_parallel, max_minutes, budget_eur, strict_regions) -> LaunchPlan  ·L828: The refusing half of a launch: validate uploads, resolve and clamp the
+- _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L873: Plan and run a list of jobs: shard across regions, guard the budget, fan
+- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L944
+- _fresh_jobs(jobs_file, script, fetch, plan_only)  ·L965: Validate a fresh sweep's spec and return its parsed jobs, or raise.
+- @dataclass class Preflight  ·L979: What a sweep that passed its pre-flight is about to launch.
+- preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=Non…  ·L986: Run every refusal `run_sweep` would meet before launching, and launch nothing.
 
 ### tests/conftest.py
 _Suite-wide guard: the tests are hermetic and touch no network._
@@ -323,6 +330,11 @@ _Tests for the command-line entry point. No network, no credentials._
 - @pytest.mark.skipif test_detach_returns_at_once_and_the_work_lands_in_the_log(tmp_path)  ·L51: The whole point of the flag: the caller gets its shell back immediately,
 - test_log_without_detach_redirects_the_output_to_the_file(tmp_path)  ·L78
 - test_log_appends_so_a_resume_can_share_its_run_s_log(tmp_path)  ·L91: A --resume pointed at the log of the run it continues must read as one
+- _wire_offline_sweep(monkeypatch, tmp_path, price_eur_hr=0.8)  ·L113: A one-region sweep resolved without network: a priced V100S shard, a
+- _forbid_detach(monkeypatch)  ·L136
+- test_detach_over_budget_is_refused_on_the_terminal_before_any_fork(monkeypatch, tmp_path, capsys)  ·L144
+- test_detach_with_a_bad_spec_is_refused_before_any_fork(monkeypatch, tmp_path, capsys)  ·L159
+- test_detach_within_budget_detaches_and_says_what_passed(monkeypatch, tmp_path, capsys)  ·L171
 
 ### tests/test_detach.py
 _Pure-logic tests for the detach-and-poll machinery. No network, no credentials._

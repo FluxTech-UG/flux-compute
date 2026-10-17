@@ -180,6 +180,23 @@ def _detach_into_background(log_path):
     return None
 
 
+def _detach_sweep(args, pre):
+    """Fork a sweep whose pre-flight passed. True in the PARENT, which has
+    reported the pid and should exit 0; False in the CHILD, which runs the sweep.
+    `pre` is the `sweep.preflight_sweep` result (None when no job would launch)."""
+    pid = _detach_into_background(args.log)
+    if pid is None:
+        return False
+    if pre is not None:
+        cost = (f"worst-case ~EUR {pre.worst_case_eur:.2f}"
+                if pre.worst_case_eur is not None else "price n/a")
+        print(f"flux-compute {args.command}: pre-flight passed: {pre.n_jobs} job(s), {cost}")
+    print(f"flux-compute {args.command}: detached as pid {pid}; output -> {args.log}")
+    print(f"  follow:  tail -f {args.log}")
+    print(f"  recover: flux-compute {args.command} --resume --into {args.into}")
+    return True
+
+
 def main(argv=None) -> int:
     _stream_output()
     parser = argparse.ArgumentParser(
@@ -382,21 +399,13 @@ def main(argv=None) -> int:
 
     args = parser.parse_args(argv)
 
-    # Backgrounding and log redirection happen BEFORE dispatch, so everything the
-    # command prints -- including the pre-flight plan and any refusal -- lands in
-    # the log rather than half on a terminal that is about to be abandoned.
+    # A plain --log redirects BEFORE dispatch, so everything the command prints
+    # lands in the log. A --detach sweep forks later, inside the sweep branch,
+    # once its pre-flight has passed on the terminal (`_detach_sweep`).
     if getattr(args, "detach", False):
         if not args.log:
             parser.error("--detach needs --log FILE: a detached sweep has no "
                          "terminal, so without a log its output would be lost")
-        pid = _detach_into_background(args.log)
-        if pid is not None:
-            print(f"flux-compute {args.command}: detached as pid {pid}; "
-                  f"output -> {args.log}")
-            print(f"  follow:  tail -f {args.log}")
-            print(f"  recover: flux-compute {args.command} --resume --into "
-                  f"{getattr(args, 'into', 'cloud-sweep')}")
-            return 0
     elif getattr(args, "log", None):
         # Say where the output went on the terminal the operator is still
         # watching; after this line there is nothing more to see here.
@@ -446,15 +455,24 @@ def main(argv=None) -> int:
             )
 
         if args.command == "sweep":
-            from .sweep import run_sweep
+            from .sweep import preflight_sweep, run_sweep
             flavor = _flavor_from_requirements(args, default_count=1)
-            return run_sweep(cloud=args.cloud, region=args.region, regions=args.regions,
-                             flavor=flavor,
-                             uploads=args.upload, script=args.script, jobs_file=args.jobs,
-                             fetch=args.fetch, into=args.into, max_parallel=args.max_parallel,
-                             max_minutes=args.max_minutes, budget_eur=args.budget, image=args.image,
-                             plan_only=args.plan, resume=args.resume,
-                             strict_regions=args.strict_regions)
+            sweep_kwargs = dict(
+                cloud=args.cloud, region=args.region, regions=args.regions,
+                flavor=flavor, uploads=args.upload, script=args.script,
+                jobs_file=args.jobs, fetch=args.fetch, into=args.into,
+                max_parallel=args.max_parallel, max_minutes=args.max_minutes,
+                budget_eur=args.budget, image=args.image, plan_only=args.plan,
+                resume=args.resume, strict_regions=args.strict_regions)
+            if args.detach:
+                # Refuse in the foreground: a bad spec, an unfit region set or a
+                # budget refusal raises here, before the fork, so the operator
+                # sees it and the exit status says so. A refusal that only
+                # reached the log once read as a launched fleet.
+                pre = preflight_sweep(**sweep_kwargs)
+                if _detach_sweep(args, pre):
+                    return 0
+            return run_sweep(**sweep_kwargs)
 
         if args.command == "regions":
             from .regions import DEFAULT_FITS_FLAVOR, run_regions

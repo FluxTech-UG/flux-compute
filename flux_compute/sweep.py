@@ -659,6 +659,27 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
     return 0 if ok == len(results) else 1
 
 
+
+def _resume_pending(into, jobs_file, script, fetch):
+    """The jobs of `jobs_file` that `--resume` would launch: (jobs, pending, done).
+
+    Read from local disk only (`job_state`), so the answer is the same before and
+    after the re-attach half runs: a re-attached job moves from in flight to
+    collected, never to pending. Pending jobs without --script/--fetch are refused.
+    """
+    with open(jobs_file) as fh:
+        jobs = parse_jobs(fh.read())
+    states = {label: job_state(into, label) for label, _ in jobs}
+    pending = [j for j in jobs if states[j[0]] == "pending"]
+    done = sum(1 for s in states.values() if s == "collected")
+    if pending and (not script or not fetch):
+        raise RuntimeError(
+            f"resume: {len(pending)} job(s) in {jobs_file} were never started, but "
+            "launching them needs --script and --fetch (as a normal sweep does). "
+            "Re-run with those, or drop --jobs to only re-attach.")
+    return jobs, pending, done
+
+
 def resume_sweep(cloud=None, region=None, regions=None, into="cloud-sweep",
                  max_parallel=4, jobs_file=None, uploads=(), script=None,
                  fetch=None, max_minutes=30, budget_eur=None, flavor=None,
@@ -686,20 +707,11 @@ def resume_sweep(cloud=None, region=None, regions=None, into="cloud-sweep",
     if not jobs_file:
         return rc
 
-    with open(jobs_file) as fh:
-        jobs = parse_jobs(fh.read())
-    states = {label: job_state(into, label) for label, _ in jobs}
-    pending = [j for j in jobs if states[j[0]] == "pending"]
-    done = sum(1 for s in states.values() if s == "collected")
+    jobs, pending, done = _resume_pending(into, jobs_file, script, fetch)
     if not pending:
         print(f"resume: jobs file fully accounted for ({done} collected, "
               f"{len(jobs) - done} attached above); nothing left to launch.")
         return rc
-    if not script or not fetch:
-        raise RuntimeError(
-            f"resume: {len(pending)} job(s) in {jobs_file} were never started, but "
-            "launching them needs --script and --fetch (as a normal sweep does). "
-            "Re-run with those, or drop --jobs to only re-attach.")
 
     print(f"resume: {len(pending)} of {len(jobs)} job(s) never started "
           f"({done} already collected); launching them now.")
@@ -800,13 +812,25 @@ def _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes):
     return _one
 
 
-def _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script,
-                 fetch, into, max_parallel, max_minutes, budget_eur, plan_only,
-                 strict_regions) -> int:
-    """Plan and run a list of jobs: shard across regions, guard the budget, fan
-    out. Shared by a fresh `sweep` and by `sweep --resume --jobs`, so a resumed
-    sweep launches its remaining jobs through exactly the same quota clamp,
-    budget guard and region sharding as the original."""
+@dataclass(frozen=True)
+class LaunchPlan:
+    """Everything a launch is decided on, resolved before any instance exists:
+    the parsed uploads, every region shard, the shards that will run (with their
+    jobs dealt), and the whole sweep's worst-case EUR (None when unpriced and no
+    budget is set)."""
+
+    upload_pairs: list
+    shards: tuple
+    live: tuple
+    worst_case_eur: float | None
+
+
+def _plan_launch(*, cloud, region, regions, flavor, image, jobs, uploads,
+                 max_parallel, max_minutes, budget_eur, strict_regions) -> LaunchPlan:
+    """The refusing half of a launch: validate uploads, resolve and clamp the
+    region shards, deal the jobs and run the budget guard. Raises on every refusal
+    a sweep can meet before it provisions, and launches nothing, so it is safe to
+    run in the foreground ahead of `--detach` (`preflight_sweep`)."""
     if regions and region:
         raise RuntimeError(
             "pass either --region (one region) or --regions (several), not both")
@@ -839,10 +863,28 @@ def _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script
     dealt = shard_jobs(jobs, [s.concurrency for s in live])
     live = [s.with_plan(s.concurrency, j) for s, j in zip(live, dealt)]
 
-    total_conc = sum(s.concurrency for s in live)
     wc = budget_guard_shards(
         [(s.spec.flavor, s.spec.est_cost_eur_hr, len(s.jobs)) for s in live],
         max_minutes, budget_eur)
+    return LaunchPlan(upload_pairs=upload_pairs, shards=tuple(shards),
+                      live=tuple(live), worst_case_eur=wc)
+
+
+def _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script,
+                 fetch, into, max_parallel, max_minutes, budget_eur, plan_only,
+                 strict_regions) -> int:
+    """Plan and run a list of jobs: shard across regions, guard the budget, fan
+    out. Shared by a fresh `sweep` and by `sweep --resume --jobs`, so a resumed
+    sweep launches its remaining jobs through exactly the same quota clamp,
+    budget guard and region sharding as the original."""
+    plan = _plan_launch(
+        cloud=cloud, region=region, regions=regions, flavor=flavor, image=image,
+        jobs=jobs, uploads=uploads, max_parallel=max_parallel,
+        max_minutes=max_minutes, budget_eur=budget_eur,
+        strict_regions=strict_regions)
+    upload_pairs, shards, live, wc = (
+        plan.upload_pairs, plan.shards, plan.live, plan.worst_case_eur)
+    total_conc = sum(s.concurrency for s in live)
     tail = f"worst-case ~EUR {wc:.2f}" if wc is not None else "price n/a"
 
     if len(live) == 1 and len(shards) == 1:
@@ -912,6 +954,16 @@ def run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), sc
             script=script, fetch=fetch, max_minutes=max_minutes,
             budget_eur=budget_eur, flavor=flavor, image=image,
             strict_regions=strict_regions)
+    jobs = _fresh_jobs(jobs_file, script, fetch, plan_only)
+    return _launch_jobs(
+        cloud=cloud, region=region, regions=regions, flavor=flavor, image=image,
+        jobs=jobs, uploads=uploads, script=script, fetch=fetch, into=into,
+        max_parallel=max_parallel, max_minutes=max_minutes, budget_eur=budget_eur,
+        plan_only=plan_only, strict_regions=strict_regions)
+
+
+def _fresh_jobs(jobs_file, script, fetch, plan_only):
+    """Validate a fresh sweep's spec and return its parsed jobs, or raise."""
     if not jobs_file:
         raise RuntimeError("sweep needs --jobs (a jobs file)")
     if not plan_only:
@@ -919,12 +971,42 @@ def run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), sc
             raise RuntimeError("sweep needs --script (the per-job job script)")
         if not fetch:
             raise RuntimeError("sweep needs --fetch (home-relative artifact dir per job)")
-
     with open(jobs_file) as fh:
-        jobs = parse_jobs(fh.read())
+        return parse_jobs(fh.read())
 
-    return _launch_jobs(
+
+@dataclass(frozen=True)
+class Preflight:
+    """What a sweep that passed its pre-flight is about to launch."""
+
+    n_jobs: int
+    worst_case_eur: float | None
+
+
+def preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(),
+                    script=None, jobs_file=None, fetch=None, into="cloud-sweep",
+                    max_parallel=4, max_minutes=30, budget_eur=None, image=None,
+                    plan_only=False, resume=False, strict_regions=False):
+    """Run every refusal `run_sweep` would meet before launching, and launch nothing.
+
+    Takes `run_sweep`'s arguments. Raises RuntimeError on a bad spec, an unfit
+    region set or a budget refusal; returns a `Preflight` for the jobs that would
+    launch, or None when nothing would (a `--resume` with no jobs file, or one
+    whose jobs are all accounted for). The CLI runs it before `--detach` forks,
+    so a refused sweep is refused on the terminal, not inside the log. The
+    detached child still runs the full sweep, and with it the same checks.
+    """
+    if resume:
+        if not jobs_file:
+            return None
+        _, jobs, _ = _resume_pending(into, jobs_file, script, fetch)
+        if not jobs:
+            return None
+    else:
+        jobs = _fresh_jobs(jobs_file, script, fetch, plan_only)
+    plan = _plan_launch(
         cloud=cloud, region=region, regions=regions, flavor=flavor, image=image,
-        jobs=jobs, uploads=uploads, script=script, fetch=fetch, into=into,
-        max_parallel=max_parallel, max_minutes=max_minutes, budget_eur=budget_eur,
-        plan_only=plan_only, strict_regions=strict_regions)
+        jobs=jobs, uploads=uploads, max_parallel=max_parallel,
+        max_minutes=max_minutes, budget_eur=budget_eur,
+        strict_regions=strict_regions)
+    return Preflight(n_jobs=len(jobs), worst_case_eur=plan.worst_case_eur)
