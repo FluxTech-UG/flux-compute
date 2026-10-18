@@ -315,3 +315,54 @@ def test_a_strict_stray_check_raises_when_the_server_list_fails(capsys):
         reap.warn_strays(conn, strict=True)
     assert reap.warn_strays(conn) == []                     # advisory elsewhere
     assert "skipped" in capsys.readouterr().err
+
+
+# --- the in-context teardown verifies the keypair and the group too ------------------
+
+def test_a_sweep_whose_group_delete_keeps_failing_keeps_the_record_and_exits_nonzero(
+        tmp_path, monkeypatch, local_boot):
+    conn = _client()
+
+    def refuse(sg_id, ignore_missing=True):
+        raise RuntimeError("409 Conflict: security group in use")
+    conn.network.delete_security_group = refuse
+    monkeypatch.setattr(provision.time, "sleep", lambda s: None)
+    monkeypatch.setattr(sweep, "connect", lambda cloud=None, region=None: conn)
+    monkeypatch.setattr(sweep, "warn_strays", lambda conn, **kw: [])
+    monkeypatch.setattr(sweep, "_prepare_shard",
+                        lambda cloud, region, flavor, image, max_parallel, warn=True:
+                        _shard(region))
+    monkeypatch.setattr(sweep, "_scp_up", lambda *a, **kw: None)
+    monkeypatch.setattr(sweep, "_launch_detached", lambda *a, **kw: "")
+    monkeypatch.setattr(sweep, "make_stuck_handler", lambda *a, **kw: None)
+    monkeypatch.setattr(sweep, "follow_detached_job",
+                        lambda *a, **kw: PollOutcome(rc=0, reason="done", output_size=0))
+    monkeypatch.setattr(sweep, "_finalize", lambda *a, **kw: (0, "ok"))
+    jobs = tmp_path / "jobs.txt"
+    jobs.write_text("chen_nx512 = --nx 512\n")
+    script = tmp_path / "job.sh"
+    script.write_text("#!/bin/bash\n")
+    into = str(tmp_path / "into")
+
+    rc = sweep.run_sweep(region="UK1", jobs_file=str(jobs), script=str(script),
+                         fetch="out", into=into, max_parallel=1)
+
+    assert rc != 0
+    assert conn.compute.deleted_servers == ["srv-1"]          # the server did go
+    [rec] = _load_attach_records(into)                         # the handle survives
+    assert rec.label == "chen_nx512"
+    out = read_outcome(os.path.join(into, "chen_nx512"))
+    assert out.rc == -1 and "security group" in out.status and "ok (job rc=0)" in out.status
+
+
+def test_the_in_context_teardown_raises_on_a_keypair_left_behind(monkeypatch, local_boot):
+    conn = _client()
+
+    def refuse(name, ignore_missing=True):
+        raise RuntimeError("503")
+    conn.compute.delete_keypair = refuse
+    with pytest.raises(TeardownStrandError, match="keypair flux-compute-run-t1"):
+        with provision._gpu_instance(conn, _shard().spec, "flux-compute-run-t1",
+                                     ttl_minutes=30):
+            pass
+    assert conn.compute.deleted_servers == ["srv-1"]

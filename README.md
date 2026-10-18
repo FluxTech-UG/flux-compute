@@ -603,6 +603,8 @@ the stock image + per-job install.
 - **Verified teardown**: the per-run server delete is retried and verified gone
   (`wait_for_delete`); a delete that cannot be verified prints a multi-line
   STRANDED INSTANCE banner with the exact cleanup commands and exits nonzero.
+  The run's keypair and security group deletes are checked the same way: one
+  left behind raises the same strand error, on every teardown path.
   A sweep job's attach record (the local handle naming its VM) is dropped only
   after that verification, so a sweep killed mid-teardown leaves a VM that
   `--resume` or `cancel` can name.

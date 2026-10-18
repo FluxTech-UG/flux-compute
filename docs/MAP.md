@@ -203,45 +203,47 @@ _Provision a GPU instance, run work on it, and always tear it down._
 - _cloud_name(conn)  ·L190
 - _delete_server_verified(conn, server, retries=3, wait=300, retry_delay=10)  ·L194: Delete `server` and verify it is actually gone, retrying on failure.
 - _delete_sg_with_retry(conn, sg_id, attempts=6, delay=10)  ·L220: Delete a security group, retrying 409s: the server's port can linger for
-- _stranded_banner(cloud, name, server_id, reason)  ·L237: Print an unmissable multi-line stranded-instance banner to stderr with
-- _name(kind)  ·L260
-- _print_plan(spec)  ·L264
-- _smoke_command(gpu_model)  ·L269: Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
-- _public_ip_cidr()  ·L277
-- current_ingress_cidr()  ·L286: The /32 an instance's security group must admit for this caller to SSH in,
-- _wait_ssh(host, port=22, timeout=180)  ·L300
-- _server_ipv4(server)  ·L311
-- _ssh_cmd(keyfile)  ·L319
-- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L323
-- _scp_up(local, ip, keyfile, remote)  ·L330
-- _scp_down(ip, keyfile, remote, local, timeout=120)  ·L334: Copy a single home-relative remote file down to a local path. Used for the
-- parse_upload_spec(spec)  ·L342: Parse one ``--upload`` value into ``(local_src, remote_dest)``.
-- _rsync_up(local, ip, keyfile, dest, extra_excludes=())  ·L379
-- _rsync_down(ip, keyfile, remote, local)  ·L402
-- rsync_down_best_effort(ip, keyfile, remote, local, _rsync=None)  ·L409: Fetch artifacts without letting a failure abort the caller. Returns True
-- @dataclass class OomProbe  ·L436: A read of the VM's kernel log looking for OOM-killer evidence.
-- oom_evidence(kernel_log)  ·L449: Pure: scan a kernel-log excerpt for OOM-killer markers -> ``OomProbe``.
-- probe_oom_kill(ip, keyfile, _ssh=_ssh)  ·L458: Read the VM's kernel log over SSH and look for the OOM-killer. Best-effort:
-- looks_like_cap_kill(elapsed_s, cap_seconds, *, fraction=CAP_KILL_MIN_FRACTION)  ·L469: Did this run live long enough for its own wall cap to be the killer?
-- _elapsed_phrase(elapsed_s, cap_seconds)  ·L477
-- classify_exit(rc, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L484: Explain a remote job's return code honestly -> a short status string.
-- explain_remote_kill(ip, keyfile, rc, *, elapsed_s, cap_seconds, _ssh=_ssh)  ·L515: Classify a finished job, probing the VM's kernel log first when the return
-- @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L526
-- _make_poll_runner(ip, keyfile, connect_timeout=CONNECT_TIMEOUT_S, _ssh=_ssh)  ·L602: Build the SSH-backed poll runner the detach loop calls each iteration.
-- class LaunchNotStarted(RuntimeError)  ·L626: The detached launch failed in a way that proves the job never spawned:
-- _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix='', launch_timeout=90, _ssh=_ssh)  ·L633: Upload the generated launcher and run it to start the job detached.
-- _sg_allows_ssh_from(conn, sg, cidr)  ·L673: Does this security group already permit SSH ingress from `cidr`?
-- @dataclass class IngressCheck  ·L688: What an ingress check found, and a line fit to print about it.
-  - __bool__(self)  ·L703: Truthy only when a rule was actually added, so ``if check:`` reads as
-- heal_ssh_ingress(conn, sg_name, cidr=None)  ·L709: Open SSH ingress for the caller's current address if the group lacks it.
-- ensure_ssh_ingress(conn, sg_name, *, cidr=None, label=None, emit=None, indent='  ', announce_open=False)  ·L752: Check-and-repair a group's SSH ingress, report it, and never raise.
-- make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None)  ·L799: Build the poll loop's `on_stuck` callback: say the host is unreachable, try
-- follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval, on_chunk=None, on_status=None, on_warn=None, on_stuck=None, unreachable_abort_s=UNREACHABLE_ABORT_S, _ssh=_ssh)  ·L829: Poll an already-launched detached job to completion (or a local abort).
-- pull_job_log(ip, keyfile, log_path, _ssh=_ssh)  ·L854: Pull the full remote ~/job.out down to log_path (the authoritative final
-- _server_by_name_or_id(conn, name, server_id=None)  ·L866: Find a server by id (preferred) or name, or None if it is already gone.
-- teardown_by_name(conn, name, server_id=None)  ·L881: Delete a flux-compute instance and its same-named keypair + security group
-- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L917
-- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L940
+- _delete_keypair_and_group(conn, name, sg_id)  ·L237: Delete the run's keypair and its security group (`sg_id`, None when there
+- _leftover_strand(left)  ·L253: The `TeardownStrandError` for a keypair or group left behind once the
+- _stranded_banner(cloud, name, server_id, reason)  ·L261: Print an unmissable multi-line stranded-instance banner to stderr with
+- _name(kind)  ·L284
+- _print_plan(spec)  ·L288
+- _smoke_command(gpu_model)  ·L293: Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
+- _public_ip_cidr()  ·L301
+- current_ingress_cidr()  ·L310: The /32 an instance's security group must admit for this caller to SSH in,
+- _wait_ssh(host, port=22, timeout=180)  ·L324
+- _server_ipv4(server)  ·L335
+- _ssh_cmd(keyfile)  ·L343
+- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L347
+- _scp_up(local, ip, keyfile, remote)  ·L354
+- _scp_down(ip, keyfile, remote, local, timeout=120)  ·L358: Copy a single home-relative remote file down to a local path. Used for the
+- parse_upload_spec(spec)  ·L366: Parse one ``--upload`` value into ``(local_src, remote_dest)``.
+- _rsync_up(local, ip, keyfile, dest, extra_excludes=())  ·L403
+- _rsync_down(ip, keyfile, remote, local)  ·L426
+- rsync_down_best_effort(ip, keyfile, remote, local, _rsync=None)  ·L433: Fetch artifacts without letting a failure abort the caller. Returns True
+- @dataclass class OomProbe  ·L460: A read of the VM's kernel log looking for OOM-killer evidence.
+- oom_evidence(kernel_log)  ·L473: Pure: scan a kernel-log excerpt for OOM-killer markers -> ``OomProbe``.
+- probe_oom_kill(ip, keyfile, _ssh=_ssh)  ·L482: Read the VM's kernel log over SSH and look for the OOM-killer. Best-effort:
+- looks_like_cap_kill(elapsed_s, cap_seconds, *, fraction=CAP_KILL_MIN_FRACTION)  ·L493: Did this run live long enough for its own wall cap to be the killer?
+- _elapsed_phrase(elapsed_s, cap_seconds)  ·L501
+- classify_exit(rc, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L508: Explain a remote job's return code honestly -> a short status string.
+- explain_remote_kill(ip, keyfile, rc, *, elapsed_s, cap_seconds, _ssh=_ssh)  ·L539: Classify a finished job, probing the VM's kernel log first when the return
+- @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L550
+- _make_poll_runner(ip, keyfile, connect_timeout=CONNECT_TIMEOUT_S, _ssh=_ssh)  ·L625: Build the SSH-backed poll runner the detach loop calls each iteration.
+- class LaunchNotStarted(RuntimeError)  ·L649: The detached launch failed in a way that proves the job never spawned:
+- _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix='', launch_timeout=90, _ssh=_ssh)  ·L656: Upload the generated launcher and run it to start the job detached.
+- _sg_allows_ssh_from(conn, sg, cidr)  ·L696: Does this security group already permit SSH ingress from `cidr`?
+- @dataclass class IngressCheck  ·L711: What an ingress check found, and a line fit to print about it.
+  - __bool__(self)  ·L726: Truthy only when a rule was actually added, so ``if check:`` reads as
+- heal_ssh_ingress(conn, sg_name, cidr=None)  ·L732: Open SSH ingress for the caller's current address if the group lacks it.
+- ensure_ssh_ingress(conn, sg_name, *, cidr=None, label=None, emit=None, indent='  ', announce_open=False)  ·L775: Check-and-repair a group's SSH ingress, report it, and never raise.
+- make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None)  ·L822: Build the poll loop's `on_stuck` callback: say the host is unreachable, try
+- follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval, on_chunk=None, on_status=None, on_warn=None, on_stuck=None, unreachable_abort_s=UNREACHABLE_ABORT_S, _ssh=_ssh)  ·L852: Poll an already-launched detached job to completion (or a local abort).
+- pull_job_log(ip, keyfile, log_path, _ssh=_ssh)  ·L877: Pull the full remote ~/job.out down to log_path (the authoritative final
+- _server_by_name_or_id(conn, name, server_id=None)  ·L889: Find a server by id (preferred) or name, or None if it is already gone.
+- teardown_by_name(conn, name, server_id=None)  ·L904: Delete a flux-compute instance and its same-named keypair + security group
+- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L930
+- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L953
 
 ### flux_compute/reap.py
 _`flux-compute reap`: find flux-compute instances and delete the expired ones._
@@ -986,6 +988,8 @@ _An instance never outlives its local handle, and the resume's stray check_
 - test_the_cli_resume_exits_nonzero_with_the_credential_message(tmp_path, monkeypatch, capsys)  ·L279
 - test_the_stray_check_connects_with_each_records_launch_cloud(tmp_path, monkeypatch)  ·L289: The launch connected with `--cloud flux-ovh`; a resume line without
 - test_a_strict_stray_check_raises_when_the_server_list_fails(capsys)  ·L309
+- test_a_sweep_whose_group_delete_keeps_failing_keeps_the_record_and_exits_nonzero(tmp_path, monkeypatch, local_boot)  ·L322
+- test_the_in_context_teardown_raises_on_a_keypair_left_behind(monkeypatch, local_boot)  ·L358
 
 ## Other source files
 

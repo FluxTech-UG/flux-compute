@@ -234,6 +234,30 @@ def _delete_sg_with_retry(conn, sg_id, attempts=6, delay=10):
     return False
 
 
+def _delete_keypair_and_group(conn, name, sg_id):
+    """Delete the run's keypair and its security group (`sg_id`, None when there
+    is none). Returns what could not be deleted, one phrase each, empty when
+    both went. The one definition both teardown paths share."""
+    left = []
+    try:
+        conn.compute.delete_keypair(name, ignore_missing=True)
+        print("  deleted keypair")
+    except Exception as exc:
+        print(f"  keypair: {type(exc).__name__}: {str(exc)[:120]}")
+        left.append(f"keypair {name} ({type(exc).__name__}: {str(exc)[:120]})")
+    if sg_id is not None and not _delete_sg_with_retry(conn, sg_id):
+        left.append(f"security group {name} ({sg_id})")
+    return left
+
+
+def _leftover_strand(left):
+    """The `TeardownStrandError` for a keypair or group left behind once the
+    server is gone: the caller keeps the local record that names them."""
+    return TeardownStrandError(
+        f"stranded: {' and '.join(left)} could not be deleted (the server is gone); "
+        "the local record is kept so a retry can name them")
+
+
 def _stranded_banner(cloud, name, server_id, reason):
     """Print an unmissable multi-line stranded-instance banner to stderr with
     the exact cleanup commands. Printed in addition to (never instead of) the
@@ -580,21 +604,20 @@ def _gpu_instance(conn, spec, name, ttl_minutes, keep=False):
                 except TeardownStrandError as exc:
                     strand = exc
                     _stranded_banner(_cloud_name(conn), name, server.id, str(exc))
+            left = []
             if keypair is not None:
-                try:
-                    conn.compute.delete_keypair(name, ignore_missing=True)
-                    print("  deleted keypair")
-                except Exception as exc:
-                    print(f"  keypair: {type(exc).__name__}: {str(exc)[:120]}")
-            if sg is not None:
-                _delete_sg_with_retry(conn, sg.id)
+                left = _delete_keypair_and_group(conn, name, sg.id if sg is not None else None)
+            elif sg is not None and not _delete_sg_with_retry(conn, sg.id):
+                left = [f"security group {name} ({sg.id})"]
             shutil.rmtree(tmp, ignore_errors=True)
+            # Propagate after the rest of the cleanup ran: the banner above has
+            # the commands; this raise makes every CLI path exit nonzero and
+            # makes the sweep keep the job's record. If the with-body also
+            # raised, that exception rides along as __context__.
             if strand is not None:
-                # Propagate after the rest of the cleanup ran: the banner above
-                # has the commands; this raise makes every CLI path exit
-                # nonzero. If the with-body also raised, that exception rides
-                # along as __context__.
                 raise strand
+            if left:
+                raise _leftover_strand(left)
 
 
 # --- detach-and-poll: survive the launching SSH dropping (laptop sleep) --------
@@ -882,8 +905,8 @@ def teardown_by_name(conn, name, server_id=None):
     """Delete a flux-compute instance and its same-named keypair + security group
     by name -- the standalone teardown used on resume, where the `_gpu_instance`
     context manager that normally owns teardown is gone (a fresh process). Verified
-    and retried exactly like the in-context path; prints the stranded-instance
-    banner and raises `TeardownStrandError` if the server cannot be confirmed gone,
+    and retried exactly like the in-context path, which raises the same way;
+    prints the stranded-instance banner and raises `TeardownStrandError` if the server cannot be confirmed gone,
     and also when the keypair or the security group could not be deleted, so the
     caller keeps the local record that names them.
     """
@@ -898,20 +921,10 @@ def teardown_by_name(conn, name, server_id=None):
             raise
     else:
         print(f"  server {name} already gone")
-    left = []
-    try:
-        conn.compute.delete_keypair(name, ignore_missing=True)
-        print("  deleted keypair")
-    except Exception as exc:
-        print(f"  keypair: {type(exc).__name__}: {str(exc)[:120]}")
-        left.append(f"keypair {name} ({type(exc).__name__}: {str(exc)[:120]})")
     sg = conn.network.find_security_group(name)
-    if sg is not None and not _delete_sg_with_retry(conn, sg.id):
-        left.append(f"security group {name} ({sg.id})")
+    left = _delete_keypair_and_group(conn, name, sg.id if sg is not None else None)
     if left:
-        raise TeardownStrandError(
-            f"stranded: {' and '.join(left)} could not be deleted (the server is gone); "
-            "the local record is kept so a retry can name them")
+        raise _leftover_strand(left)
 
 
 def smoke_test(cloud=None, region=None, flavor=None) -> int:

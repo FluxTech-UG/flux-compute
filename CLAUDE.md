@@ -81,7 +81,8 @@ and unreadable records are left alone). One job is stopped by label with
 `flux-compute cancel --into DIR --label L` (or `--all`; `flux_compute/cancel.py`):
 it stops the follower named in `controller.pid` first, so nothing rewrites the
 folder afterwards, then fetches, tears down (instance, keypair and security
-group, each verified by `teardown_by_name`, which raises on any of the three)
+group, each verified: `teardown_by_name` and the in-context `_gpu_instance`
+teardown share `_delete_keypair_and_group` and raise on any of the three)
 and records `cancelled`. A job with no `controller.pid` is refused unless
 `--no-follower` acknowledges its follower was stopped by hand.
 
