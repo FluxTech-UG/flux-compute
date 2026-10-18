@@ -21,6 +21,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -47,10 +48,12 @@ from .reap import warn_strays
 ATTACH_DIR = ".flux_attach"
 ATTACH_RECORD = "record.json"
 ATTACH_KEY = "id_key"
-# The pid of the process following the job (the launching sweep, or the
-# `--resume` poller that took it over), a sidecar beside the record so the
-# record's format is unchanged. `flux-compute cancel` stops that process before
-# it tears the instance down, so the follower cannot rewrite the job afterwards.
+# The process following the job (the launching sweep, or the `--resume` poller
+# that took it over): its pid on line 1 and its start time (`ps -o lstart=`) on
+# line 2, a sidecar beside the record so the record's format is unchanged.
+# `flux-compute cancel` stops that process before it tears the instance down,
+# so the follower cannot rewrite the job afterwards; the start time is what
+# tells the follower from a later process that reused its pid.
 CONTROLLER_PID = "controller.pid"
 # The pulled remote job log. Its presence is what marks a job as collected, so
 # `sweep --resume --jobs ...` can tell an already-run job from a never-started one.
@@ -566,29 +569,64 @@ def _persist_record(dest, rec):
     return rec
 
 
+def process_start(pid, _run=subprocess.run):
+    """The start time of `pid` as `ps -o lstart=` prints it, or None when no such
+    process exists. A `ps` that cannot run (a sandboxed shell) raises."""
+    try:
+        res = _run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"`ps -p {pid}` could not run ({type(exc).__name__}: {exc}); a sandboxed "
+            "shell is denied ps: send the command hatched") from exc
+    out = res.stdout.strip()
+    if out:
+        return out
+    if res.returncode != 0 and res.stderr.strip():
+        raise RuntimeError(f"`ps -p {pid}` failed: {res.stderr.strip()[:200]}")
+    return None
+
+
+_OWN_START = []
+
+
+def _own_start():
+    """This process's start time, read once."""
+    if not _OWN_START:
+        start = process_start(os.getpid())
+        if start is None:
+            raise RuntimeError(f"`ps` does not list this process (pid {os.getpid()})")
+        _OWN_START.append(start)
+    return _OWN_START[0]
+
+
 def _claim_job(dest):
     """Name this process as the job's follower (`CONTROLLER_PID`), atomically."""
     adir = _attach_dir(dest)
     os.makedirs(adir, exist_ok=True)
     tmp = os.path.join(adir, CONTROLLER_PID + ".tmp")
     with open(tmp, "w") as fh:
-        fh.write(f"{os.getpid()}\n")
+        fh.write(f"{os.getpid()}\n{_own_start()}\n")
     os.replace(tmp, os.path.join(adir, CONTROLLER_PID))
 
 
-def read_controller_pid(dest):
-    """The pid `_claim_job` recorded for this job, or None when there is none (a
-    record written before the sidecar existed). A sidecar that does not parse
-    raises with its path."""
+def read_controller(dest):
+    """The follower `_claim_job` recorded for this job as (pid, start time), or
+    None when there is none (a job launched before the sidecar existed). A
+    sidecar that does not hold both lines raises with its path."""
     path = os.path.join(_attach_dir(dest), CONTROLLER_PID)
     if not os.path.isfile(path):
         return None
     with open(path) as fh:
-        text = fh.read().strip()
+        lines = fh.read().splitlines()
     try:
-        return int(text)
-    except ValueError as exc:
-        raise RuntimeError(f"unreadable controller pid file {path}: {text!r}") from exc
+        pid, start = int(lines[0]), lines[1].strip()
+        if not start:
+            raise ValueError("empty start time")
+    except (IndexError, ValueError) as exc:
+        raise RuntimeError(
+            f"unreadable controller pid file {path}: {lines!r} (want the pid, then "
+            "its start time)") from exc
+    return pid, start
 
 
 def _write_pending_record(dest, *, label, cloud, region, name, remote_script,
@@ -899,9 +937,12 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
             rc, status = _finalize(
                 rec.ip, rec.keyfile, dest, rec.fetch, outcome,
                 elapsed_s=time.time() - rec.launch_epoch, cap_seconds=rec.cap_seconds)
+            # Outcome first, record last: a teardown that fails leaves both, and
+            # the next --resume finishes the teardown and keeps this outcome.
+            ended = _record_outcome(dest, _outcome(rec.label, rec.region, rc, status))
             teardown_by_name(conn, rec.name, rec.server_id or None)
-            _close_job(dest, _outcome(rec.label, rec.region, rc, status))
-            return (rec.label, rc, status)
+            _clear_attach_record(dest)
+            return (rec.label, ended.rc, ended.status)
         except Exception as exc:
             # No outcome: the job may still be running on its VM, and its
             # record stays for the next --resume.
@@ -1144,6 +1185,7 @@ def _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes,
         # BEFORE the instance boots: record the job under its (locally generated)
         # instance name, so a launcher killed during boot leaves a VM that
         # `--resume` can still find and tear down instead of an unnamed orphan.
+        _own_start()            # a ps failure raises here, before anything is written
         os.makedirs(dest, exist_ok=True)
         _clear_previous_attempt(dest)
         _write_pending_record(

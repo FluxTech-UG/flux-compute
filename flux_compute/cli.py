@@ -454,6 +454,10 @@ def main(argv=None) -> int:
                              "own cloud, the one it was launched with, is used first).")
     cancel.add_argument("--plan", action="store_true",
                         help="Print what the cancel would do and do nothing (offline).")
+    cancel.add_argument("--no-follower", action="store_true",
+                        help="Cancel a job that has no recorded follower (launched before "
+                             "flux-compute recorded one), acknowledging that its sweep or "
+                             "--resume process was stopped by hand first.")
 
     push = sub.add_parser(
         "push",

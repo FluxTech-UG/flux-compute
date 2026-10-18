@@ -155,19 +155,24 @@ upload runs).
   (see Cost guardrails below). `--all --force` is the non-interactive way to
   take instances still inside their TTL, for stopping a runaway fleet from a
   script or a session with no tty.
-- **`cancel --into DIR --label LABEL [--label ...] [--cloud NAME] [--plan]`** and
-  **`cancel --into DIR --all`**: stop one sweep job (or every in-flight job of the
+- **`cancel --into DIR --label LABEL [--label ...] [--cloud NAME] [--plan] [--no-follower]`**
+  and **`cancel --into DIR --all`**: stop one sweep job (or every in-flight job of the
   folder) from its local `.flux_attach/` record, where `reap` can only select by
   TTL. For each job it connects with the cloud and region the record names (the
   record's own cloud first, `--cloud` for a record that names none), then stops
-  the process following the job (the sweep or `--resume` poller named in
-  `.flux_attach/controller.pid`, when it is alive and is a flux-compute process of
-  this user: SIGTERM, then SIGKILL), fetches the job log and the fetch dir best
-  effort, deletes the instance with its keypair and security group (verified),
-  writes `outcome.json` with status `cancelled` and the time, and removes
-  `.flux_attach/`. A label with no record is refused in one line with exit 2.
-  Stopping a follower also stops its follow of its other jobs: their records stay,
-  the command names them, and `sweep --resume` follows them again. A cancelled job
+  the process following the job (the sweep or `--resume` poller whose pid and
+  start time `.flux_attach/controller.pid` holds: SIGTERM, then SIGKILL, and only
+  when a process with that pid AND that start time is alive, so a reused pid is
+  never signalled), fetches the job log and the fetch dir best effort, deletes the
+  instance, its keypair and its security group (each verified: a delete that
+  fails raises and the record stays for a retry), writes `outcome.json` with
+  status `cancelled` and the time, and removes `.flux_attach/`. A label with no
+  record is refused in one line with exit 2, and so is a job with no
+  `controller.pid` (launched before the sweep recorded its follower), whose
+  follower would overwrite the cancel: stop that process first, then cancel with
+  `--no-follower`. Stopping a follower also stops its follow of its other jobs:
+  their records stay, the command names them (also when the cancel stops
+  partway), and `sweep --resume` follows them again. A cancelled job
   reads as collected, so `--resume --jobs` never launches it again. `--plan`
   prints what it would do, offline. It needs the OpenStack credentials, so it is
   sent hatched.

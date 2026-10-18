@@ -20,7 +20,7 @@ from flux_compute.detach import PollOutcome
 from flux_compute.provision import TeardownStrandError
 from flux_compute.sweep import (
     ATTACH_DIR, ATTACH_RECORD, CONTROLLER_PID, Shard, _load_attach_records,
-    _make_run_one, _write_attach_record, job_state, read_controller_pid, read_outcome,
+    _make_run_one, _write_attach_record, job_state, read_controller, read_outcome,
 )
 
 
@@ -212,9 +212,9 @@ def test_the_launching_process_names_itself_as_the_follower(tmp_path, monkeypatc
     seen = []
     into, dest, inst, run_one = _run(tmp_path, monkeypatch)
     monkeypatch.setattr(sweep, "_finalize",
-                        lambda *a, **kw: seen.append(read_controller_pid(dest)) or (0, "ok"))
+                        lambda *a, **kw: seen.append(read_controller(dest)) or (0, "ok"))
     run_one(("chen_nx512", "--nx 512"))
-    assert seen == [os.getpid()]
+    assert seen == [(os.getpid(), "Sat Oct 18 09:00:00 2026")]
     assert not os.path.exists(os.path.join(dest, ATTACH_DIR, CONTROLLER_PID))
 
 

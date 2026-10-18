@@ -70,7 +70,7 @@ and every command that connects surfaces strays with accrued cost before doing
 its own work. Do not add a provisioning path that bypasses the TTL stamp or the
 verified teardown. The teardown also owns the local attach state: sweep persists
 `<into>/<label>/.flux_attach/` (record.json + a copy of the ephemeral SSH key +
-`controller.pid`, the process following the job) so a killed orchestrator can
+`controller.pid`, the pid and start time of the process following the job) so a killed orchestrator can
 `--resume`, and the record is deleted only AFTER the teardown is verified: a
 process killed mid-teardown must leave a record naming its VM, never a billing
 VM with no local handle. An
@@ -80,7 +80,10 @@ whose instance is verifiably gone from a scanned region (live, unscanned-region,
 and unreadable records are left alone). One job is stopped by label with
 `flux-compute cancel --into DIR --label L` (or `--all`; `flux_compute/cancel.py`):
 it stops the follower named in `controller.pid` first, so nothing rewrites the
-folder afterwards, then fetches, tears down (verified) and records `cancelled`.
+folder afterwards, then fetches, tears down (instance, keypair and security
+group, each verified by `teardown_by_name`, which raises on any of the three)
+and records `cancelled`. A job with no `controller.pid` is refused unless
+`--no-follower` acknowledges its follower was stopped by hand.
 
 **`--budget` caps the WHOLE sweep, not one job.** The guard is
 `(total jobs) × (EUR/hr) × (--max-minutes)` (every job at its full wall cap), and
@@ -198,10 +201,12 @@ results are the last trace of the work and the instance is about to be deleted.
   so a launcher killed mid-boot leaves a VM `--resume` can name and tear down.
 - `flux_compute/cancel.py`: `flux-compute cancel`, the per-label stop. Works
   from the job's local record, never by listing the cloud; refuses (exit 2, one
-  line) a label with no record. Order per job: connect, stop the follower
-  (same user, a flux-compute command line, SIGTERM then SIGKILL; a reused pid is
-  left alone), best-effort fetch, verified teardown, `cancelled` outcome, drop
-  the record. A strand raises and keeps the record.
+  line) a label with no record, and a job with no recorded follower unless
+  `--no-follower`. Order per job: connect, stop the follower (only on a pid and
+  start-time match, SIGTERM then SIGKILL; a reused pid is left alone),
+  best-effort fetch, verified teardown, `cancelled` outcome, drop the record. A
+  strand raises and keeps the record; the notes naming the jobs a stopped
+  follower left print on that path too.
 - `flux_compute/cli.py`: argparse entry point (`doctor`, `preflight`, `run`,
   `plan`, `sweep`, `regions`, `reap`, `cancel`, `bake`, `push`). Sets line-buffered
   stdout/stderr at entry (`_stream_output`), so progress streams through a pipe

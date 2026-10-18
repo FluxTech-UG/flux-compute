@@ -883,7 +883,9 @@ def teardown_by_name(conn, name, server_id=None):
     by name -- the standalone teardown used on resume, where the `_gpu_instance`
     context manager that normally owns teardown is gone (a fresh process). Verified
     and retried exactly like the in-context path; prints the stranded-instance
-    banner and raises `TeardownStrandError` if the server cannot be confirmed gone.
+    banner and raises `TeardownStrandError` if the server cannot be confirmed gone,
+    and also when the keypair or the security group could not be deleted, so the
+    caller keeps the local record that names them.
     """
     print("----- teardown (resume) -----")
     server = _server_by_name_or_id(conn, name, server_id)
@@ -896,14 +898,20 @@ def teardown_by_name(conn, name, server_id=None):
             raise
     else:
         print(f"  server {name} already gone")
+    left = []
     try:
         conn.compute.delete_keypair(name, ignore_missing=True)
         print("  deleted keypair")
     except Exception as exc:
         print(f"  keypair: {type(exc).__name__}: {str(exc)[:120]}")
+        left.append(f"keypair {name} ({type(exc).__name__}: {str(exc)[:120]})")
     sg = conn.network.find_security_group(name)
-    if sg is not None:
-        _delete_sg_with_retry(conn, sg.id)
+    if sg is not None and not _delete_sg_with_retry(conn, sg.id):
+        left.append(f"security group {name} ({sg.id})")
+    if left:
+        raise TeardownStrandError(
+            f"stranded: {' and '.join(left)} could not be deleted (the server is gone); "
+            "the local record is kept so a retry can name them")
 
 
 def smoke_test(cloud=None, region=None, flavor=None) -> int:
