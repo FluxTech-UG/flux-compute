@@ -461,7 +461,7 @@ def test_reattach_keeps_a_recorded_prestart_failure(tmp_path, monkeypatch, serve
     into, dest = _killed_during_retry_pick(tmp_path)
     torn = []
     monkeypatch.setattr(sweep, "connect", lambda **kw: SimpleNamespace())
-    monkeypatch.setattr(sweep, "warn_strays", lambda conn: None)
+    monkeypatch.setattr(sweep, "warn_strays", lambda conn, **kw: None)
     monkeypatch.setattr(sweep, "current_ingress_cidr", lambda: "9.9.9.9/32")
     monkeypatch.setattr(sweep, "_server_by_name_or_id", lambda conn, name, sid:
                         SimpleNamespace(id="srv-1") if server_alive else None)

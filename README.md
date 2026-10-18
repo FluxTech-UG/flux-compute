@@ -155,6 +155,22 @@ upload runs).
   (see Cost guardrails below). `--all --force` is the non-interactive way to
   take instances still inside their TTL, for stopping a runaway fleet from a
   script or a session with no tty.
+- **`cancel --into DIR --label LABEL [--label ...] [--cloud NAME] [--plan]`** and
+  **`cancel --into DIR --all`**: stop one sweep job (or every in-flight job of the
+  folder) from its local `.flux_attach/` record, where `reap` can only select by
+  TTL. For each job it connects with the cloud and region the record names (the
+  record's own cloud first, `--cloud` for a record that names none), then stops
+  the process following the job (the sweep or `--resume` poller named in
+  `.flux_attach/controller.pid`, when it is alive and is a flux-compute process of
+  this user: SIGTERM, then SIGKILL), fetches the job log and the fetch dir best
+  effort, deletes the instance with its keypair and security group (verified),
+  writes `outcome.json` with status `cancelled` and the time, and removes
+  `.flux_attach/`. A label with no record is refused in one line with exit 2.
+  Stopping a follower also stops its follow of its other jobs: their records stay,
+  the command names them, and `sweep --resume` follows them again. A cancelled job
+  reads as collected, so `--resume --jobs` never launches it again. `--plan`
+  prints what it would do, offline. It needs the OpenStack credentials, so it is
+  sent hatched.
 - **`push DIR CONTAINER`**: durable artifact copies to OVH Object Storage (Swift).
 
 ### Fleet planning (size the experiment to the machine)
@@ -388,8 +404,19 @@ flux-compute sweep --resume --into cloud-sweep --cloud flux-ovh \
 `--resume` scans `<into>` for in-flight jobs, re-establishes the poll loop against
 each still-running VM, and on completion collects the log + artifacts and tears
 the VM down. A VM already gone (reaped past its TTL, or torn down) is recorded as
-lost. The `.flux_attach/` dir is removed on clean teardown, so its presence is
-exactly the set of jobs still needing collection.
+lost. The `.flux_attach/` dir is removed only once the teardown is verified, so
+its presence is exactly the set of jobs whose VM may still exist. A job collected
+just before its orchestrator died (the outcome written, the teardown not
+finished) is finished by `--resume`: the VM is torn down if it is still up and
+the outcome is kept.
+
+Before re-attaching, `--resume` runs the stray check in every region its
+in-flight records name, connecting with the cloud each job was launched with, the
+same credentials every re-attach uses, so a resume line without `--cloud` still
+reaches them. A check that cannot run stops the resume with an error naming the
+credential file it looked for; in a sandboxed shell, which is denied
+`~/.config/openstack`, the remedy is to send the command hatched. It never
+prints "skipped" and carries on.
 
 Given `--jobs` (with `--script`/`--fetch`) it then **continues the jobs file**:
 every job that is neither in flight nor already collected is launched now, on the
@@ -571,6 +598,9 @@ the stock image + per-job install.
 - **Verified teardown**: the per-run server delete is retried and verified gone
   (`wait_for_delete`); a delete that cannot be verified prints a multi-line
   STRANDED INSTANCE banner with the exact cleanup commands and exits nonzero.
+  A sweep job's attach record (the local handle naming its VM) is dropped only
+  after that verification, so a sweep killed mid-teardown leaves a VM that
+  `--resume` or `cancel` can name.
 - **TTL metadata**: every created server is stamped `flux_created_by` and
   `flux_expires_at` (wall cap + max(30 min, 25% of the cap), generous on
   purpose: reap must never fire early). `--keep` runs also stamp
@@ -590,8 +620,9 @@ the stock image + per-job install.
   nonzero while strays remain.
 - **Stray visibility**: every command that connects (`doctor`, `preflight`,
   `run`, `sweep`, `bake`, `push`) first surfaces any stranded or kept instance
-  with its accrued cost and points at `reap`; advisory only; no command other
-  than `reap` ever deletes.
+  with its accrued cost and points at `reap`; advisory, except under
+  `sweep --resume`, where a check that cannot run raises. No command other than
+  `reap` and `cancel` ever deletes.
 - **Reachability**: an unreachable fleet is a billing problem, because a VM that
   cannot be collected cannot be torn down. Every path that connects therefore
   re-opens each instance's SSH ingress for the caller's current public IP

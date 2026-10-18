@@ -733,7 +733,7 @@ def test_reattach_heals_every_group_before_any_ssh(tmp_path, monkeypatch, capsys
                         lambda into: [_rec(label="a", name="sg-a", into=into),
                                       _rec(label="b", name="sg-b", into=into)])
     monkeypatch.setattr(sweep, "connect", lambda **kw: SimpleNamespace())
-    monkeypatch.setattr(sweep, "warn_strays", lambda conn: None)
+    monkeypatch.setattr(sweep, "warn_strays", lambda conn, **kw: None)
     monkeypatch.setattr(sweep, "_server_by_name_or_id",
                         lambda conn, name, sid: SimpleNamespace(id=sid))
     monkeypatch.setattr(sweep, "current_ingress_cidr",
@@ -768,7 +768,7 @@ def test_reattach_heals_every_group_before_any_ssh(tmp_path, monkeypatch, capsys
 def test_reattach_warns_once_when_the_public_ip_cannot_be_read(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sweep, "_load_attach_records", lambda into: [_rec(into=into)])
     monkeypatch.setattr(sweep, "connect", lambda **kw: SimpleNamespace())
-    monkeypatch.setattr(sweep, "warn_strays", lambda conn: None)
+    monkeypatch.setattr(sweep, "warn_strays", lambda conn, **kw: None)
     monkeypatch.setattr(sweep, "_server_by_name_or_id",
                         lambda conn, name, sid: SimpleNamespace(id=sid))
     monkeypatch.setattr(sweep, "current_ingress_cidr", lambda: None)
@@ -800,7 +800,7 @@ def test_reattach_marks_a_lost_job_non_pending(tmp_path, monkeypatch):
         keyfile=_make_keyfile(tmp_path), remote_script="job.sh", fetch="out",
         into=into, cap_seconds=1800)
     monkeypatch.setattr(sweep, "connect", lambda **kw: SimpleNamespace())
-    monkeypatch.setattr(sweep, "warn_strays", lambda conn: None)
+    monkeypatch.setattr(sweep, "warn_strays", lambda conn, **kw: None)
     monkeypatch.setattr(sweep, "current_ingress_cidr", lambda: "9.9.9.9/32")
     monkeypatch.setattr(sweep, "_server_by_name_or_id", lambda conn, name, sid: None)
 

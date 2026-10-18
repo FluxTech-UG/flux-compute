@@ -69,12 +69,18 @@ only via `--all` + confirmation, and unidentifiable servers are never touched),
 and every command that connects surfaces strays with accrued cost before doing
 its own work. Do not add a provisioning path that bypasses the TTL stamp or the
 verified teardown. The teardown also owns the local attach state: sweep persists
-`<into>/<label>/.flux_attach/` (record.json + a copy of the ephemeral SSH key)
-so a killed orchestrator can `--resume`, and a clean teardown deletes it. An
+`<into>/<label>/.flux_attach/` (record.json + a copy of the ephemeral SSH key +
+`controller.pid`, the process following the job) so a killed orchestrator can
+`--resume`, and the record is deleted only AFTER the teardown is verified: a
+process killed mid-teardown must leave a record naming its VM, never a billing
+VM with no local handle. An
 orchestrator that dies and is never resumed leaves keys on disk, which
 `flux-compute reap --sweep-local DIR` cleans up by removing every attach dir
 whose instance is verifiably gone from a scanned region (live, unscanned-region,
-and unreadable records are left alone).
+and unreadable records are left alone). One job is stopped by label with
+`flux-compute cancel --into DIR --label L` (or `--all`; `flux_compute/cancel.py`):
+it stops the follower named in `controller.pid` first, so nothing rewrites the
+folder afterwards, then fetches, tears down (verified) and records `cancelled`.
 
 **`--budget` caps the WHOLE sweep, not one job.** The guard is
 `(total jobs) × (EUR/hr) × (--max-minutes)` (every job at its full wall cap), and
@@ -146,6 +152,11 @@ results are the last trace of the work and the instance is about to be deleted.
   a live, billing VM over a neutron hiccup would be the worse outcome. It returns
   a status rather than a bare bool so a caller can tell "verified open" from
   "could not check", which is what the follower's fail-fast bound rests on.
+  The resume's stray check (`_check_strays_for_records`) connects with each
+  record's launch cloud and region, the same credentials every re-attach uses,
+  and raises (`auth.credential_error`, naming the clouds.yaml looked for and the
+  hatch) when it cannot run: a fleet must never read as healthy with the check
+  unrun. Elsewhere `warn_strays` stays advisory.
   `--max-parallel` is the GLOBAL live-instance ceiling; each region
   is additionally clamped to its own headroom. The region pre-flight is
   **graceful-degrade by default**: `_prepare_shards` returns `(shards, drops)`,
@@ -185,8 +196,14 @@ results are the last trace of the work and the instance is about to be deleted.
   fleet-wide lockout runs for hours unseen.
   `AttachRecord` is written in two stages, the first **before the instance boots**,
   so a launcher killed mid-boot leaves a VM `--resume` can name and tear down.
+- `flux_compute/cancel.py`: `flux-compute cancel`, the per-label stop. Works
+  from the job's local record, never by listing the cloud; refuses (exit 2, one
+  line) a label with no record. Order per job: connect, stop the follower
+  (same user, a flux-compute command line, SIGTERM then SIGKILL; a reused pid is
+  left alone), best-effort fetch, verified teardown, `cancelled` outcome, drop
+  the record. A strand raises and keeps the record.
 - `flux_compute/cli.py`: argparse entry point (`doctor`, `preflight`, `run`,
-  `plan`, `sweep`, `regions`, `reap`, `bake`, `push`). Sets line-buffered
+  `plan`, `sweep`, `regions`, `reap`, `cancel`, `bake`, `push`). Sets line-buffered
   stdout/stderr at entry (`_stream_output`), so progress streams through a pipe
   and no caller needs `PYTHONUNBUFFERED`. `plan` prints a fleet plan for a
   generic requirement (offline from catalog tables, or `--live`). `run`/`sweep`

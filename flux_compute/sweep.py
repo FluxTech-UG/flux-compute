@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 
 from . import detach, regions
-from .auth import configured_regions, connect
+from .auth import configured_regions, connect, credential_error
 from .flavors import classify, dearest_default_flavor
 from .launch import resolve_spec
 from .provision import (
@@ -47,6 +47,11 @@ from .reap import warn_strays
 ATTACH_DIR = ".flux_attach"
 ATTACH_RECORD = "record.json"
 ATTACH_KEY = "id_key"
+# The pid of the process following the job (the launching sweep, or the
+# `--resume` poller that took it over), a sidecar beside the record so the
+# record's format is unchanged. `flux-compute cancel` stops that process before
+# it tears the instance down, so the follower cannot rewrite the job afterwards.
+CONTROLLER_PID = "controller.pid"
 # The pulled remote job log. Its presence is what marks a job as collected, so
 # `sweep --resume --jobs ...` can tell an already-run job from a never-started one.
 JOB_LOG = "job.log"
@@ -561,6 +566,31 @@ def _persist_record(dest, rec):
     return rec
 
 
+def _claim_job(dest):
+    """Name this process as the job's follower (`CONTROLLER_PID`), atomically."""
+    adir = _attach_dir(dest)
+    os.makedirs(adir, exist_ok=True)
+    tmp = os.path.join(adir, CONTROLLER_PID + ".tmp")
+    with open(tmp, "w") as fh:
+        fh.write(f"{os.getpid()}\n")
+    os.replace(tmp, os.path.join(adir, CONTROLLER_PID))
+
+
+def read_controller_pid(dest):
+    """The pid `_claim_job` recorded for this job, or None when there is none (a
+    record written before the sidecar existed). A sidecar that does not parse
+    raises with its path."""
+    path = os.path.join(_attach_dir(dest), CONTROLLER_PID)
+    if not os.path.isfile(path):
+        return None
+    with open(path) as fh:
+        text = fh.read().strip()
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise RuntimeError(f"unreadable controller pid file {path}: {text!r}") from exc
+
+
 def _write_pending_record(dest, *, label, cloud, region, name, remote_script,
                           fetch, into, cap_seconds):
     """Record the job BEFORE its instance boots.
@@ -635,7 +665,7 @@ def _clear_previous_attempt(dest):
 
 
 def _clear_attach_record(dest):
-    """Drop the attach dir (record + key copy) after a clean finalize + teardown;
+    """Drop the attach dir (record, key copy, controller pid) after a verified teardown;
     its absence means the job is done."""
     shutil.rmtree(_attach_dir(dest), ignore_errors=True)
 
@@ -756,16 +786,38 @@ def _heal_ingress_before_reattach(conn, rec, cidr, emit=print):
     return ensure_ssh_ingress(conn, rec.name, cidr=cidr, label=rec.label, emit=emit)
 
 
-def _recorded_prestart(dest, rec):
-    """The pre-start failure this job's current attempt already recorded, or
-    None. An outcome counts only when it was written after the attach record's
-    launch (`_one` records an upload failure before it picks a retry region, so
-    a kill there leaves both)."""
+def _recorded_end(dest, rec):
+    """The outcome this job's current attempt already recorded, or None. An
+    outcome counts only when it was written after the attach record's launch.
+    Two paths leave one beside a live record: `_one` records an upload failure
+    before it picks a retry region, and a collected job keeps its record until
+    its teardown is verified, so a kill in either window leaves both."""
     prior = read_outcome(dest)
-    if (prior is not None and prior.failed_before_start
-            and prior.ended_epoch >= rec.launch_epoch):
+    if prior is not None and prior.ended_epoch >= rec.launch_epoch:
         return prior
     return None
+
+
+def _recorded_prestart(dest, rec):
+    """The pre-start failure this job's current attempt already recorded, or None."""
+    prior = _recorded_end(dest, rec)
+    return prior if prior is not None and prior.failed_before_start else None
+
+
+def _check_strays_for_records(records, cloud, region):
+    """The resume's stray check, run in every (cloud, region) the in-flight
+    records name, with the cloud each job was launched with (`rec.cloud`), the
+    same credentials the per-job re-attach connects with. It raises when it
+    cannot run: a resume is a fleet health read, and a fleet read as healthy
+    with the check unrun is the wrong answer."""
+    targets = sorted({(rec.cloud or cloud, rec.region or region) for rec in records},
+                     key=lambda t: (t[0] or "", t[1] or ""))
+    for c, r in targets:
+        try:
+            conn = connect(cloud=c, region=r)
+        except RuntimeError as exc:
+            raise credential_error("resume: the stray check", c, r, exc) from exc
+        warn_strays(conn, strict=True)
 
 
 def _reattach_records(cloud, region, into, max_parallel) -> int:
@@ -777,10 +829,7 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
         return 0
     print(f"resume: {len(records)} in-flight job(s) under {into}/; "
           f"re-attaching (up to {max_parallel} at once).")
-    try:
-        warn_strays(connect(cloud=cloud, region=region))
-    except Exception as exc:
-        print(f"note: stray check skipped ({type(exc).__name__}: {str(exc)[:80]})")
+    _check_strays_for_records(records, cloud, region)
 
     # Resolved ONCE for the whole fleet: every job's group is compared against
     # the same address, and 16 re-attaches do not make 16 identical lookups.
@@ -796,14 +845,15 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
         try:
             conn = connect(cloud=rec.cloud or cloud, region=rec.region or region)
             server = _server_by_name_or_id(conn, rec.name, rec.server_id or None)
-            prior = _recorded_prestart(dest, rec)
+            ended = _recorded_end(dest, rec)
+            prior = ended if ended is not None and ended.failed_before_start else None
             if server is None:
-                if prior is not None:
-                    # The attempt failed before its script started and its
-                    # instance was torn down; the orchestrator died before it
-                    # could close the job. Keep that record, not "lost".
-                    _close_unrecoverable(dest, prior)
-                    return (rec.label, -1, prior.status)
+                if ended is not None:
+                    # The attempt ended (before its script started, or collected)
+                    # and its instance is gone; the orchestrator died before it
+                    # could close the job. Keep that outcome, not "lost".
+                    _close_unrecoverable(dest, ended)
+                    return (rec.label, ended.rc, ended.status)
                 status = "lost: VM gone (reaped?); cannot re-attach"
                 _close_unrecoverable(dest, _outcome(rec.label, rec.region, -1, status))
                 return (rec.label, -1, status)
@@ -827,6 +877,13 @@ def _reattach_records(cloud, region, into, max_parallel) -> int:
                           "recording its key; torn down (results unrecoverable)")
                 _close_unrecoverable(dest, _outcome(rec.label, rec.region, -1, status))
                 return (rec.label, -1, status)
+            if ended is not None and not ended.failed_before_start:
+                # Collected, outcome written, but the orchestrator died before
+                # its teardown was verified: finish the teardown, keep the outcome.
+                teardown_by_name(conn, rec.name, rec.server_id or None)
+                _close_job(dest, ended)
+                return (rec.label, ended.rc, ended.status)
+            _claim_job(dest)
             # Before the first SSH: re-open ingress if we are on a new network.
             _heal_ingress_before_reattach(conn, rec, cidr)
             # The original deadline may already have elapsed while the orchestrator
@@ -1092,7 +1149,9 @@ def _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes,
         _write_pending_record(
             dest, label=label, cloud=cloud, region=region, name=name,
             remote_script=remote, fetch=fetch, into=into, cap_seconds=cap_seconds)
+        _claim_job(dest)
         phase = "boot"          # the step in flight; None once the script runs
+        ended = None            # this attempt's outcome, once the job is collected
         try:
             conn = connect(cloud=cloud, region=region)
             with _gpu_instance(conn, s.spec, name,
@@ -1134,13 +1193,22 @@ def _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes,
                                        elapsed_s=time.time() - started,
                                        cap_seconds=cap_seconds)
                 status += note
-                _close_job(dest, _outcome(label, region, rc, status))
-                return (label, rc, status)
+                # The outcome is written here, but the attach record is dropped
+                # only after the context manager's teardown is verified: a
+                # process killed during the teardown leaves a record naming the
+                # instance, which `--resume` tears down, never an unnamed VM.
+                ended = _record_outcome(dest, _outcome(label, region, rc, status))
+            _clear_attach_record(dest)
+            return (label, rc, status)
         except TeardownStrandError as exc:
             # The instance could not be verified gone, so its record MUST survive:
             # it is the handle `--resume` uses to finish the teardown. The
-            # outcome is still written: this attempt has ended.
+            # outcome is still written: this attempt has ended. Its rc is -1
+            # whatever the job's own was (a strand never reads as ok); a
+            # collected job's status keeps its result ahead of the strand.
             status = _failure_status(exc) + note
+            if ended is not None:
+                status = f"{ended.status} (job rc={ended.rc}); {_failure_status(exc)}"
             _record_outcome(dest, _outcome(label, region, -1, status, phase))
             return (label, -1, status)
         except Exception as exc:

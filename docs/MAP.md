@@ -15,7 +15,25 @@ _Authenticated OpenStack connection to the OVH Public Cloud project._
 - parse_region_list(text)  ·L40: Parse a `--regions A,B,C` value into an ordered, de-duplicated region list.
 - resolve_region_name(conn, region: str | None=None) -> str  ·L62: The region a connection is actually working in, for display and records.
 - configured_regions(cloud: str | None=None)  ·L75: Every region this cloud entry is configured for, or [None] if it names one.
-- connect(cloud: str | None=None, region: str | None=None)  ·L108: Open an authenticated connection to the OVH project, or raise the remedy.
+- const CLOUDS_YAML_SEARCH  ·L109
+- credential_source(cloud: str | None) -> str  ·L113: Where `connect(cloud=...)` reads credentials from, in words for an error.
+- credential_error(what: str, cloud: str | None, region: str | None, exc: BaseException) -> RuntimeError  ·L123: The error a command raises when a check it must run cannot read credentials.
+- connect(cloud: str | None=None, region: str | None=None)  ·L138: Open an authenticated connection to the OVH project, or raise the remedy.
+
+### flux_compute/cancel.py
+_`flux-compute cancel`: stop one in-flight sweep job, or every one under a folder._
+- const CANCELLED  ·L39
+- const TERM_WAIT_S  ·L40
+- const KILL_WAIT_S  ·L41
+- class CancelRefused(RuntimeError)  ·L44: A cancel that names no in-flight job; the CLI prints it as one line, exit 2.
+- _is_alive(pid, _kill=os.kill)  ·L48: True when `pid` exists. A process this user may not signal raises: it is
+- _command_of(pid, _run=subprocess.run)  ·L62: The command line of `pid`, or None when it has exited. A `ps` that cannot
+- _is_flux_compute(command)  ·L74
+- stop_controller(pid, *, emit=print, _kill=os.kill, _run=subprocess.run, _sleep=time.sleep, term_wait_s=TERM_WAIT_S, kill_wait_s=KILL_WAIT_S)  ·L78: Stop the flux-compute process `pid`. Returns True when it was stopped
+- _select(into, labels, take_all)  ·L114: The in-flight records the cancel acts on, and the controller pid of
+- _print_plan(into, targets, pids, cloud)  ·L135
+- run_cancel(into, labels=(), take_all=False, cloud=None, plan=False, *, _connect=connect, _teardown=teardown_by_name, _stop=stop_controller, _pull_log=pull_job_log, _fetch=rsync_down_best_effort, emit…  ·L155: Cancel the named in-flight jobs under `into` (or all of them). Returns 0
+- main_cancel(args) -> int  ·L207: The CLI branch: a refusal is one line on stderr and exit 2.
 
 ### flux_compute/cli.py
 _flux-compute command-line entry point._
@@ -240,14 +258,14 @@ _`flux-compute reap`: find flux-compute instances and delete the expired ones._
 - _server_flavor_name(server)  ·L146
 - find_candidates(servers, now)  ·L155: Assess every server; only positively identified flux-compute instances
 - describe(c: Candidate) -> str  ·L168
-- warn_strays(conn, full=False, now=None)  ·L176: Advisory stray check run at the start of every CLI command that
-- @dataclass class LocalAttach  ·L211: One persisted `.flux_attach*` directory found under a --sweep-local root.
-- find_local_attach_dirs(roots)  ·L223: Every `.flux_attach*` dir holding a record.json under the given roots.
-- sweep_local_attach(entries, live_by_region, emit=print, union_ok=False) -> int  ·L255: Reconcile persisted attach dirs against the live per-region listings.
-- _confirm(prompt) -> bool  ·L304
-- _reap_one(conn, c: Candidate) -> bool  ·L312: Delete one candidate's server (verified) plus its same-named keypair and
-- run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False, force=False, sweep_local=()) -> int  ·L333: Hunt strays across regions, because servers and quota are BOTH per region.
-- _reap_region(cloud, region, yes, take_all, force=False, live_out=None) -> int  ·L396
+- warn_strays(conn, full=False, now=None, strict=False)  ·L176: Advisory stray check run at the start of every CLI command that
+- @dataclass class LocalAttach  ·L218: One persisted `.flux_attach*` directory found under a --sweep-local root.
+- find_local_attach_dirs(roots)  ·L230: Every `.flux_attach*` dir holding a record.json under the given roots.
+- sweep_local_attach(entries, live_by_region, emit=print, union_ok=False) -> int  ·L262: Reconcile persisted attach dirs against the live per-region listings.
+- _confirm(prompt) -> bool  ·L311
+- _reap_one(conn, c: Candidate) -> bool  ·L319: Delete one candidate's server (verified) plus its same-named keypair and
+- run_reap(cloud=None, region=None, regions=None, yes=False, take_all=False, force=False, sweep_local=()) -> int  ·L340: Hunt strays across regions, because servers and quota are BOTH per region.
+- _reap_region(cloud, region, yes, take_all, force=False, live_out=None) -> int  ·L403
 
 ### flux_compute/regions.py
 _`flux-compute regions`: a live, read-only per-region occupancy view._
@@ -275,85 +293,127 @@ _Fan out a parameter sweep across ephemeral instances, with a hard cost ceiling.
 - const ATTACH_DIR  ·L47
 - const ATTACH_RECORD  ·L48
 - const ATTACH_KEY  ·L49
-- const JOB_LOG  ·L52
-- const OUTCOME  ·L58
-- const PRESTART_PHASES  ·L62
-- const WAIT_POLL_S  ·L65
-- @dataclass class JobOutcome  ·L69: How one job ended, as `<into>/<label>/outcome.json`.
-  - @property failed_before_start(self) -> bool  ·L86
-  - to_json(self)  ·L89
-  - @classmethod from_json(cls, text)  ·L93
-- const _LEGACY_PRESTART_MARKERS  ·L102
-- const _LEGACY_LOG_PREFIX  ·L106
-- legacy_failed_start(dest)  ·L109: A `JobOutcome` for a folder whose job.log is exactly the one-line upload or
-- prior_failed_start(dest)  ·L132: The record of a job that ended before its script started: its outcome,
-- _outcome(label, region, rc, status, prestart_phase=None)  ·L141
-- _record_outcome(dest, outcome)  ·L148: Write a job's outcome record atomically (temp file + rename).
-- read_outcome(dest)  ·L158: The job's `JobOutcome`, or None when it has not ended. An outcome file
-- strip_inline_comment(line)  ·L173: Return `line` with any trailing ``#`` comment removed, quote-aware.
-- parse_jobs(text)  ·L216: Parse a jobs file: each non-blank, non-comment line is 'LABEL = PARAMS'.
-- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L246: Total worst-case cost: every job runs to its wall cap. Concurrency does
-- budget_guard_shards(entries, max_minutes, budget_eur)  ·L254: Enforce --budget against the worst-case spend of every shard, or raise.
-- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L285: Single-shard budget guard: the one-region case of budget_guard_shards.
-- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L290: Clamp requested parallelism to what compute-quota headroom allows.
-- parse_regions(text)  ·L328: Parse `--regions A,B,C` into an ordered, de-duplicated region list.
-- allocate_concurrency(caps, max_parallel)  ·L346: Split a global live-instance ceiling across regions, never past each cap.
-- shard_jobs(jobs, weights)  ·L376: Deal jobs to regions in proportion to each region's allocated concurrency.
-- @dataclass class Shard  ·L395: One region's slice of a sweep: where to launch, how wide, and which jobs.
-  - with_plan(self, concurrency, jobs)  ·L404
-- _prepare_shard(cloud, region, flavor, image, max_parallel, *, warn=True)  ·L409: Resolve one region: connect, pick the flavor/image, read its own quota.
-- @dataclass class RegionDrop  ·L435: A requested region that cannot host the sweep, and why. The raw `region`
-  - @property label(self) -> str  ·L444
-- _prepare_shards(cloud, regions, flavor, image, max_parallel)  ·L448: Resolve every requested region; return (shards, drops).
-- const _REFUSAL_TAIL  ·L471
-- _region_refusal(cloud, drops, *, all_dropped)  ·L478: The informative refusal message when the sweep cannot proceed: every
-- _warn_region_drops(cloud, drops, surviving)  ·L493: Graceful-degrade: print a warning per dropped region (reason + who occupies
-- _flavor_vcpus(conn, flavor_name)  ·L505: Read the vCPU count for a flavor from the compute API, or raise.
-- _failure_status(exc)  ·L516: Label a per-job failure for the job record. A teardown strand reads as
-- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L531: Run run_one(job) across up to max_workers threads (one instance per job);
-- _attach_dir(dest)  ·L547
-- _persist_record(dest, rec)  ·L551: Write an attach record atomically (temp file + rename), so a process killed
-- _write_pending_record(dest, *, label, cloud, region, name, remote_script, fetch, into, cap_seconds)  ·L564: Record the job BEFORE its instance boots.
-- _write_attach_record(dest, *, label, cloud, region, name, server_id, ip, keyfile, remote_script, fetch, into, cap_seconds)  ·L581: Upgrade the pending record to a full one: the boot-time facts plus a
-- _close_job(dest, outcome)  ·L598: End a job: write its outcome, THEN drop its attach record. The order is
-- _close_unrecoverable(dest, outcome)  ·L606: Record a job that ended badly (its VM lost, orphaned, or its launch
-- _clear_previous_attempt(dest)  ·L622: Before a new attempt, remove what an earlier attempt that failed before
-- _clear_attach_record(dest)  ·L637: Drop the attach dir (record + key copy) after a clean finalize + teardown;
-- _load_attach_records(into)  ·L643: Every persisted attach record under <into> (in-flight or interrupted jobs).
-- job_state(into, label)  ·L656: Where one job of the jobs file stands, from what is on local disk:
-- _status_for_outcome(outcome, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L682: Map a follow outcome to the sweep's (rc, status) record fields.
-- _finalize(ip, keyfile, dest, fetch, outcome, *, elapsed_s=None, cap_seconds=None)  ·L700: Collect a followed job: pull the authoritative job.log, then the artifacts.
-- _job_warn(label)  ·L727: A labelled stderr sink for the poll loop's must-not-miss lines.
-- _heal_ingress_before_reattach(conn, rec, cidr, emit=print)  ·L741: Make sure this VM's security group still admits us, BEFORE the first SSH.
-- _recorded_prestart(dest, rec)  ·L759: The pre-start failure this job's current attempt already recorded, or
-- _reattach_records(cloud, region, into, max_parallel) -> int  ·L771: Re-attach to every persisted in-flight job under <into>, collect and tear
-- @dataclass class ResumeWork  ·L865: What `--resume --jobs FILE` finds on disk for the jobs of FILE.
-- _resume_pending(into, jobs_file, script, fetch, rerun_failed_start=False)  ·L881: The jobs of `jobs_file` that `--resume` would launch, as a `ResumeWork`.
-- resume_sweep(cloud=None, region=None, regions=None, into='cloud-sweep', max_parallel=4, jobs_file=None, uploads=(), script=None, fetch=None, max_minutes=30, budget_eur=None, flavor=None, image=None, …  ·L907: Continue an interrupted sweep: re-attach what is running, then launch what
-- _upload_excludes(src, into)  ·L964: Exclude the sweep's own results dir when it lives inside an upload source.
-- class UploadFailed(RuntimeError)  ·L979: An attempt's upload to its instance failed; the instance is torn down
-  - __init__(self, region, status)  ·L985
-- _prestart_status(phase, region, status)  ·L991
-- _retry_regions(cloud, failed, alternates)  ·L996: The regions an upload retry may use, in order: the sweep's other region
-- pick_retry_shard(cloud, failed, alternates, budget_eur, image=None, _prepare=None)  ·L1017: Choose the region a job whose upload failed in `failed` is retried in.
-- _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes, alternates=(), budget_eur=None, image=None)  ·L1054: Build the per-job runner bound to one region shard (provision -> upload ->
-- @dataclass class LaunchPlan  ·L1192: Everything a launch is decided on, resolved before any instance exists:
-- _plan_launch(*, cloud, region, regions, flavor, image, jobs, uploads, max_parallel, max_minutes, budget_eur, strict_regions) -> LaunchPlan  ·L1204: The refusing half of a launch: validate uploads, resolve and clamp the
-- _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L1249: Plan and run a list of jobs: shard across regions, guard the budget, fan
-- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L1322
-- _fresh_jobs(jobs_file, script, fetch, plan_only)  ·L1347: Validate a fresh sweep's spec and return its parsed jobs, or raise.
-- @dataclass class Preflight  ·L1361: What a sweep that passed its pre-flight is about to launch.
-- preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=Non…  ·L1368: Run every refusal `run_sweep` would meet before launching, and launch nothing.
-- _resume_static_plan(*, region, regions, flavor, jobs, uploads, max_minutes, budget_eur)  ·L1407: The resume pre-flight: spec checks and the budget guard on static prices,
-- _campaign_state(into)  ·L1440: {label: (attach record or None, outcome or None)} for every job folder
-- _running(state)  ·L1463: Labels whose job is running: an attach record with no outcome written
-- format_outcome_line(outcome)  ·L1471: The one line `--wait-next` prints: label, region, rc, status.
-- wait_next_job(into, *, poll_interval=WAIT_POLL_S, _sleep=time.sleep, emit=print)  ·L1477: Block until the next job of the campaign under <into> ends; print its line.
+- const CONTROLLER_PID  ·L54
+- const JOB_LOG  ·L57
+- const OUTCOME  ·L63
+- const PRESTART_PHASES  ·L67
+- const WAIT_POLL_S  ·L70
+- @dataclass class JobOutcome  ·L74: How one job ended, as `<into>/<label>/outcome.json`.
+  - @property failed_before_start(self) -> bool  ·L91
+  - to_json(self)  ·L94
+  - @classmethod from_json(cls, text)  ·L98
+- const _LEGACY_PRESTART_MARKERS  ·L107
+- const _LEGACY_LOG_PREFIX  ·L111
+- legacy_failed_start(dest)  ·L114: A `JobOutcome` for a folder whose job.log is exactly the one-line upload or
+- prior_failed_start(dest)  ·L137: The record of a job that ended before its script started: its outcome,
+- _outcome(label, region, rc, status, prestart_phase=None)  ·L146
+- _record_outcome(dest, outcome)  ·L153: Write a job's outcome record atomically (temp file + rename).
+- read_outcome(dest)  ·L163: The job's `JobOutcome`, or None when it has not ended. An outcome file
+- strip_inline_comment(line)  ·L178: Return `line` with any trailing ``#`` comment removed, quote-aware.
+- parse_jobs(text)  ·L221: Parse a jobs file: each non-blank, non-comment line is 'LABEL = PARAMS'.
+- worst_case_eur(n_jobs, price_eur_hr, max_minutes)  ·L251: Total worst-case cost: every job runs to its wall cap. Concurrency does
+- budget_guard_shards(entries, max_minutes, budget_eur)  ·L259: Enforce --budget against the worst-case spend of every shard, or raise.
+- budget_guard(flavor, price_eur_hr, n_jobs, max_minutes, budget_eur)  ·L290: Single-shard budget guard: the one-region case of budget_guard_shards.
+- clamp_concurrency(max_parallel, vcpus_per_instance, cores_used, cores_max, instances_used, instances_max)  ·L295: Clamp requested parallelism to what compute-quota headroom allows.
+- parse_regions(text)  ·L333: Parse `--regions A,B,C` into an ordered, de-duplicated region list.
+- allocate_concurrency(caps, max_parallel)  ·L351: Split a global live-instance ceiling across regions, never past each cap.
+- shard_jobs(jobs, weights)  ·L381: Deal jobs to regions in proportion to each region's allocated concurrency.
+- @dataclass class Shard  ·L400: One region's slice of a sweep: where to launch, how wide, and which jobs.
+  - with_plan(self, concurrency, jobs)  ·L409
+- _prepare_shard(cloud, region, flavor, image, max_parallel, *, warn=True)  ·L414: Resolve one region: connect, pick the flavor/image, read its own quota.
+- @dataclass class RegionDrop  ·L440: A requested region that cannot host the sweep, and why. The raw `region`
+  - @property label(self) -> str  ·L449
+- _prepare_shards(cloud, regions, flavor, image, max_parallel)  ·L453: Resolve every requested region; return (shards, drops).
+- const _REFUSAL_TAIL  ·L476
+- _region_refusal(cloud, drops, *, all_dropped)  ·L483: The informative refusal message when the sweep cannot proceed: every
+- _warn_region_drops(cloud, drops, surviving)  ·L498: Graceful-degrade: print a warning per dropped region (reason + who occupies
+- _flavor_vcpus(conn, flavor_name)  ·L510: Read the vCPU count for a flavor from the compute API, or raise.
+- _failure_status(exc)  ·L521: Label a per-job failure for the job record. A teardown strand reads as
+- _fan_out(jobs, run_one, max_workers, on_result=None)  ·L536: Run run_one(job) across up to max_workers threads (one instance per job);
+- _attach_dir(dest)  ·L552
+- _persist_record(dest, rec)  ·L556: Write an attach record atomically (temp file + rename), so a process killed
+- _claim_job(dest)  ·L569: Name this process as the job's follower (`CONTROLLER_PID`), atomically.
+- read_controller_pid(dest)  ·L579: The pid `_claim_job` recorded for this job, or None when there is none (a
+- _write_pending_record(dest, *, label, cloud, region, name, remote_script, fetch, into, cap_seconds)  ·L594: Record the job BEFORE its instance boots.
+- _write_attach_record(dest, *, label, cloud, region, name, server_id, ip, keyfile, remote_script, fetch, into, cap_seconds)  ·L611: Upgrade the pending record to a full one: the boot-time facts plus a
+- _close_job(dest, outcome)  ·L628: End a job: write its outcome, THEN drop its attach record. The order is
+- _close_unrecoverable(dest, outcome)  ·L636: Record a job that ended badly (its VM lost, orphaned, or its launch
+- _clear_previous_attempt(dest)  ·L652: Before a new attempt, remove what an earlier attempt that failed before
+- _clear_attach_record(dest)  ·L667: Drop the attach dir (record, key copy, controller pid) after a verified teardown;
+- _load_attach_records(into)  ·L673: Every persisted attach record under <into> (in-flight or interrupted jobs).
+- job_state(into, label)  ·L686: Where one job of the jobs file stands, from what is on local disk:
+- _status_for_outcome(outcome, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L712: Map a follow outcome to the sweep's (rc, status) record fields.
+- _finalize(ip, keyfile, dest, fetch, outcome, *, elapsed_s=None, cap_seconds=None)  ·L730: Collect a followed job: pull the authoritative job.log, then the artifacts.
+- _job_warn(label)  ·L757: A labelled stderr sink for the poll loop's must-not-miss lines.
+- _heal_ingress_before_reattach(conn, rec, cidr, emit=print)  ·L771: Make sure this VM's security group still admits us, BEFORE the first SSH.
+- _recorded_end(dest, rec)  ·L789: The outcome this job's current attempt already recorded, or None. An
+- _recorded_prestart(dest, rec)  ·L801: The pre-start failure this job's current attempt already recorded, or None.
+- _check_strays_for_records(records, cloud, region)  ·L807: The resume's stray check, run in every (cloud, region) the in-flight
+- _reattach_records(cloud, region, into, max_parallel) -> int  ·L823: Re-attach to every persisted in-flight job under <into>, collect and tear
+- @dataclass class ResumeWork  ·L922: What `--resume --jobs FILE` finds on disk for the jobs of FILE.
+- _resume_pending(into, jobs_file, script, fetch, rerun_failed_start=False)  ·L938: The jobs of `jobs_file` that `--resume` would launch, as a `ResumeWork`.
+- resume_sweep(cloud=None, region=None, regions=None, into='cloud-sweep', max_parallel=4, jobs_file=None, uploads=(), script=None, fetch=None, max_minutes=30, budget_eur=None, flavor=None, image=None, …  ·L964: Continue an interrupted sweep: re-attach what is running, then launch what
+- _upload_excludes(src, into)  ·L1021: Exclude the sweep's own results dir when it lives inside an upload source.
+- class UploadFailed(RuntimeError)  ·L1036: An attempt's upload to its instance failed; the instance is torn down
+  - __init__(self, region, status)  ·L1042
+- _prestart_status(phase, region, status)  ·L1048
+- _retry_regions(cloud, failed, alternates)  ·L1053: The regions an upload retry may use, in order: the sweep's other region
+- pick_retry_shard(cloud, failed, alternates, budget_eur, image=None, _prepare=None)  ·L1074: Choose the region a job whose upload failed in `failed` is retried in.
+- _make_run_one(cloud, shard, upload_pairs, script, fetch, into, max_minutes, alternates=(), budget_eur=None, image=None)  ·L1111: Build the per-job runner bound to one region shard (provision -> upload ->
+- @dataclass class LaunchPlan  ·L1260: Everything a launch is decided on, resolved before any instance exists:
+- _plan_launch(*, cloud, region, regions, flavor, image, jobs, uploads, max_parallel, max_minutes, budget_eur, strict_regions) -> LaunchPlan  ·L1272: The refusing half of a launch: validate uploads, resolve and clamp the
+- _launch_jobs(*, cloud, region, regions, flavor, image, jobs, uploads, script, fetch, into, max_parallel, max_minutes, budget_eur, plan_only, strict_regions) -> int  ·L1317: Plan and run a list of jobs: shard across regions, guard the budget, fan
+- run_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=None, pla…  ·L1390
+- _fresh_jobs(jobs_file, script, fetch, plan_only)  ·L1415: Validate a fresh sweep's spec and return its parsed jobs, or raise.
+- @dataclass class Preflight  ·L1429: What a sweep that passed its pre-flight is about to launch.
+- preflight_sweep(cloud=None, region=None, regions=None, flavor=None, uploads=(), script=None, jobs_file=None, fetch=None, into='cloud-sweep', max_parallel=4, max_minutes=30, budget_eur=None, image=Non…  ·L1436: Run every refusal `run_sweep` would meet before launching, and launch nothing.
+- _resume_static_plan(*, region, regions, flavor, jobs, uploads, max_minutes, budget_eur)  ·L1475: The resume pre-flight: spec checks and the budget guard on static prices,
+- _campaign_state(into)  ·L1508: {label: (attach record or None, outcome or None)} for every job folder
+- _running(state)  ·L1531: Labels whose job is running: an attach record with no outcome written
+- format_outcome_line(outcome)  ·L1539: The one line `--wait-next` prints: label, region, rc, status.
+- wait_next_job(into, *, poll_interval=WAIT_POLL_S, _sleep=time.sleep, emit=print)  ·L1545: Block until the next job of the campaign under <into> ends; print its line.
 
 ### tests/conftest.py
 _Suite-wide guard: the tests are hermetic and touch no network._
 - class NetworkAccessInTests(BaseException)  ·L13: A BaseException so that production code's broad `except Exception` (the
 - @pytest.fixture _no_network(monkeypatch)  ·L20
+
+### tests/test_cancel.py
+_`flux-compute cancel`: stop one job by label (or every one in a folder) from_
+- _job(into, label, *, pid=None, cloud='flux-ovh', region='UK1', attachable=True)  ·L24
+- class _Fleet  ·L45: Records every call the cancel makes, in order.
+  - __init__(self, strand=False, connect_fails=False)  ·L48
+  - connect(self, cloud=None, region=None)  ·L52
+  - teardown(self, conn, name, server_id)  ·L58
+  - stop(self, pid, emit=print)  ·L63
+  - pull_log(self, ip, keyfile, path)  ·L67
+  - fetch(self, ip, keyfile, remote, local)  ·L71
+  - kw(self)  ·L75
+  - of(self, kind)  ·L79
+- test_cancel_one_label_stops_its_follower_tears_down_and_records_it(tmp_path)  ·L83
+- test_a_label_not_in_flight_is_refused_in_one_line_with_exit_2(tmp_path, capsys)  ·L104
+- test_all_with_nothing_in_flight_is_refused_with_exit_2(tmp_path, capsys)  ·L116
+- test_label_and_all_are_exclusive_and_one_is_required(tmp_path)  ·L123
+- test_all_cancels_every_job_and_stops_a_shared_follower_once(tmp_path)  ·L130
+- test_stopping_a_shared_follower_names_the_jobs_it_leaves(tmp_path)  ·L144
+- test_plan_prints_and_touches_nothing(tmp_path, capsys)  ·L160
+- test_a_pending_record_is_torn_down_without_a_fetch(tmp_path)  ·L175
+- test_a_teardown_strand_raises_and_keeps_the_record(tmp_path)  ·L183
+- test_missing_credentials_raise_before_the_follower_is_touched(tmp_path)  ·L191
+- test_a_records_own_cloud_wins_over_the_flag(tmp_path)  ·L201
+- class _Procs  ·L212: A process table: `alive` pids answer signal 0; SIGTERM ends a pid unless
+  - __init__(self, alive, commands, ignores_term=(), unkillable=(), denied=())  ·L216
+  - kill(self, pid, sig)  ·L222
+  - run(self, argv, capture_output=True, text=True)  ·L235
+- _stop(procs, pid, **kw)  ·L242
+- test_a_live_flux_compute_follower_is_stopped_with_sigterm()  ·L249
+- test_a_follower_that_ignores_sigterm_gets_sigkill()  ·L255
+- test_a_follower_that_outlives_sigkill_raises()  ·L261
+- test_a_gone_follower_is_reported_not_signalled()  ·L267
+- test_a_reused_pid_is_left_alone()  ·L273
+- test_a_pid_this_shell_may_not_signal_raises_with_the_hatch_advice()  ·L279
+- test_an_unreadable_pid_file_raises_with_its_path(tmp_path)  ·L285
+- test_cancel_is_a_refusal_type_the_cli_maps_to_exit_2()  ·L294
 
 ### tests/test_cli.py
 _Tests for the command-line entry point. No network, no credentials._
@@ -871,6 +931,46 @@ _Campaign recovery: outcome records, the upload retry in another region,_
 - test_a_launcher_copy_failure_is_a_failed_start(tmp_path, monkeypatch)  ·L576
 - test_the_launcher_exits_the_prefork_code_only_before_its_fork()  ·L587
 - test_campaign_state_reads_a_record_gone_mid_scan_as_ended(tmp_path, monkeypatch)  ·L597
+
+### tests/test_teardown_and_strays.py
+_An instance never outlives its local handle, and the resume's stray check_
+- _shard(region='UK1')  ·L27
+- class _Compute  ·L35
+  - __init__(self)  ·L36
+  - find_image(self, name)  ·L39
+  - find_flavor(self, name)  ·L42
+  - create_keypair(self, name, public_key)  ·L45
+  - create_server(self, **kwargs)  ·L48
+  - wait_for_server(self, server, status=None, wait=None)  ·L52
+  - delete_server(self, server_id, force=False)  ·L55
+  - wait_for_delete(self, server, wait=0)  ·L58
+  - delete_keypair(self, name, ignore_missing=True)  ·L61
+- class _Network  ·L65
+  - __init__(self)  ·L66
+  - find_network(self, name)  ·L69
+  - create_security_group(self, name=None, description=None)  ·L72
+  - create_security_group_rule(self, **kwargs)  ·L75
+  - delete_security_group(self, sg_id, ignore_missing=True)  ·L78
+- _client()  ·L82
+- @pytest.fixture local_boot(monkeypatch)  ·L88: Cut the real-network steps of `_gpu_instance` out.
+- _rsync_255(*a, **kw)  ·L94
+- test_a_sweep_upload_failure_tears_down_before_the_failure_is_recorded(tmp_path, monkeypatch, local_boot)  ·L100
+- test_a_run_upload_failure_tears_down_and_the_error_propagates(tmp_path, monkeypatch, local_boot)  ·L122
+- class _Instance  ·L142: A `_gpu_instance` stand-in that sees the job folder at teardown time and
+  - __init__(self, monkeypatch, tmp_path, dest_of, fail=None)  ·L146
+- class _ProcessKilled(BaseException)  ·L171: What a SIGKILL of the controller looks like from inside: nothing after it runs.
+- _run(tmp_path, monkeypatch, fail=None)  ·L175
+- test_a_collected_job_keeps_its_record_until_the_teardown_is_verified(tmp_path, monkeypatch)  ·L183
+- test_a_kill_during_the_teardown_leaves_a_record_and_the_outcome(tmp_path, monkeypatch)  ·L192
+- test_a_teardown_strand_after_a_collected_job_is_never_ok_but_keeps_the_result(tmp_path, monkeypatch)  ·L201
+- test_the_launching_process_names_itself_as_the_follower(tmp_path, monkeypatch)  ·L211
+- @pytest.mark.parametrize test_resume_finishes_the_teardown_of_a_collected_job_and_keeps_its_outcome(tmp_path, monkeypatch, server_alive)  ·L222
+- _in_flight(into, label='a', cloud='flux-ovh', region='UK1')  ·L246
+- _no_credentials(cloud=None, region=None)  ·L258
+- test_resume_raises_when_the_stray_check_cannot_read_credentials(tmp_path, monkeypatch)  ·L262
+- test_the_cli_resume_exits_nonzero_with_the_credential_message(tmp_path, monkeypatch, capsys)  ·L279
+- test_the_stray_check_connects_with_each_records_launch_cloud(tmp_path, monkeypatch)  ·L289: The launch connected with `--cloud flux-ovh`; a resume line without
+- test_a_strict_stray_check_raises_when_the_server_list_fails(capsys)  ·L309
 
 ## Other source files
 

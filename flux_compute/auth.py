@@ -105,6 +105,36 @@ def configured_regions(cloud: str | None = None):
     return names or [None]
 
 
+# Where openstacksdk looks for clouds.yaml, in its own search order.
+CLOUDS_YAML_SEARCH = ("$OS_CLIENT_CONFIG_FILE", "./clouds.yaml",
+                      "~/.config/openstack/clouds.yaml", "/etc/openstack/clouds.yaml")
+
+
+def credential_source(cloud: str | None) -> str:
+    """Where `connect(cloud=...)` reads credentials from, in words for an error."""
+    if cloud is None:
+        return "the OS_* environment (OS_AUTH_URL and the rest of a sourced openrc.sh)"
+    env_file = os.environ.get("OS_CLIENT_CONFIG_FILE")
+    first = f"{env_file} (OS_CLIENT_CONFIG_FILE)" if env_file else "~/.config/openstack/clouds.yaml"
+    return (f"the clouds.yaml entry {cloud!r}, read from {first} "
+            f"(openstacksdk searches {', '.join(CLOUDS_YAML_SEARCH)})")
+
+
+def credential_error(what: str, cloud: str | None, region: str | None,
+                     exc: BaseException) -> RuntimeError:
+    """The error a command raises when a check it must run cannot read credentials.
+
+    It names the credential file looked for and the usual cause in this family:
+    a sandboxed shell, which is denied ~/.config/openstack, so the command has to
+    be sent hatched."""
+    first_line = (str(exc).splitlines() or [type(exc).__name__])[0]
+    return RuntimeError(
+        f"{what} could not connect to cloud {cloud!r}, region "
+        f"{region or '(default)'}: {first_line}\n"
+        f"It looked for {credential_source(cloud)}. A sandboxed shell is denied "
+        "~/.config/openstack: send the command hatched (outside the sandbox).")
+
+
 def connect(cloud: str | None = None, region: str | None = None):
     """Open an authenticated connection to the OVH project, or raise the remedy.
 

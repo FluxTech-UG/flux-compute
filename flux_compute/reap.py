@@ -173,19 +173,26 @@ def describe(c: Candidate) -> str:
             f"      [{c.bucket}] {c.why}")
 
 
-def warn_strays(conn, full=False, now=None):
+def warn_strays(conn, full=False, now=None, strict=False):
     """Advisory stray check run at the start of every CLI command that
     connects: surface flux-compute instances that are past TTL, legacy, or
     keep-flagged, with their accrued cost, and point at `flux-compute reap`.
 
     Never deletes anything (an unrelated command must not turn destructive).
     A failed server list is reported and skipped rather than breaking the
-    command the user actually asked for. Returns the surfaced candidates.
+    command the user actually asked for, except with `strict=True`, where it
+    raises: `sweep --resume` is a fleet health read, and a fleet read as
+    healthy without the check having run is the wrong answer. Returns the
+    surfaced candidates.
     """
     try:
         now = now or datetime.now(timezone.utc)
         cands = find_candidates(list(conn.compute.servers(details=True)), now)
     except Exception as exc:
+        if strict:
+            raise RuntimeError(
+                f"stray-instance check failed: the server list could not be read "
+                f"({type(exc).__name__}: {str(exc)[:160]})") from exc
         print(f"note: stray-instance check skipped "
               f"({type(exc).__name__}: {str(exc)[:80]})", file=sys.stderr)
         return []

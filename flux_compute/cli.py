@@ -435,6 +435,26 @@ def main(argv=None) -> int:
                            "region. Live, unscanned-region, and unreadable records are left "
                            "alone. Repeatable.")
 
+    cancel = sub.add_parser(
+        "cancel",
+        help="Stop in-flight sweep jobs by label: stop the process following each, "
+             "fetch what it wrote, delete its instance, keypair and security group, "
+             "and record the job as cancelled.",
+    )
+    cancel.add_argument("--into", required=True, metavar="DIR",
+                        help="The sweep's results folder (the --into it was launched with).")
+    which = cancel.add_mutually_exclusive_group(required=True)
+    which.add_argument("--label", action="append", default=None, metavar="LABEL",
+                       help="The job to cancel (repeatable). Refused, exit 2, when it has "
+                            "no .flux_attach/ record under --into.")
+    which.add_argument("--all", action="store_true", dest="take_all",
+                       help="Cancel every in-flight job under --into.")
+    cancel.add_argument("--cloud", default=None,
+                        help="clouds.yaml entry for a record that names none (a record's "
+                             "own cloud, the one it was launched with, is used first).")
+    cancel.add_argument("--plan", action="store_true",
+                        help="Print what the cancel would do and do nothing (offline).")
+
     push = sub.add_parser(
         "push",
         help="Upload a local artifact directory to an OVH Object Storage container.",
@@ -544,6 +564,10 @@ def main(argv=None) -> int:
             return run_reap(cloud=args.cloud, region=args.region, regions=args.regions,
                             yes=args.yes, take_all=args.take_all, force=args.force,
                             sweep_local=args.sweep_local or ())
+
+        if args.command == "cancel":
+            from .cancel import main_cancel
+            return main_cancel(args)
 
         if args.command == "push":
             from .objstore import run_push
