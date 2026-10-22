@@ -321,15 +321,129 @@ def current_ingress_cidr():
     return None if cidr == UNKNOWN_CIDR else cidr
 
 
-def _wait_ssh(host, port=22, timeout=180):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=5):
-                return True
-        except OSError:
-            time.sleep(5)
-    return False
+# The boot's two waits. ACTIVE is polled every ACTIVE_POLL_S and narrated (one line
+# per change of status or task state), so a server that sits in BUILD for fifteen
+# minutes is seen doing it. SSH then gets SSH_WAIT_S: a fresh OVH image takes three
+# to eight minutes from ACTIVE to sshd on a bad day, and a fixed three minutes
+# called that a failure. While it waits, every SSH_INGRESS_RECHECK_S the launcher's
+# public address is read again: the group admits only the /32 read at launch, and a
+# launcher on a mobile or NAT pool moves between the launch and the first SSH.
+ACTIVE_WAIT_S = 900
+ACTIVE_POLL_S = 10
+SSH_WAIT_S = 600
+SSH_PROBE_S = 5
+SSH_INGRESS_RECHECK_S = 60
+
+
+@dataclass
+class SshWait:
+    """How the wait for port 22 went: whether it opened, how long it took, the
+    address the group admitted at launch, the address last seen, whether the two
+    differ, and the message of every ingress repair made meanwhile."""
+
+    opened: bool
+    waited_s: float
+    launch_cidr: str
+    last_cidr: str
+    moved: bool
+    healed: list
+
+
+def _ssh_port_open(host, port):
+    try:
+        with socket.create_connection((host, port), timeout=5):
+            return True
+    except OSError:
+        return False
+
+
+def _wait_ssh(host, port=22, timeout=SSH_WAIT_S, *, conn=None, sg_name=None, launch_cidr=None,
+              recheck=SSH_INGRESS_RECHECK_S, probe=None, clock=time.time, sleep=time.sleep,
+              emit=print):
+    """Wait for port 22 on `host`, reopening the group's SSH ingress if this machine's
+    public address moves meanwhile.
+
+    The probe runs first, so an open door costs no address read. Then every
+    `recheck` seconds of waiting (only when `conn` and `sg_name` are given, and the
+    group was not opened to the world at launch) the public address is read again;
+    when it differs from the last one seen, `ensure_ssh_ingress` admits it (it never
+    raises) and its message is kept in `healed`. The result says whether the address
+    moved, so a failure can name the cause instead of "timeout".
+    """
+    probe = probe or _ssh_port_open
+    start = clock()
+    last_cidr = launch_cidr
+    healed = []
+    rechecking = conn is not None and sg_name is not None and launch_cidr != UNKNOWN_CIDR
+    next_recheck = recheck
+    opened = False
+    while True:
+        if probe(host, port):
+            opened = True
+            break
+        waited = clock() - start
+        if waited >= timeout:
+            break
+        if rechecking and waited >= next_recheck:
+            next_recheck += recheck
+            now_cidr = current_ingress_cidr()
+            if now_cidr is not None and now_cidr != last_cidr:
+                check = ensure_ssh_ingress(conn, sg_name, cidr=now_cidr, emit=emit)
+                healed.append(check.message)
+                last_cidr = now_cidr
+        sleep(SSH_PROBE_S)
+    return SshWait(opened, clock() - start, launch_cidr, last_cidr,
+                   last_cidr != launch_cidr, healed)
+
+
+def _fault_text(fault):
+    if fault is None:
+        return "none"
+    if isinstance(fault, dict):
+        return str(fault.get("message") or fault)
+    return str(getattr(fault, "message", fault))
+
+
+def _console_tail(conn, server, lines=30):
+    """The last `lines` of the server's console log, or one line saying why it
+    could not be read. Never raises: it decorates an error message."""
+    try:
+        out = conn.compute.get_server_console_output(server, length=lines)
+        text = out.get("output") if isinstance(out, dict) else getattr(out, "output", out)
+        return "\n".join(str(text or "").splitlines()[-lines:])
+    except Exception as exc:        # noqa: BLE001 - the error being reported is the news
+        return f"(console log unavailable: {type(exc).__name__}: {exc})"
+
+
+def _wait_active(conn, server, wait=ACTIVE_WAIT_S, poll=ACTIVE_POLL_S, emit=print,
+                 clock=time.time, sleep=time.sleep):
+    """Poll the server until ACTIVE, narrating each change of (status, task state)
+    with the minutes elapsed. ERROR raises at once with the fault; the timeout
+    raises with the last state and the console log's tail, so a server that never
+    booted says what it was doing."""
+    start = clock()
+    last = None
+    while True:
+        current = conn.compute.get_server(server.id)
+        status = getattr(current, "status", None)
+        task = getattr(current, "task_state", None)
+        fault = getattr(current, "fault", None)
+        if (status, task) != last:
+            last = (status, task)
+            line = f"  {(clock() - start) / 60:.1f} min: status {status}"
+            emit(line + (f", task {task}" if task else ""))
+        if status == "ACTIVE":
+            return current
+        if status == "ERROR":
+            raise RuntimeError(
+                f"server {server.id} went to ERROR while booting: {_fault_text(fault)}; "
+                f"console log tail:\n{_console_tail(conn, server)}")
+        if clock() - start >= wait:
+            raise RuntimeError(
+                f"server {server.id} never reached ACTIVE within {wait} s: last status {status}, "
+                f"task state {task}, fault {_fault_text(fault)}; console log tail:\n"
+                f"{_console_tail(conn, server)}")
+        sleep(poll)
 
 
 def _server_ipv4(server):
@@ -574,13 +688,23 @@ def _gpu_instance(conn, spec, name, ttl_minutes, keep=False):
             networks=[{"uuid": network.id}], key_name=name,
             security_groups=[{"name": name}],
             metadata=ttl_metadata(ttl_minutes, keep=keep))
-        server = conn.compute.wait_for_server(server, status="ACTIVE", wait=900)
+        server = _wait_active(conn, server)
         ip = _server_ipv4(server)
         print(f"ACTIVE: {server.id} @ {ip}")
 
-        if not _wait_ssh(ip):
-            raise RuntimeError(f"SSH to {ip} never opened within timeout")
-        print("SSH up.")
+        res = _wait_ssh(ip, conn=conn, sg_name=name, launch_cidr=cidr)
+        if not res.opened:
+            if res.moved:
+                where = (f"moved from {res.launch_cidr} to {res.last_cidr} "
+                         f"(ingress reopened: {'; '.join(res.healed)})")
+            else:
+                where = f"stayed {res.launch_cidr}"
+            raise RuntimeError(
+                f"SSH to {ip} never opened within {int(res.waited_s)} s; this machine's public "
+                f"address {where}; console log tail:\n{_console_tail(conn, server)}")
+        print(f"SSH up after {res.waited_s:.0f} s"
+              + (f" (public address moved to {res.last_cidr}, ingress reopened)" if res.moved else "")
+              + ".")
         yield server, ip, keyfile
     finally:
         if keep and server is not None:

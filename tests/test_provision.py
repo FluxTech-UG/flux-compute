@@ -128,8 +128,14 @@ class _FakeInstanceCompute:
             addresses={"Ext-Net": [{"version": 4, "addr": "10.0.0.1"}]},
         )
 
-    def wait_for_server(self, server, status=None, wait=None):
-        return server
+    def get_server(self, server_id):
+        return SimpleNamespace(
+            id=server_id, status="ACTIVE", task_state=None, fault=None,
+            addresses={"Ext-Net": [{"version": 4, "addr": "10.0.0.1"}]},
+        )
+
+    def get_server_console_output(self, server, length=None):
+        return {"output": "[    0.000000] Linux version 6.8\ncloud-init: starting\n"}
 
     def delete_server(self, server_id, force=False):
         self.deleted.append(server_id)
@@ -168,7 +174,8 @@ _SPEC = SimpleNamespace(image="Ubuntu 24.04", flavor="b3-8", network="Ext-Net")
 def local_boot(monkeypatch):
     """Cut the two real-network steps out of _gpu_instance."""
     monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
-    monkeypatch.setattr(provision, "_wait_ssh", lambda ip, **kw: True)
+    monkeypatch.setattr(provision, "_wait_ssh",
+                        lambda ip, **kw: provision.SshWait(True, 12.0, "1.2.3.4/32", "1.2.3.4/32", False, []))
 
 
 def test_keep_does_not_swallow_a_body_exception(local_boot, capsys):
@@ -573,3 +580,153 @@ def test_ensure_uses_the_caller_supplied_cidr_without_re_reading(monkeypatch):
     check = provision.ensure_ssh_ingress(conn, "sg", cidr="9.9.9.9/32", emit=lambda _m: None)
     assert check.status == "healed"
     assert conn.network.created[0]["remote_ip_prefix"] == "9.9.9.9/32"
+
+
+# --- the boot: ACTIVE is polled and narrated, SSH waits long and reopens the door ----
+#
+# Both launches of 21 October died at OVH before the first image: one reached ACTIVE and
+# port 22 never opened in the fixed 180 s, the other sat in BUILD for fifteen minutes and
+# ended in a bare SDK timeout. The launcher's public address is in a mobile NAT pool and
+# the group admits only the /32 read at launch; the repair existed but never ran in the
+# first wait. Neither failure said what the server had been doing.
+
+def _ticking():
+    """A clock that advances only when the code under test sleeps."""
+    t = [0.0]
+    return (lambda: t[0]), (lambda s: t.__setitem__(0, t[0] + s))
+
+
+class _BootingCompute(_FakeInstanceCompute):
+    """get_server walks a scripted list of (status, task_state, fault), holding the last."""
+
+    def __init__(self, states, console="kernel: hello\n"):
+        super().__init__()
+        self.states, self.console, self.polls = list(states), console, 0
+
+    def get_server(self, server_id):
+        self.polls += 1
+        status, task, fault = self.states[min(self.polls, len(self.states)) - 1]
+        return SimpleNamespace(id=server_id, status=status, task_state=task, fault=fault,
+                               addresses={"Ext-Net": [{"version": 4, "addr": "10.0.0.1"}]})
+
+    def get_server_console_output(self, server, length=None):
+        return {"output": self.console}
+
+
+def test_ssh_wait_is_ten_minutes_rechecking_the_address_every_minute():
+    assert provision.SSH_WAIT_S == 600
+    assert provision.SSH_INGRESS_RECHECK_S == 60
+    assert provision.ACTIVE_WAIT_S == 900
+
+
+def test_wait_ssh_reopens_ingress_when_the_public_ip_moved(monkeypatch):
+    """The door opens the moment the moved address is admitted: the probe succeeds only
+    after the heal added its rule, and the result says the address moved."""
+    clock, sleep = _ticking()
+    reads = iter(["1.2.3.4/32", "9.9.9.9/32"])
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: next(reads, "9.9.9.9/32"))
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    door = {"open": False}
+    add = conn.network.create_security_group_rule
+
+    def _create(**kw):
+        add(**kw)
+        door["open"] = True
+    conn.network.create_security_group_rule = _create
+    lines = []
+    res = provision._wait_ssh("10.0.0.1", conn=conn, sg_name="sg", launch_cidr="1.2.3.4/32",
+                              probe=lambda host, port: door["open"], clock=clock, sleep=sleep,
+                              emit=lines.append)
+    assert res.opened and res.moved
+    assert res.launch_cidr == "1.2.3.4/32" and res.last_cidr == "9.9.9.9/32"
+    assert conn.network.created[0]["remote_ip_prefix"] == "9.9.9.9/32"
+    assert res.waited_s >= 2 * provision.SSH_INGRESS_RECHECK_S     # the second minute's read saw the move
+    assert any("9.9.9.9/32" in line for line in lines)
+
+
+def test_wait_ssh_timeout_says_the_address_stayed(monkeypatch):
+    clock, sleep = _ticking()
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
+    conn = _conn_with([_FakeRule("1.2.3.4/32")])
+    res = provision._wait_ssh("10.0.0.1", timeout=130, conn=conn, sg_name="sg", launch_cidr="1.2.3.4/32",
+                              probe=lambda host, port: False, clock=clock, sleep=sleep, emit=lambda m: None)
+    assert not res.opened and not res.moved and res.waited_s >= 130
+    assert conn.network.created == []                     # same address: nothing to repair
+
+
+def test_wait_ssh_returns_at_once_when_the_port_is_open(monkeypatch):
+    def _boom():
+        raise AssertionError("no address read when the door is already open")
+    monkeypatch.setattr(provision, "_public_ip_cidr", _boom)
+    clock, sleep = _ticking()
+    res = provision._wait_ssh("10.0.0.1", conn=_conn_with([]), sg_name="sg", launch_cidr="1.2.3.4/32",
+                              probe=lambda host, port: True, clock=clock, sleep=sleep, emit=lambda m: None)
+    assert res.opened and res.waited_s == 0
+
+
+def test_wait_active_narrates_each_change_and_returns_the_active_server():
+    comp = _BootingCompute([("BUILD", "scheduling", None), ("BUILD", "scheduling", None),
+                            ("BUILD", "spawning", None), ("ACTIVE", None, None)])
+    clock, sleep = _ticking()
+    lines = []
+    server = provision._wait_active(SimpleNamespace(compute=comp), SimpleNamespace(id="srv-1"),
+                                    wait=900, poll=10, emit=lines.append, clock=clock, sleep=sleep)
+    assert server.status == "ACTIVE" and server.id == "srv-1"
+    assert len(lines) == 3                                # a line per change, not per poll
+    assert "scheduling" in lines[0] and "spawning" in lines[1] and "ACTIVE" in lines[2]
+    assert "min" in lines[1]                              # each line carries when it happened
+
+
+def test_wait_active_timeout_names_the_last_state_and_the_console():
+    comp = _BootingCompute([("BUILD", "spawning", None)], console="kernel: hello\nnetworkd: no lease\n")
+    clock, sleep = _ticking()
+    with pytest.raises(RuntimeError, match="never reached ACTIVE within 60 s") as exc:
+        provision._wait_active(SimpleNamespace(compute=comp), SimpleNamespace(id="srv-1"),
+                               wait=60, poll=10, emit=lambda m: None, clock=clock, sleep=sleep)
+    msg = str(exc.value)
+    assert "status BUILD" in msg and "task state spawning" in msg
+    assert "networkd: no lease" in msg
+
+
+def test_wait_active_error_state_raises_at_once_with_the_fault():
+    comp = _BootingCompute([("ERROR", None, {"message": "No valid host was found", "code": 500})])
+    with pytest.raises(RuntimeError, match="No valid host was found"):
+        provision._wait_active(SimpleNamespace(compute=comp), SimpleNamespace(id="srv-1"),
+                               wait=60, poll=10, emit=lambda m: None, clock=lambda: 0.0, sleep=lambda s: None)
+    assert comp.polls == 1
+
+
+def test_console_tail_never_raises():
+    class _NoConsole:
+        def get_server_console_output(self, server, length=None):
+            raise RuntimeError("409 Conflict")
+    tail = provision._console_tail(SimpleNamespace(compute=_NoConsole()), SimpleNamespace(id="srv-1"))
+    assert "unavailable" in tail and "409" in tail
+
+
+def test_gpu_instance_ssh_failure_names_the_cause_and_tears_down(monkeypatch):
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
+    monkeypatch.setattr(provision, "_wait_ssh",
+                        lambda ip, **kw: provision.SshWait(False, 600.0, "1.2.3.4/32", "1.2.3.4/32", False, []))
+    conn = _instance_conn()
+    with pytest.raises(RuntimeError, match="never opened within 600 s") as exc:
+        with _gpu_instance(conn, _SPEC, "flux-compute-run-t3", ttl_minutes=30):
+            raise AssertionError("the body must not run")
+    msg = str(exc.value)
+    assert "stayed 1.2.3.4/32" in msg and "cloud-init: starting" in msg
+    assert conn.compute.deleted == ["srv-1"]
+
+
+def test_gpu_instance_passes_the_group_and_launch_address_to_the_ssh_wait(monkeypatch):
+    monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
+    seen = {}
+
+    def _wait(ip, **kw):
+        seen.update(kw, ip=ip)
+        return provision.SshWait(True, 1.0, "1.2.3.4/32", "1.2.3.4/32", False, [])
+    monkeypatch.setattr(provision, "_wait_ssh", _wait)
+    conn = _instance_conn()
+    with _gpu_instance(conn, _SPEC, "flux-compute-run-t4", ttl_minutes=30):
+        pass
+    assert seen["ip"] == "10.0.0.1" and seen["sg_name"] == "flux-compute-run-t4"
+    assert seen["launch_cidr"] == "1.2.3.4/32" and seen["conn"] is conn

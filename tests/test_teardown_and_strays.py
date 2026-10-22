@@ -49,8 +49,12 @@ class _Compute:
         return SimpleNamespace(id="srv-1",
                                addresses={"Ext-Net": [{"version": 4, "addr": "10.0.0.1"}]})
 
-    def wait_for_server(self, server, status=None, wait=None):
-        return server
+    def get_server(self, server_id):
+        return SimpleNamespace(id=server_id, status="ACTIVE", task_state=None, fault=None,
+                               addresses={"Ext-Net": [{"version": 4, "addr": "10.0.0.1"}]})
+
+    def get_server_console_output(self, server, length=None):
+        return {"output": "cloud-init: starting\n"}
 
     def delete_server(self, server_id, force=False):
         self.deleted_servers.append(server_id)
@@ -88,7 +92,8 @@ def _client():
 def local_boot(monkeypatch):
     """Cut the real-network steps of `_gpu_instance` out."""
     monkeypatch.setattr(provision, "_public_ip_cidr", lambda: "1.2.3.4/32")
-    monkeypatch.setattr(provision, "_wait_ssh", lambda ip, **kw: True)
+    monkeypatch.setattr(provision, "_wait_ssh",
+                        lambda ip, **kw: provision.SshWait(True, 12.0, "1.2.3.4/32", "1.2.3.4/32", False, []))
 
 
 def _rsync_255(*a, **kw):

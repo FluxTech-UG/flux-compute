@@ -211,39 +211,49 @@ _Provision a GPU instance, run work on it, and always tear it down._
 - _smoke_command(gpu_model)  ·L293: Choose the smoke check by device: a GPU card gets nvidia-smi, a CPU flavor
 - _public_ip_cidr()  ·L301
 - current_ingress_cidr()  ·L310: The /32 an instance's security group must admit for this caller to SSH in,
-- _wait_ssh(host, port=22, timeout=180)  ·L324
-- _server_ipv4(server)  ·L335
-- _ssh_cmd(keyfile)  ·L343
-- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L347
-- _scp_up(local, ip, keyfile, remote)  ·L354
-- _scp_down(ip, keyfile, remote, local, timeout=120)  ·L358: Copy a single home-relative remote file down to a local path. Used for the
-- parse_upload_spec(spec)  ·L366: Parse one ``--upload`` value into ``(local_src, remote_dest)``.
-- _rsync_up(local, ip, keyfile, dest, extra_excludes=())  ·L403
-- _rsync_down(ip, keyfile, remote, local)  ·L426
-- rsync_down_best_effort(ip, keyfile, remote, local, _rsync=None)  ·L433: Fetch artifacts without letting a failure abort the caller. Returns True
-- @dataclass class OomProbe  ·L460: A read of the VM's kernel log looking for OOM-killer evidence.
-- oom_evidence(kernel_log)  ·L473: Pure: scan a kernel-log excerpt for OOM-killer markers -> ``OomProbe``.
-- probe_oom_kill(ip, keyfile, _ssh=_ssh)  ·L482: Read the VM's kernel log over SSH and look for the OOM-killer. Best-effort:
-- looks_like_cap_kill(elapsed_s, cap_seconds, *, fraction=CAP_KILL_MIN_FRACTION)  ·L493: Did this run live long enough for its own wall cap to be the killer?
-- _elapsed_phrase(elapsed_s, cap_seconds)  ·L501
-- classify_exit(rc, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L508: Explain a remote job's return code honestly -> a short status string.
-- explain_remote_kill(ip, keyfile, rc, *, elapsed_s, cap_seconds, _ssh=_ssh)  ·L539: Classify a finished job, probing the VM's kernel log first when the return
-- @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L550
-- _make_poll_runner(ip, keyfile, connect_timeout=CONNECT_TIMEOUT_S, _ssh=_ssh)  ·L625: Build the SSH-backed poll runner the detach loop calls each iteration.
-- class LaunchNotStarted(RuntimeError)  ·L649: The detached launch failed in a way that proves the job never spawned:
-- _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix='', launch_timeout=90, _ssh=_ssh)  ·L656: Upload the generated launcher and run it to start the job detached.
-- _sg_allows_ssh_from(conn, sg, cidr)  ·L696: Does this security group already permit SSH ingress from `cidr`?
-- @dataclass class IngressCheck  ·L711: What an ingress check found, and a line fit to print about it.
-  - __bool__(self)  ·L726: Truthy only when a rule was actually added, so ``if check:`` reads as
-- heal_ssh_ingress(conn, sg_name, cidr=None)  ·L732: Open SSH ingress for the caller's current address if the group lacks it.
-- ensure_ssh_ingress(conn, sg_name, *, cidr=None, label=None, emit=None, indent='  ', announce_open=False)  ·L775: Check-and-repair a group's SSH ingress, report it, and never raise.
-- make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None)  ·L822: Build the poll loop's `on_stuck` callback: say the host is unreachable, try
-- follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval, on_chunk=None, on_status=None, on_warn=None, on_stuck=None, unreachable_abort_s=UNREACHABLE_ABORT_S, _ssh=_ssh)  ·L852: Poll an already-launched detached job to completion (or a local abort).
-- pull_job_log(ip, keyfile, log_path, _ssh=_ssh)  ·L877: Pull the full remote ~/job.out down to log_path (the authoritative final
-- _server_by_name_or_id(conn, name, server_id=None)  ·L889: Find a server by id (preferred) or name, or None if it is already gone.
-- teardown_by_name(conn, name, server_id=None)  ·L904: Delete a flux-compute instance and its same-named keypair + security group
-- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L930
-- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L953
+- const ACTIVE_WAIT_S  ·L331
+- const ACTIVE_POLL_S  ·L332
+- const SSH_WAIT_S  ·L333
+- const SSH_PROBE_S  ·L334
+- const SSH_INGRESS_RECHECK_S  ·L335
+- @dataclass class SshWait  ·L339: How the wait for port 22 went: whether it opened, how long it took, the
+- _ssh_port_open(host, port)  ·L352
+- _wait_ssh(host, port=22, timeout=SSH_WAIT_S, *, conn=None, sg_name=None, launch_cidr=None, recheck=SSH_INGRESS_RECHECK_S, probe=None, clock=time.time, sleep=time.sleep, emit=print)  ·L360: Wait for port 22 on `host`, reopening the group's SSH ingress if this machine's
+- _fault_text(fault)  ·L399
+- _console_tail(conn, server, lines=30)  ·L407: The last `lines` of the server's console log, or one line saying why it
+- _wait_active(conn, server, wait=ACTIVE_WAIT_S, poll=ACTIVE_POLL_S, emit=print, clock=time.time, sleep=time.sleep)  ·L418: Poll the server until ACTIVE, narrating each change of (status, task state)
+- _server_ipv4(server)  ·L449
+- _ssh_cmd(keyfile)  ·L457
+- _ssh(ip, keyfile, command, timeout=600, capture=True)  ·L461
+- _scp_up(local, ip, keyfile, remote)  ·L468
+- _scp_down(ip, keyfile, remote, local, timeout=120)  ·L472: Copy a single home-relative remote file down to a local path. Used for the
+- parse_upload_spec(spec)  ·L480: Parse one ``--upload`` value into ``(local_src, remote_dest)``.
+- _rsync_up(local, ip, keyfile, dest, extra_excludes=())  ·L517
+- _rsync_down(ip, keyfile, remote, local)  ·L540
+- rsync_down_best_effort(ip, keyfile, remote, local, _rsync=None)  ·L547: Fetch artifacts without letting a failure abort the caller. Returns True
+- @dataclass class OomProbe  ·L574: A read of the VM's kernel log looking for OOM-killer evidence.
+- oom_evidence(kernel_log)  ·L587: Pure: scan a kernel-log excerpt for OOM-killer markers -> ``OomProbe``.
+- probe_oom_kill(ip, keyfile, _ssh=_ssh)  ·L596: Read the VM's kernel log over SSH and look for the OOM-killer. Best-effort:
+- looks_like_cap_kill(elapsed_s, cap_seconds, *, fraction=CAP_KILL_MIN_FRACTION)  ·L607: Did this run live long enough for its own wall cap to be the killer?
+- _elapsed_phrase(elapsed_s, cap_seconds)  ·L615
+- classify_exit(rc, *, elapsed_s=None, cap_seconds=None, oom=None)  ·L622: Explain a remote job's return code honestly -> a short status string.
+- explain_remote_kill(ip, keyfile, rc, *, elapsed_s, cap_seconds, _ssh=_ssh)  ·L653: Classify a finished job, probing the VM's kernel log first when the return
+- @contextmanager _gpu_instance(conn, spec, name, ttl_minutes, keep=False)  ·L664
+- _make_poll_runner(ip, keyfile, connect_timeout=CONNECT_TIMEOUT_S, _ssh=_ssh)  ·L749: Build the SSH-backed poll runner the detach loop calls each iteration.
+- class LaunchNotStarted(RuntimeError)  ·L773: The detached launch failed in a way that proves the job never spawned:
+- _launch_detached(ip, keyfile, remote_script, cap_seconds, env_prefix='', launch_timeout=90, _ssh=_ssh)  ·L780: Upload the generated launcher and run it to start the job detached.
+- _sg_allows_ssh_from(conn, sg, cidr)  ·L820: Does this security group already permit SSH ingress from `cidr`?
+- @dataclass class IngressCheck  ·L835: What an ingress check found, and a line fit to print about it.
+  - __bool__(self)  ·L850: Truthy only when a rule was actually added, so ``if check:`` reads as
+- heal_ssh_ingress(conn, sg_name, cidr=None)  ·L856: Open SSH ingress for the caller's current address if the group lacks it.
+- ensure_ssh_ingress(conn, sg_name, *, cidr=None, label=None, emit=None, indent='  ', announce_open=False)  ·L899: Check-and-repair a group's SSH ingress, report it, and never raise.
+- make_stuck_handler(conn, sg_name, *, label=None, emit=None, now=None)  ·L946: Build the poll loop's `on_stuck` callback: say the host is unreachable, try
+- follow_detached_job(ip, keyfile, cap_seconds, *, deadline_s, poll_interval, on_chunk=None, on_status=None, on_warn=None, on_stuck=None, unreachable_abort_s=UNREACHABLE_ABORT_S, _ssh=_ssh)  ·L976: Poll an already-launched detached job to completion (or a local abort).
+- pull_job_log(ip, keyfile, log_path, _ssh=_ssh)  ·L1001: Pull the full remote ~/job.out down to log_path (the authoritative final
+- _server_by_name_or_id(conn, name, server_id=None)  ·L1013: Find a server by id (preferred) or name, or None if it is already gone.
+- teardown_by_name(conn, name, server_id=None)  ·L1028: Delete a flux-compute instance and its same-named keypair + security group
+- smoke_test(cloud=None, region=None, flavor=None) -> int  ·L1054
+- run_job(cloud=None, region=None, flavor=None, uploads=(), script=None, fetch=(), keep=False, exec_timeout=2400, image=None) -> int  ·L1077
 
 ### flux_compute/reap.py
 _`flux-compute reap`: find flux-compute instances and delete the expired ones._
@@ -666,69 +676,85 @@ _Pure-logic tests for provision helpers. No network, no credentials._
   - find_flavor(self, name)  ·L119
   - create_keypair(self, name, public_key)  ·L122
   - create_server(self, **kwargs)  ·L125
-  - wait_for_server(self, server, status=None, wait=None)  ·L131
-  - delete_server(self, server_id, force=False)  ·L134
-  - wait_for_delete(self, server, wait=0)  ·L137
-  - delete_keypair(self, name, ignore_missing=True)  ·L140
-- class _FakeInstanceNetwork  ·L144
-  - find_network(self, name)  ·L145
-  - create_security_group(self, name=None, description=None)  ·L148
-  - create_security_group_rule(self, **kwargs)  ·L151
-  - delete_security_group(self, sg_id, ignore_missing=True)  ·L154
-- _instance_conn()  ·L158
-- const _SPEC  ·L164
-- @pytest.fixture local_boot(monkeypatch)  ·L168: Cut the two real-network steps out of _gpu_instance.
-- test_keep_does_not_swallow_a_body_exception(local_boot, capsys)  ·L174
-- test_body_exception_still_tears_down_without_keep(local_boot, capsys)  ·L186
-- test_cloud_sweep_is_excluded_from_uploads()  ·L200
-- _fake_rsync(monkeypatch, returncode)  ·L205
-- test_rsync_up_tolerates_exit_24_as_a_warning(monkeypatch, capsys)  ·L217
-- test_rsync_up_still_raises_on_a_real_failure(monkeypatch)  ·L223
-- test_rsync_up_zero_is_success(monkeypatch)  ·L229
-- const _OOM_LOG  ·L236
-- test_oom_evidence_finds_the_kernel_oom_killer()  ·L242
-- test_oom_evidence_on_a_clean_log_is_unconfirmed_but_read()  ·L248
-- test_oom_evidence_on_an_unreadable_log_is_unconfirmed_and_unread()  ·L253: Absence of evidence is reported as unknown, never as innocence.
-- test_looks_like_cap_kill_needs_a_basis()  ·L259
-- test_classify_exit_never_calls_a_sub_cap_sigkill_a_timeout()  ·L266
-- test_classify_exit_reports_a_confirmed_oom_kill()  ·L272
-- test_classify_exit_distinguishes_a_read_log_from_an_unreadable_one()  ·L278
-- test_classify_exit_ordinary_codes_are_unchanged()  ·L285
-- test_probe_oom_kill_never_raises_when_ssh_fails()  ·L291
-- test_probe_oom_kill_reads_the_kernel_log_over_ssh()  ·L298
-- test_rsync_down_best_effort_swallows_a_failure(capsys)  ·L311
-- test_rsync_down_best_effort_reports_success()  ·L318
-- test_parse_upload_bare_dir_keeps_basename_behavior(tmp_path)  ·L325
-- test_parse_upload_bare_dir_tolerates_a_trailing_slash(tmp_path)  ·L331
-- test_parse_upload_maps_src_to_a_different_remote_name(tmp_path)  ·L337: The feature that replaces the symlink-named-like-the-destination trick.
-- test_parse_upload_rejects_a_missing_source(tmp_path)  ·L344
-- test_parse_upload_rejects_an_escaping_or_absolute_destination(tmp_path)  ·L349
-- test_rsync_excludes_cover_attach_records_under_any_into_dir()  ·L357: `--into` is configurable, so excluding only the default name left every
-- test_rsync_up_passes_extra_excludes_through(monkeypatch, tmp_path)  ·L364
-- class _FakeRule  ·L378
-  - __init__(self, cidr, lo=22, hi=22, direction='ingress')  ·L379
-- class _FakeNet  ·L384
-  - __init__(self, sg, rules)  ·L385
-  - find_security_group(self, name)  ·L388
-  - security_group_rules(self, security_group_id=None)  ·L391
-  - create_security_group_rule(self, **kw)  ·L394
-- _conn_with(rules, sg=SimpleNamespace(id='sg-1'))  ·L398
-- test_heal_opens_ingress_when_the_public_ip_moved(monkeypatch)  ·L402
-- test_heal_appends_and_never_replaces_the_launch_time_rule(monkeypatch)  ·L411: The stale /32 stays: a flapping address (tethering, a VPN toggling back)
-- test_heal_is_a_noop_when_ingress_is_already_open(monkeypatch)  ·L422: Idempotent: a repeated escalation must not pile up duplicate rules.
-- test_heal_declines_when_the_public_ip_read_failed(monkeypatch)  ·L431: 0.0.0.0/0 is _public_ip_cidr's failure value; never open the world on it.
-- test_heal_declines_when_the_security_group_is_gone(monkeypatch)  ·L442
-- test_heal_uses_a_caller_supplied_cidr_without_re_reading(monkeypatch)  ·L449: A fleet-wide repair resolves the address once and passes it down.
-- test_current_ingress_cidr_is_none_when_the_read_failed(monkeypatch)  ·L460
-- test_stuck_handler_surfaces_the_blackout_and_tries_to_heal(monkeypatch)  ·L467
-- test_stuck_handler_says_so_when_the_public_ip_could_not_be_read(monkeypatch)  ·L478: The blackout report must not claim a healthy group when the check never ran.
-- test_stuck_handler_reports_a_failed_heal_without_raising(monkeypatch)  ·L490: The follow loop tolerates a blackout it cannot explain, so the handler must
-- test_stuck_handler_hands_the_verdict_back_to_the_poll_loop(monkeypatch)  ·L507: The loop cannot decide what a blackout means without knowing whether the
-- test_ensure_reports_a_repair_and_returns_the_healed_status(monkeypatch)  ·L522
-- test_ensure_is_silent_on_the_common_no_op(monkeypatch)  ·L532: Same network, nothing to do: a 100-job resume must not print 100 lines.
-- test_ensure_announces_the_no_op_when_the_caller_asks(monkeypatch)  ·L541: Mid-blackout, "ingress is fine" is the informative half of the answer, so
-- test_ensure_turns_an_api_error_into_a_status_and_never_raises()  ·L552: The check is precautionary; the SSH attempt that follows is the authority.
-- test_ensure_uses_the_caller_supplied_cidr_without_re_reading(monkeypatch)  ·L567: A fleet-wide resume resolves the address once and passes it down; every
+  - get_server(self, server_id)  ·L131
+  - get_server_console_output(self, server, length=None)  ·L137
+  - delete_server(self, server_id, force=False)  ·L140
+  - wait_for_delete(self, server, wait=0)  ·L143
+  - delete_keypair(self, name, ignore_missing=True)  ·L146
+- class _FakeInstanceNetwork  ·L150
+  - find_network(self, name)  ·L151
+  - create_security_group(self, name=None, description=None)  ·L154
+  - create_security_group_rule(self, **kwargs)  ·L157
+  - delete_security_group(self, sg_id, ignore_missing=True)  ·L160
+- _instance_conn()  ·L164
+- const _SPEC  ·L170
+- @pytest.fixture local_boot(monkeypatch)  ·L174: Cut the two real-network steps out of _gpu_instance.
+- test_keep_does_not_swallow_a_body_exception(local_boot, capsys)  ·L181
+- test_body_exception_still_tears_down_without_keep(local_boot, capsys)  ·L193
+- test_cloud_sweep_is_excluded_from_uploads()  ·L207
+- _fake_rsync(monkeypatch, returncode)  ·L212
+- test_rsync_up_tolerates_exit_24_as_a_warning(monkeypatch, capsys)  ·L224
+- test_rsync_up_still_raises_on_a_real_failure(monkeypatch)  ·L230
+- test_rsync_up_zero_is_success(monkeypatch)  ·L236
+- const _OOM_LOG  ·L243
+- test_oom_evidence_finds_the_kernel_oom_killer()  ·L249
+- test_oom_evidence_on_a_clean_log_is_unconfirmed_but_read()  ·L255
+- test_oom_evidence_on_an_unreadable_log_is_unconfirmed_and_unread()  ·L260: Absence of evidence is reported as unknown, never as innocence.
+- test_looks_like_cap_kill_needs_a_basis()  ·L266
+- test_classify_exit_never_calls_a_sub_cap_sigkill_a_timeout()  ·L273
+- test_classify_exit_reports_a_confirmed_oom_kill()  ·L279
+- test_classify_exit_distinguishes_a_read_log_from_an_unreadable_one()  ·L285
+- test_classify_exit_ordinary_codes_are_unchanged()  ·L292
+- test_probe_oom_kill_never_raises_when_ssh_fails()  ·L298
+- test_probe_oom_kill_reads_the_kernel_log_over_ssh()  ·L305
+- test_rsync_down_best_effort_swallows_a_failure(capsys)  ·L318
+- test_rsync_down_best_effort_reports_success()  ·L325
+- test_parse_upload_bare_dir_keeps_basename_behavior(tmp_path)  ·L332
+- test_parse_upload_bare_dir_tolerates_a_trailing_slash(tmp_path)  ·L338
+- test_parse_upload_maps_src_to_a_different_remote_name(tmp_path)  ·L344: The feature that replaces the symlink-named-like-the-destination trick.
+- test_parse_upload_rejects_a_missing_source(tmp_path)  ·L351
+- test_parse_upload_rejects_an_escaping_or_absolute_destination(tmp_path)  ·L356
+- test_rsync_excludes_cover_attach_records_under_any_into_dir()  ·L364: `--into` is configurable, so excluding only the default name left every
+- test_rsync_up_passes_extra_excludes_through(monkeypatch, tmp_path)  ·L371
+- class _FakeRule  ·L385
+  - __init__(self, cidr, lo=22, hi=22, direction='ingress')  ·L386
+- class _FakeNet  ·L391
+  - __init__(self, sg, rules)  ·L392
+  - find_security_group(self, name)  ·L395
+  - security_group_rules(self, security_group_id=None)  ·L398
+  - create_security_group_rule(self, **kw)  ·L401
+- _conn_with(rules, sg=SimpleNamespace(id='sg-1'))  ·L405
+- test_heal_opens_ingress_when_the_public_ip_moved(monkeypatch)  ·L409
+- test_heal_appends_and_never_replaces_the_launch_time_rule(monkeypatch)  ·L418: The stale /32 stays: a flapping address (tethering, a VPN toggling back)
+- test_heal_is_a_noop_when_ingress_is_already_open(monkeypatch)  ·L429: Idempotent: a repeated escalation must not pile up duplicate rules.
+- test_heal_declines_when_the_public_ip_read_failed(monkeypatch)  ·L438: 0.0.0.0/0 is _public_ip_cidr's failure value; never open the world on it.
+- test_heal_declines_when_the_security_group_is_gone(monkeypatch)  ·L449
+- test_heal_uses_a_caller_supplied_cidr_without_re_reading(monkeypatch)  ·L456: A fleet-wide repair resolves the address once and passes it down.
+- test_current_ingress_cidr_is_none_when_the_read_failed(monkeypatch)  ·L467
+- test_stuck_handler_surfaces_the_blackout_and_tries_to_heal(monkeypatch)  ·L474
+- test_stuck_handler_says_so_when_the_public_ip_could_not_be_read(monkeypatch)  ·L485: The blackout report must not claim a healthy group when the check never ran.
+- test_stuck_handler_reports_a_failed_heal_without_raising(monkeypatch)  ·L497: The follow loop tolerates a blackout it cannot explain, so the handler must
+- test_stuck_handler_hands_the_verdict_back_to_the_poll_loop(monkeypatch)  ·L514: The loop cannot decide what a blackout means without knowing whether the
+- test_ensure_reports_a_repair_and_returns_the_healed_status(monkeypatch)  ·L529
+- test_ensure_is_silent_on_the_common_no_op(monkeypatch)  ·L539: Same network, nothing to do: a 100-job resume must not print 100 lines.
+- test_ensure_announces_the_no_op_when_the_caller_asks(monkeypatch)  ·L548: Mid-blackout, "ingress is fine" is the informative half of the answer, so
+- test_ensure_turns_an_api_error_into_a_status_and_never_raises()  ·L559: The check is precautionary; the SSH attempt that follows is the authority.
+- test_ensure_uses_the_caller_supplied_cidr_without_re_reading(monkeypatch)  ·L574: A fleet-wide resume resolves the address once and passes it down; every
+- _ticking()  ·L593: A clock that advances only when the code under test sleeps.
+- class _BootingCompute(_FakeInstanceCompute)  ·L599: get_server walks a scripted list of (status, task_state, fault), holding the last.
+  - __init__(self, states, console='kernel: hello\n')  ·L602
+  - get_server(self, server_id)  ·L606
+  - get_server_console_output(self, server, length=None)  ·L612
+- test_ssh_wait_is_ten_minutes_rechecking_the_address_every_minute()  ·L616
+- test_wait_ssh_reopens_ingress_when_the_public_ip_moved(monkeypatch)  ·L622: The door opens the moment the moved address is admitted: the probe succeeds only
+- test_wait_ssh_timeout_says_the_address_stayed(monkeypatch)  ·L647
+- test_wait_ssh_returns_at_once_when_the_port_is_open(monkeypatch)  ·L657
+- test_wait_active_narrates_each_change_and_returns_the_active_server()  ·L667
+- test_wait_active_timeout_names_the_last_state_and_the_console()  ·L680
+- test_wait_active_error_state_raises_at_once_with_the_fault()  ·L691
+- test_console_tail_never_raises()  ·L699
+- test_gpu_instance_ssh_failure_names_the_cause_and_tears_down(monkeypatch)  ·L707
+- test_gpu_instance_passes_the_group_and_launch_address_to_the_ssh_wait(monkeypatch)  ·L720
 
 ### tests/test_reap.py
 _Pure-logic tests for reap selection: expiry math, positive identification,_
@@ -958,38 +984,39 @@ _An instance never outlives its local handle, and the resume's stray check_
   - find_flavor(self, name)  ·L42
   - create_keypair(self, name, public_key)  ·L45
   - create_server(self, **kwargs)  ·L48
-  - wait_for_server(self, server, status=None, wait=None)  ·L52
-  - delete_server(self, server_id, force=False)  ·L55
-  - wait_for_delete(self, server, wait=0)  ·L58
-  - delete_keypair(self, name, ignore_missing=True)  ·L61
-- class _Network  ·L65
-  - __init__(self)  ·L66
-  - find_network(self, name)  ·L69
-  - create_security_group(self, name=None, description=None)  ·L72
-  - create_security_group_rule(self, **kwargs)  ·L75
-  - delete_security_group(self, sg_id, ignore_missing=True)  ·L78
-- _client()  ·L82
-- @pytest.fixture local_boot(monkeypatch)  ·L88: Cut the real-network steps of `_gpu_instance` out.
-- _rsync_255(*a, **kw)  ·L94
-- test_a_sweep_upload_failure_tears_down_before_the_failure_is_recorded(tmp_path, monkeypatch, local_boot)  ·L100
-- test_a_run_upload_failure_tears_down_and_the_error_propagates(tmp_path, monkeypatch, local_boot)  ·L122
-- class _Instance  ·L142: A `_gpu_instance` stand-in that sees the job folder at teardown time and
-  - __init__(self, monkeypatch, tmp_path, dest_of, fail=None)  ·L146
-- class _ProcessKilled(BaseException)  ·L171: What a SIGKILL of the controller looks like from inside: nothing after it runs.
-- _run(tmp_path, monkeypatch, fail=None)  ·L175
-- test_a_collected_job_keeps_its_record_until_the_teardown_is_verified(tmp_path, monkeypatch)  ·L183
-- test_a_kill_during_the_teardown_leaves_a_record_and_the_outcome(tmp_path, monkeypatch)  ·L192
-- test_a_teardown_strand_after_a_collected_job_is_never_ok_but_keeps_the_result(tmp_path, monkeypatch)  ·L201
-- test_the_launching_process_names_itself_as_the_follower(tmp_path, monkeypatch)  ·L211
-- @pytest.mark.parametrize test_resume_finishes_the_teardown_of_a_collected_job_and_keeps_its_outcome(tmp_path, monkeypatch, server_alive)  ·L222
-- _in_flight(into, label='a', cloud='flux-ovh', region='UK1')  ·L246
-- _no_credentials(cloud=None, region=None)  ·L258
-- test_resume_raises_when_the_stray_check_cannot_read_credentials(tmp_path, monkeypatch)  ·L262
-- test_the_cli_resume_exits_nonzero_with_the_credential_message(tmp_path, monkeypatch, capsys)  ·L279
-- test_the_stray_check_connects_with_each_records_launch_cloud(tmp_path, monkeypatch)  ·L289: The launch connected with `--cloud flux-ovh`; a resume line without
-- test_a_strict_stray_check_raises_when_the_server_list_fails(capsys)  ·L309
-- test_a_sweep_whose_group_delete_keeps_failing_keeps_the_record_and_exits_nonzero(tmp_path, monkeypatch, local_boot)  ·L322
-- test_the_in_context_teardown_raises_on_a_keypair_left_behind(monkeypatch, local_boot)  ·L358
+  - get_server(self, server_id)  ·L52
+  - get_server_console_output(self, server, length=None)  ·L56
+  - delete_server(self, server_id, force=False)  ·L59
+  - wait_for_delete(self, server, wait=0)  ·L62
+  - delete_keypair(self, name, ignore_missing=True)  ·L65
+- class _Network  ·L69
+  - __init__(self)  ·L70
+  - find_network(self, name)  ·L73
+  - create_security_group(self, name=None, description=None)  ·L76
+  - create_security_group_rule(self, **kwargs)  ·L79
+  - delete_security_group(self, sg_id, ignore_missing=True)  ·L82
+- _client()  ·L86
+- @pytest.fixture local_boot(monkeypatch)  ·L92: Cut the real-network steps of `_gpu_instance` out.
+- _rsync_255(*a, **kw)  ·L99
+- test_a_sweep_upload_failure_tears_down_before_the_failure_is_recorded(tmp_path, monkeypatch, local_boot)  ·L105
+- test_a_run_upload_failure_tears_down_and_the_error_propagates(tmp_path, monkeypatch, local_boot)  ·L127
+- class _Instance  ·L147: A `_gpu_instance` stand-in that sees the job folder at teardown time and
+  - __init__(self, monkeypatch, tmp_path, dest_of, fail=None)  ·L151
+- class _ProcessKilled(BaseException)  ·L176: What a SIGKILL of the controller looks like from inside: nothing after it runs.
+- _run(tmp_path, monkeypatch, fail=None)  ·L180
+- test_a_collected_job_keeps_its_record_until_the_teardown_is_verified(tmp_path, monkeypatch)  ·L188
+- test_a_kill_during_the_teardown_leaves_a_record_and_the_outcome(tmp_path, monkeypatch)  ·L197
+- test_a_teardown_strand_after_a_collected_job_is_never_ok_but_keeps_the_result(tmp_path, monkeypatch)  ·L206
+- test_the_launching_process_names_itself_as_the_follower(tmp_path, monkeypatch)  ·L216
+- @pytest.mark.parametrize test_resume_finishes_the_teardown_of_a_collected_job_and_keeps_its_outcome(tmp_path, monkeypatch, server_alive)  ·L227
+- _in_flight(into, label='a', cloud='flux-ovh', region='UK1')  ·L251
+- _no_credentials(cloud=None, region=None)  ·L263
+- test_resume_raises_when_the_stray_check_cannot_read_credentials(tmp_path, monkeypatch)  ·L267
+- test_the_cli_resume_exits_nonzero_with_the_credential_message(tmp_path, monkeypatch, capsys)  ·L284
+- test_the_stray_check_connects_with_each_records_launch_cloud(tmp_path, monkeypatch)  ·L294: The launch connected with `--cloud flux-ovh`; a resume line without
+- test_a_strict_stray_check_raises_when_the_server_list_fails(capsys)  ·L314
+- test_a_sweep_whose_group_delete_keeps_failing_keeps_the_record_and_exits_nonzero(tmp_path, monkeypatch, local_boot)  ·L327
+- test_the_in_context_teardown_raises_on_a_keypair_left_behind(monkeypatch, local_boot)  ·L363
 
 ## Other source files
 

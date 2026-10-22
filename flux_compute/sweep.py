@@ -109,7 +109,7 @@ class JobOutcome:
 # boot, a create-time quota or capacity refusal.
 _LEGACY_PRESTART_MARKERS = (
     ("upload", ("rsync upload of ", "Command '['scp'")),
-    ("boot", ("never opened within timeout", "quota/capacity: ")),
+    ("boot", ("never opened within", "quota/capacity: ")),
 )
 _LEGACY_LOG_PREFIX = "flux-compute: "
 

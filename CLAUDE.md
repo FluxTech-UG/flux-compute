@@ -200,6 +200,16 @@ results are the last trace of the work and the instance is about to be deleted.
   fleet-wide lockout runs for hours unseen.
   `AttachRecord` is written in two stages, the first **before the instance boots**,
   so a launcher killed mid-boot leaves a VM `--resume` can name and tear down.
+  The boot itself is two narrated waits in `provision._gpu_instance`: `_wait_active`
+  polls the server every `ACTIVE_POLL_S` for up to `ACTIVE_WAIT_S` and prints one
+  line per change of status or task state, raising at once on ERROR with the fault
+  and on timeout with the last state and the console log's tail (`_console_tail`);
+  `_wait_ssh` then gives port 22 `SSH_WAIT_S` (ten minutes, a fresh OVH image can
+  take most of that) and every `SSH_INGRESS_RECHECK_S` re-reads the launcher's
+  public address, admitting a moved one through `ensure_ssh_ingress` before the
+  next probe, because the group admits only the /32 read at launch and a NAT or
+  mobile launcher moves. Its `SshWait` result lets the failure say whether the
+  address moved or stayed, with the console tail, instead of "timeout".
 - `flux_compute/cancel.py`: `flux-compute cancel`, the per-label stop. Works
   from the job's local record, never by listing the cloud; refuses (exit 2, one
   line) a label with no record, and a job with no recorded follower unless
